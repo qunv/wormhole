@@ -1,0 +1,3 @@
+# Debug
+
+Reproduce the failure, narrow it to the smallest responsible component, explain the root cause with evidence, then implement and verify the smallest safe fix.

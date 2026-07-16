@@ -1,0 +1,10 @@
+/codebridge
+/codebridge.exe
+/dist/
+/coverage.out
+/.env
+/.env.local
+*.log
+*.prof
+.idea
+.codegraph

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Codebridge Input</title>
+  <style>
+    :root{color-scheme:light dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
+    *{box-sizing:border-box}body{margin:0;padding:10px;background:transparent}
+    form{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}
+    textarea{width:100%;min-height:44px;max-height:160px;resize:vertical;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:12px;padding:11px 13px;background:color-mix(in srgb,Canvas 94%,transparent);color:CanvasText;font:inherit}
+    button{height:44px;border:0;border-radius:12px;padding:0 16px;background:#1668e3;color:white;font-weight:650;cursor:pointer}
+    .bar{display:flex;gap:6px;align-items:center;margin-bottom:7px;font-size:12px;opacity:.8}.pill{border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:999px;padding:3px 8px}
+    #hint{min-height:18px;margin-top:5px;font-size:12px;opacity:.72}
+  </style>
+</head>
+<body>
+  <div class="bar"><span class="pill">Codebridge</span><span>@ context</span><span>/ workflows</span></div>
+  <form id="form">
+    <textarea id="input" placeholder="Ask Codebridge…  Use @path or /plan" autofocus></textarea>
+    <button type="submit">Send</button>
+  </form>
+  <div id="hint">Enter to send · Shift+Enter for a new line</div>
+  <script type="module">
+    const input=document.querySelector("#input"),form=document.querySelector("#form"),hint=document.querySelector("#hint");
+    const api=window.openai;
+    if(api?.toolOutput?.initial_input)input.value=api.toolOutput.initial_input;
+    async function send(){
+      const text=input.value.trim();if(!text)return;
+      hint.textContent="Composing…";
+      try{
+        const result=await api.callTool("compose_prompt",{input:text});
+        const payload=result?.structuredContent||{};
+        await api.sendFollowUpMessage({prompt:payload.prompt||text});
+        input.value="";hint.textContent="Sent";
+      }catch(error){hint.textContent=String(error?.message||error)}
+    }
+    form.addEventListener("submit",event=>{event.preventDefault();send()});
+    input.addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();send()}});
+  </script>
+</body>
+</html>

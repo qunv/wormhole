@@ -1,0 +1,3 @@
+# Code Review
+
+Inspect the current diff first. Rank findings by severity and cite exact files and lines. Focus on correctness, security, regressions, and missing tests. Keep the summary short.
