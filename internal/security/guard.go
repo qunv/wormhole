@@ -52,6 +52,13 @@ func CommandAllowed(command, mode string, allowDangerous bool) error {
 	return nil
 }
 
+func ArbitraryShellAllowed(mode string) error {
+	if mode != "full" {
+		return fmt.Errorf("arbitrary shell commands are disabled in safe mode; use a dedicated read-only or quality tool")
+	}
+	return nil
+}
+
 type Risk struct {
 	Kind          string `json:"kind"`
 	NeedsApproval bool   `json:"needsApproval"`

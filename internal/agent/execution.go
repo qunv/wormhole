@@ -24,6 +24,9 @@ func (r *Runtime) handleExec(ctx context.Context, name string, args map[string]a
 	case "run_commands":
 		return r.runCommands(ctx, args)
 	case "proc_start":
+		if err := security.ArbitraryShellAllowed(r.Config.Mode); err != nil {
+			return nil, err
+		}
 		command := stringArg(args, "command", "")
 		if err := security.CommandAllowed(command, r.Config.Mode, false); err != nil {
 			return nil, err
@@ -66,6 +69,11 @@ func (r *Runtime) runCommand(ctx context.Context, args map[string]any) (any, err
 	if command == "" {
 		return nil, errors.New("command is required")
 	}
+	if !boolArg(args, "internal_quality_command", false) {
+		if err := security.ArbitraryShellAllowed(r.Config.Mode); err != nil {
+			return nil, err
+		}
+	}
 	if err := security.CommandAllowed(command, r.Config.Mode, false); err != nil {
 		return nil, err
 	}
@@ -74,15 +82,16 @@ func (r *Runtime) runCommand(ctx context.Context, args map[string]any) (any, err
 		return nil, err
 	}
 	timeout := time.Duration(intArg(args, "timeout_ms", 120_000)) * time.Millisecond
-	result := processx.Run(ctx, command, cwd, stringArg(args, "shell", ""), timeout)
-	maxChars := intArg(args, "max_output_chars", r.Config.CommandOutput)
+	maxChars := min(max(intArg(args, "max_output_chars", r.Config.CommandOutput), 1), r.Config.MaxCommandOutput)
+	result := processx.Run(ctx, command, cwd, stringArg(args, "shell", ""), timeout, maxChars)
 	stdout := processx.Trim(result.Stdout, intArg(args, "head_lines", 0), intArg(args, "tail_lines", 0), maxChars)
 	stderr := processx.Trim(result.Stderr, intArg(args, "head_lines", 0), intArg(args, "tail_lines", 0), maxChars)
 	return map[string]any{
 		"cwd": cwd, "command": command, "shell": stringArg(args, "shell", ""),
 		"exit_code": result.ExitCode, "timed_out": result.TimedOut,
 		"stdout": stdout, "stderr": stderr,
-		"stdout_truncated": len(stdout) < len(result.Stdout), "stderr_truncated": len(stderr) < len(result.Stderr),
+		"stdout_truncated": result.StdoutTruncated || len(stdout) < len(result.Stdout),
+		"stderr_truncated": result.StderrTruncated || len(stderr) < len(result.Stderr),
 	}, nil
 }
 

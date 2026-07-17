@@ -4,7 +4,6 @@
 package processx
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,13 +15,21 @@ import (
 )
 
 type Result struct {
-	ExitCode int    `json:"exit_code"`
-	TimedOut bool   `json:"timed_out"`
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
+	ExitCode       int    `json:"exit_code"`
+	TimedOut       bool   `json:"timed_out"`
+	Stdout         string `json:"stdout"`
+	Stderr         string `json:"stderr"`
+	StdoutTruncated bool  `json:"stdout_truncated"`
+	StderrTruncated bool  `json:"stderr_truncated"`
 }
 
-func Run(ctx context.Context, command, cwd, shell string, timeout time.Duration) Result {
+func (b *lockedBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
+}
+
+func Run(ctx context.Context, command, cwd, shell string, timeout time.Duration, maxOutput int) Result {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
@@ -31,11 +38,11 @@ func Run(ctx context.Context, command, cwd, shell string, timeout time.Duration)
 	name, args := ShellCommand(command, shell)
 	cmd := exec.CommandContext(runCtx, name, args...)
 	cmd.Dir = cwd
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout, stderr := &lockedBuffer{limit: maxOutput, keepHead: true}, &lockedBuffer{limit: maxOutput, keepHead: true}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), StdoutTruncated: stdout.Truncated(), StderrTruncated: stderr.Truncated()}
 	if runCtx.Err() == context.DeadlineExceeded {
 		result.ExitCode = -1
 		result.TimedOut = true
@@ -64,11 +71,11 @@ func Capture(ctx context.Context, name string, args []string, cwd string, timeou
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, name, args...)
 	cmd.Dir = cwd
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout, stderr := &lockedBuffer{limit: 2_000_000, keepHead: true}, &lockedBuffer{limit: 2_000_000, keepHead: true}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), StdoutTruncated: stdout.Truncated(), StderrTruncated: stderr.Truncated()}
 	if runCtx.Err() == context.DeadlineExceeded {
 		result.ExitCode, result.TimedOut = -1, true
 		return result
@@ -266,14 +273,24 @@ func (r *Registry) StopAll() {
 }
 
 type lockedBuffer struct {
-	mu    sync.Mutex
-	data  []byte
-	limit int
+	mu        sync.Mutex
+	data      []byte
+	limit     int
+	keepHead  bool
+	truncated bool
 }
 
 func (b *lockedBuffer) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.limit > 0 && len(b.data)+len(data) > b.limit {
+		b.truncated = true
+		if b.keepHead {
+			remaining := max(0, b.limit-len(b.data))
+			b.data = append(b.data, data[:min(remaining, len(data))]...)
+			return len(data), nil
+		}
+	}
 	b.data = append(b.data, data...)
 	if b.limit > 0 && len(b.data) > b.limit {
 		b.data = append([]byte(nil), b.data[len(b.data)-b.limit:]...)

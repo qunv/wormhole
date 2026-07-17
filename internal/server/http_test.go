@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,6 +26,15 @@ func TestHTTPGuards(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("health status = %d", response.Code)
+	}
+	var health map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"pid", "workspace", "roots", "config_id", "mode", "policy"} {
+		if _, exists := health[private]; exists {
+			t.Fatalf("health leaked private field %q", private)
+		}
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/healthz", nil)

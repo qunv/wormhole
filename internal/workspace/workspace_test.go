@@ -29,3 +29,25 @@ func TestResolveBlocksTraversalAndSymlinkEscape(t *testing.T) {
 		t.Fatalf("expected symlink escape error, got %v", err)
 	}
 }
+
+func TestIsRootRecognizesCanonicalSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges")
+	}
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(linkRoot, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := manager.Resolve(realRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manager.IsRoot(resolved) {
+		t.Fatalf("canonical root %q was not recognized", resolved)
+	}
+}

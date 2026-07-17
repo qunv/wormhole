@@ -118,8 +118,9 @@ func (m *Manager) Relative(abs string) string {
 }
 
 func (m *Manager) IsRoot(path string) bool {
-	for _, root := range m.Roots {
-		if samePath(path, root) {
+	canonical := canonicalize(path)
+	for index, root := range m.Roots {
+		if samePath(path, root) || samePath(canonical, m.realRoots[index]) {
 			return true
 		}
 	}

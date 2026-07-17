@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -47,16 +48,40 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 		return err
 	}
 	configID := cfg.ConfigID(executable, assets.Widget())
-	health := readHealth(cfg.Port)
-	if health != nil && fmt.Sprint(health["config_id"]) != configID {
-		if pid := numberValue(health["pid"]); pid > 0 {
-			fmt.Fprintf(a.Stdout, "[server] config changed; stopping PID %d\n", pid)
-			_ = stopPID(pid)
-			time.Sleep(700 * time.Millisecond)
-		}
-		health = nil
-	}
 	state := readState()
+	health := readHealth(cfg.Port)
+	existingPID := numberValue(healthValue(health, "pid"))
+	if existingPID == 0 && health != nil && state.Port == cfg.Port && pidAlive(state.ServerPID) {
+		existingPID = state.ServerPID
+	}
+	existingConfigID := fmt.Sprint(healthValue(health, "config_id"))
+	if existingConfigID == "<nil>" || existingConfigID == "" {
+		if state.Port == cfg.Port && existingPID == state.ServerPID {
+			existingConfigID = state.ConfigID
+		}
+	}
+	if health != nil && existingConfigID == configID {
+		state.ServerPID = existingPID
+	} else {
+		if existingPID > 0 {
+			reason := "workspace or configuration changed"
+			if health == nil {
+				reason = "stale server state detected"
+			}
+			fmt.Fprintf(a.Stdout, "[server] %s; stopping PID %d\n", reason, existingPID)
+			if err := stopPID(existingPID); err != nil && pidAlive(existingPID) {
+				return fmt.Errorf("stop existing MCP server PID %d: %w", existingPID, err)
+			}
+			if !waitForServerRelease(cfg.Host, cfg.Port, existingPID, 12*time.Second) {
+				return fmt.Errorf("existing MCP server PID %d did not release %s", existingPID, net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)))
+			}
+			state.ServerPID = 0
+			health = nil
+		}
+		if health == nil && !portAvailable(cfg.Host, cfg.Port) {
+			return fmt.Errorf("MCP port %s is already in use by an unknown process; stop that process or choose another --port", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)))
+		}
+	}
 	var serverCmd *exec.Cmd
 	if health == nil {
 		serverCmd, err = a.spawnServer(executable, cfg, opts.Background)
@@ -66,25 +91,39 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 		health = waitForHealth(cfg.Port, 10*time.Second)
 		if health == nil {
 			_ = stopPID(serverCmd.Process.Pid)
-			return fmt.Errorf("MCP server did not respond at http://127.0.0.1:%d/healthz; see %s", cfg.Port, config.LogPath())
+			return fmt.Errorf("MCP server did not respond at http://127.0.0.1:%d/internal/healthz; see %s", cfg.Port, config.LogPath())
 		}
-		state.ServerPID = numberValue(health["pid"])
+		state.ServerPID = numberValue(healthValue(health, "pid"))
+		if state.ServerPID == 0 {
+			state.ServerPID = serverCmd.Process.Pid
+		}
 	} else {
-		state.ServerPID = numberValue(health["pid"])
+		state.ServerPID = existingPID
 	}
 	fmt.Fprintf(a.Stdout, "[server] MCP OK: http://127.0.0.1:%d/mcp\n", cfg.Port)
 
 	var tunnelCmd *exec.Cmd
 	if !cfg.NoTunnel {
-		tunnelCmd, err = a.spawnTunnel(cfg, opts, opts.Background)
-		if err != nil {
-			if serverCmd != nil {
-				_ = stopPID(serverCmd.Process.Pid)
+		if state.TunnelPID > 0 && pidAlive(state.TunnelPID) && state.ConfigID == configID {
+			fmt.Fprintf(a.Stdout, "[tunnel] reusing PID %d\n", state.TunnelPID)
+		} else {
+			if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
+				_ = stopPID(state.TunnelPID)
 			}
-			return err
+			tunnelCmd, err = a.spawnTunnel(cfg, opts, opts.Background)
+			if err != nil {
+				if serverCmd != nil {
+					_ = stopPID(serverCmd.Process.Pid)
+				}
+				return err
+			}
+			state.TunnelPID = tunnelCmd.Process.Pid
 		}
-		state.TunnelPID = tunnelCmd.Process.Pid
 	} else {
+		if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
+			fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d (--no-tunnel)\n", state.TunnelPID)
+			_ = stopPID(state.TunnelPID)
+		}
 		state.TunnelPID = 0
 	}
 	state.UpdatedAt, state.ConfigID, state.Port, state.Workspace = time.Now().UTC(), configID, cfg.Port, cfg.Workspace
@@ -421,8 +460,17 @@ func yamlEscape(value string) string {
 }
 
 func readHealth(port int) map[string]any {
+	for _, path := range []string{"/internal/healthz", "/healthz"} {
+		if value := readHealthPath(port, path); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func readHealthPath(port int, path string) map[string]any {
 	client := http.Client{Timeout: 1200 * time.Millisecond}
-	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
 	if err != nil {
 		return nil
 	}
@@ -434,7 +482,40 @@ func readHealth(port int) map[string]any {
 	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&value) != nil {
 		return nil
 	}
+	if value["status"] != "ok" {
+		return nil
+	}
+	if path == "/healthz" && value["pid"] == nil && value["config_id"] == nil {
+		return nil
+	}
 	return value
+}
+
+func healthValue(health map[string]any, key string) any {
+	if health == nil {
+		return nil
+	}
+	return health[key]
+}
+
+func portAvailable(host string, port int) bool {
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
+
+func waitForServerRelease(host string, port, pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !pidAlive(pid) && portAvailable(host, port) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return !pidAlive(pid) && portAvailable(host, port)
 }
 
 func waitForHealth(port int, timeout time.Duration) map[string]any {

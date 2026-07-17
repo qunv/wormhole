@@ -24,5 +24,8 @@ func stopPID(pid int) error {
 	if pid <= 0 {
 		return nil
 	}
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err == nil {
+		return nil
+	}
 	return syscall.Kill(pid, syscall.SIGTERM)
 }

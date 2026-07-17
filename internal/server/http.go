@@ -28,6 +28,20 @@ type HTTP struct {
 	Server  *http.Server
 }
 
+func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request) {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+		h.sendJSON(writer, http.StatusForbidden, map[string]any{"error": "loopback_only"})
+		return
+	}
+	h.sendJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
+		"pid": os.Getpid(), "mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
+		"auth": ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
+		"config_id": h.Runtime.ConfigID,
+	})
+}
+
 func New(runtime *agent.Runtime) *HTTP {
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return mcpserver.New(runtime) },
@@ -37,6 +51,7 @@ func New(runtime *agent.Runtime) *HTTP {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", instance.root)
 	mux.HandleFunc("GET /healthz", instance.health)
+	mux.HandleFunc("GET /internal/healthz", instance.internalHealth)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", instance.oauthMetadata)
 	mux.Handle("/mcp", instance.guardMCP(mcpHandler))
 	instance.Server = &http.Server{
@@ -74,18 +89,12 @@ func (h *HTTP) ListenAndServe(ctx context.Context) error {
 func (h *HTTP) root(writer http.ResponseWriter, _ *http.Request) {
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok", "name": "Codebridge", "version": h.Runtime.Version,
-		"mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
-		"roots": h.Runtime.Workspace.Roots, "mcp_endpoint": "http://" + h.Server.Addr + "/mcp",
 	})
 }
 
 func (h *HTTP) health(writer http.ResponseWriter, _ *http.Request) {
 	h.sendJSON(writer, http.StatusOK, map[string]any{
-		"status": "ok", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
-		"pid": os.Getpid(), "mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
-		"auth":      ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
-		"config_id": h.Runtime.ConfigID, "roots": h.Runtime.Workspace.Roots,
-		"workspace": h.Runtime.Workspace.Primary, "mcp_endpoint": "http://" + h.Server.Addr + "/mcp",
+		"status": "ok", "version": h.Runtime.Version,
 	})
 }
 

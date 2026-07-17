@@ -458,7 +458,7 @@ func (r *Runtime) runQualityCommand(ctx context.Context, tool string, args map[s
 	entry := map[string]any{
 		"command": command, "cwd": r.Workspace.Relative(root),
 		"shell": stringArg(args, "shell", ""), "timeout_ms": intArg(args, "timeout_ms", 600_000),
-		"max_output_chars": intArg(args, "max_output_chars", 50_000),
+		"max_output_chars": intArg(args, "max_output_chars", 50_000), "internal_quality_command": true,
 	}
 	value, err := r.runCommand(ctx, entry)
 	if err != nil {
@@ -580,6 +580,15 @@ func (r *Runtime) patternScan(rootArg string, limit int, kind string) (any, erro
 		}
 	}
 	var findings []map[string]any
+	tracked := map[string]bool{}
+	gitFiles := processx.Capture(context.Background(), "git", []string{"ls-files", "-z"}, root, 30*time.Second)
+	if gitFiles.ExitCode == 0 {
+		for _, rel := range strings.Split(gitFiles.Stdout, "\x00") {
+			if rel != "" {
+				tracked[filepath.Clean(filepath.Join(root, rel))] = true
+			}
+		}
+	}
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -593,15 +602,22 @@ func (r *Runtime) patternScan(rootArg string, limit int, kind string) (any, erro
 		if len(findings) >= limit || !textExtensions[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
+		if len(tracked) > 0 && !tracked[filepath.Clean(path)] {
+			return nil
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil || len(raw) > 1_000_000 || strings.IndexByte(string(raw), 0) >= 0 {
 			return nil
 		}
 		for lineIndex, line := range strings.Split(string(raw), "\n") {
-			for _, pattern := range patterns {
+			for patternIndex, pattern := range patterns {
 				if pattern.MatchString(line) {
+					text := capString(strings.TrimSpace(line), 300)
+					if kind == "security" && patternIndex == 0 {
+						text = "[redacted potential credential]"
+					}
 					findings = append(findings, map[string]any{
-						"path": r.Workspace.Relative(path), "line": lineIndex + 1, "text": capString(strings.TrimSpace(line), 300),
+						"path": r.Workspace.Relative(path), "line": lineIndex + 1, "text": text,
 					})
 					break
 				}

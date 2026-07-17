@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -178,6 +179,29 @@ func (c Config) Validate(requireWorkspace bool) error {
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
 	}
+	if !isLoopbackHost(c.Host) && strings.TrimSpace(c.AuthToken) == "" {
+		return fmt.Errorf("MCP bearer token is required when host %q is not loopback", c.Host)
+	}
+	limits := []struct {
+		name  string
+		value int
+	}{
+		{"maxReadChars", c.MaxReadChars}, {"readDefault", c.ReadDefault},
+		{"maxBatchReadChars", c.MaxBatchReadChars}, {"maxCommandOutput", c.MaxCommandOutput},
+		{"commandOutputDefault", c.CommandOutput}, {"maxBodyBytes", c.MaxBodyBytes},
+		{"maxProcesses", c.MaxProcesses}, {"figmaDesktopTimeoutMs", c.FigmaDesktopTimeoutMS},
+	}
+	for _, limit := range limits {
+		if limit.value <= 0 {
+			return fmt.Errorf("%s must be greater than zero", limit.name)
+		}
+	}
+	if c.ReadDefault > c.MaxReadChars {
+		return fmt.Errorf("readDefault must not exceed maxReadChars")
+	}
+	if c.CommandOutput > c.MaxCommandOutput {
+		return fmt.Errorf("commandOutputDefault must not exceed maxCommandOutput")
+	}
 	if requireWorkspace {
 		info, err := os.Stat(c.Workspace)
 		if err != nil || !info.IsDir() {
@@ -185,6 +209,15 @@ func (c Config) Validate(requireWorkspace bool) error {
 		}
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c Config) ConfigID(binaryPath string, widget []byte) string {

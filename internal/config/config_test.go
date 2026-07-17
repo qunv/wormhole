@@ -20,6 +20,18 @@ func TestAppConfigDirUsesLowercaseNameOnUnix(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresAuthForNonLoopbackHost(t *testing.T) {
+	cfg := Default()
+	cfg.Host = "0.0.0.0"
+	if err := cfg.Validate(false); err == nil {
+		t.Fatal("expected non-loopback host without auth to fail")
+	}
+	cfg.AuthToken = "secret"
+	if err := cfg.Validate(false); err != nil {
+		t.Fatalf("authenticated non-loopback host rejected: %v", err)
+	}
+}
+
 func TestSaveDoesNotPersistSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("CODEBRIDGE_CONFIG_PATH", path)

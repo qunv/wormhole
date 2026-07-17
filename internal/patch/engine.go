@@ -37,6 +37,7 @@ type backupFile struct {
 	BackupFile string `json:"backup_file,omitempty"`
 	HadContent bool   `json:"had_content"`
 	Kind       string `json:"kind"`
+	Mode       uint32 `json:"mode,omitempty"`
 }
 
 type backupBatch struct {
@@ -76,6 +77,7 @@ func (e *Engine) Backup(tool string, paths []string) error {
 			continue
 		}
 		item.HadContent = true
+		item.Mode = uint32(info.Mode().Perm())
 		item.BackupFile = filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", i, filepath.Base(target)))
 		if info.IsDir() {
 			item.Kind = "directory"
@@ -123,6 +125,11 @@ func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[strin
 		if err != nil {
 			results = append(results, map[string]any{"op": op.Op, "path": op.Path, "ok": false, "conflict": err.Error()})
 			if !dryRun {
+				rollback, rollbackErr := e.Undo()
+				if rollbackErr != nil {
+					return nil, fmt.Errorf("apply failed: %v; rollback failed: %w", err, rollbackErr)
+				}
+				return map[string]any{"ok": false, "mode": "operations", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
 				break
 			}
 			continue
@@ -325,7 +332,14 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 				continue
 			}
 			if !dryRun {
-				_ = os.RemoveAll(target)
+				if err := os.RemoveAll(target); err != nil {
+					results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": err.Error()})
+					rollback, rollbackErr := e.Undo()
+					if rollbackErr != nil {
+						return nil, fmt.Errorf("delete failed: %v; rollback failed: %w", err, rollbackErr)
+					}
+					return map[string]any{"ok": false, "mode": "diff", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
+				}
 			}
 			results = append(results, map[string]any{"path": path, "action": action, "ok": true})
 			continue
@@ -379,6 +393,13 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 			result["conflict"] = "one or more hunks did not match"
 		}
 		results = append(results, result)
+		if !matched && !dryRun {
+			rollback, rollbackErr := e.Undo()
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("patch conflict; rollback failed: %w", rollbackErr)
+			}
+			return map[string]any{"ok": false, "mode": "diff", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
+		}
 	}
 	ok, applied := true, 0
 	for _, result := range results {
@@ -387,6 +408,13 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 		} else {
 			ok = false
 		}
+	}
+	if !ok && !dryRun {
+		rollback, rollbackErr := e.Undo()
+		if rollbackErr != nil {
+			return nil, fmt.Errorf("patch failed; rollback failed: %w", rollbackErr)
+		}
+		return map[string]any{"ok": false, "mode": "diff", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
 	}
 	return map[string]any{"ok": ok, "mode": "diff", "applied": applied, "files": results, "results": results}, nil
 }
@@ -408,12 +436,19 @@ func (e *Engine) Undo() (map[string]any, error) {
 			}
 			continue
 		}
-		_ = os.RemoveAll(item.Path)
+		if err := os.RemoveAll(item.Path); err != nil {
+			failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
+			continue
+		}
 		var err error
 		if item.Kind == "directory" {
 			err = copyTree(item.BackupFile, item.Path)
 		} else {
-			err = copyFile(item.BackupFile, item.Path, 0o644)
+			mode := fs.FileMode(item.Mode)
+			if mode == 0 {
+				mode = 0o644
+			}
+			err = copyFile(item.BackupFile, item.Path, mode)
 		}
 		if err != nil {
 			failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
@@ -421,8 +456,12 @@ func (e *Engine) Undo() (map[string]any, error) {
 			restored = append(restored, item.Path)
 		}
 	}
-	history = history[:len(history)-1]
-	_ = e.Store.WriteJSON(e.Store.PatchHistory, history)
+	if len(failures) == 0 {
+		history = history[:len(history)-1]
+		if err := e.Store.WriteJSON(e.Store.PatchHistory, history); err != nil {
+			return nil, err
+		}
+	}
 	return map[string]any{"ok": len(failures) == 0, "batch_id": batch.ID, "restored": restored, "errors": failures}, nil
 }
 

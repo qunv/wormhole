@@ -4,10 +4,12 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,34 +221,68 @@ func (r *Runtime) readOne(args map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(target)
+	file, err := os.Open(target)
 	if err != nil {
 		return nil, err
 	}
-	content := string(raw)
-	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
-	maxChars := intArg(args, "max_chars", r.Config.ReadDefault)
-	if start := intArg(args, "start_line", 0); start > 0 || intArg(args, "line_count", 0) > 0 {
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	maxChars := min(max(intArg(args, "max_chars", r.Config.ReadDefault), 1), r.Config.MaxReadChars)
+	start, count := intArg(args, "start_line", 0), intArg(args, "line_count", 0)
+	content, totalLines, returnedLines, truncated, err := readTextSelection(file, start, count, maxChars)
+	if err != nil {
+		return nil, err
+	}
+	if start > 0 || count > 0 {
 		if start <= 0 {
 			start = 1
 		}
-		from := min(start-1, len(lines))
-		to := len(lines)
-		if count := intArg(args, "line_count", 0); count > 0 {
-			to = min(from+count, len(lines))
-		}
-		selected := strings.Join(lines[from:to], "\n")
-		selected, truncated := capText(selected, maxChars)
 		return map[string]any{
-			"path": r.Workspace.Relative(target), "total_lines": len(lines), "start_line": start,
-			"returned_lines": to - from, "content": selected, "truncated": truncated,
+			"path": r.Workspace.Relative(target), "total_lines": totalLines, "start_line": start,
+			"returned_lines": returnedLines, "content": content, "truncated": truncated,
 		}, nil
 	}
-	content, truncated := capText(content, maxChars)
 	return map[string]any{
-		"path": r.Workspace.Relative(target), "total_lines": len(lines), "chars": len(raw),
+		"path": r.Workspace.Relative(target), "total_lines": totalLines, "chars": info.Size(),
 		"content": content, "truncated": truncated,
 	}, nil
+}
+
+func readTextSelection(reader io.Reader, start, count, maxChars int) (string, int, int, bool, error) {
+	if start <= 0 {
+		start = 1
+	}
+	buffered := bufio.NewReader(reader)
+	var out strings.Builder
+	total, returned := 0, 0
+	truncated := false
+	for {
+		line, readErr := buffered.ReadString('\n')
+		if len(line) > 0 {
+			total++
+			selected := total >= start && (count <= 0 || returned < count)
+			if selected {
+				returned++
+				remaining := maxChars - out.Len()
+				if remaining > 0 {
+					out.WriteString(line[:min(remaining, len(line))])
+				}
+				if len(line) > remaining {
+					truncated = true
+				}
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", 0, 0, false, readErr
+		}
+	}
+	return strings.TrimSuffix(out.String(), "\n"), total, returned, truncated, nil
 }
 
 func (r *Runtime) readMany(args map[string]any) (any, error) {
@@ -264,7 +300,7 @@ func (r *Runtime) readMany(args map[string]any) (any, error) {
 		return nil, errors.New("provide 1-100 read requests")
 	}
 	concurrency := min(max(intArg(args, "concurrency", 8), 1), 16)
-	defaultMax := intArg(args, "max_chars_per_file", 40_000)
+	defaultMax := min(max(intArg(args, "max_chars_per_file", 40_000), 1), r.Config.MaxReadChars)
 	results := make([]map[string]any, len(requests))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
