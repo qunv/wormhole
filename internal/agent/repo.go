@@ -62,6 +62,8 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 			return nil, err
 		}
 		return map[string]any{"count": len(symbols), "symbols": symbols}, nil
+	case "codegraph_explore":
+		return r.codegraphExplore(ctx, args)
 	case "index_status":
 		var index repoIndex
 		if err := r.Store.ReadJSON(r.Store.IndexPath, &index); err != nil {

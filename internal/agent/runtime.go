@@ -327,7 +327,7 @@ var (
 		"figma_get_screenshot", "figma_get_metadata", "figma_get_variable_defs", "figma_get_code_connect_map",
 		"figma_get_figjam")
 	repoTools = names("workspace_doctor", "workspace_snapshot", "project_profile", "important_files",
-		"repo_map", "repo_symbols", "index_status", "quality_gate", "detect_test_commands",
+		"repo_map", "repo_symbols", "codegraph_explore", "index_status", "quality_gate", "detect_test_commands",
 		"run_tests", "run_build", "run_lint", "run_changed_tests", "session_report", "review_diff",
 		"security_scan", "todo_scan", "change_summary")
 	workflowTools = names("task_plan", "task_state", "decision_log")

@@ -14,7 +14,21 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Instructions = `Codebridge is a local coding agent. Start with workspace_snapshot or workspace_doctor, then batch context with read_many/search_text/repo_symbols. Prefer dedicated tools over shell commands. File tools and command cwd are confined to configured roots, but command execution is not an operating-system sandbox. In balanced policy, risky delete, install, network, mutating git, and mutating Figma actions require an exact one-time approval. Use preview_patch or validate_patch before large edits, review_diff before handoff, and task_plan/decision_log/checkpoint for long work. Run tests, build, or lint only when explicitly requested.`
+const Instructions = `Codebridge is a local coding agent.
+
+For requests that require understanding, locating, tracing, or evaluating code, call codegraph_explore first. This includes architecture, symbols, implementations, callers, callees, execution flow, dependencies, dynamic dispatch, and change impact.
+
+codegraph_explore checks whether the project has a .codegraph index. If CodeGraph is unavailable, the repository is not indexed, or the result does not contain enough relevant code, fall back to workspace_search, search_text, repo_symbols, read_file, or read_many.
+
+Use search_text directly only for exact text, literal, or regular-expression searches.
+
+Treat source returned by codegraph_explore as current verbatim source. Do not re-read or re-search the same source merely to verify it. Read additional files only when CodeGraph omitted required details.
+
+Use workspace_snapshot or workspace_doctor for repository overview, environment checks, or when the project structure is unknown and CodeGraph is unavailable.
+
+Prefer dedicated tools over shell commands. File tools and command cwd are confined to configured roots, but command execution is not an operating-system sandbox.
+
+In balanced policy, risky delete, install, network, mutating git, and mutating Figma actions require an exact one-time approval. Use preview_patch or validate_patch before large edits, review_diff before handoff, and task_plan, decision_log, or checkpoint for long work. Run tests, build, or lint only when explicitly requested.`
 
 func New(runtime *agent.Runtime) *mcp.Server {
 	server := mcp.NewServer(

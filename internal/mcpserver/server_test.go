@@ -43,7 +43,7 @@ func TestMCPContractAndFilesystemRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(list.Tools), 78; got != want {
+	if got, want := len(list.Tools), 79; got != want {
 		t.Fatalf("tools/list returned %d, want %d", got, want)
 	}
 

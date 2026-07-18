@@ -1,6 +1,6 @@
 # Codebridge
 
-Codebridge là bản triển khai Go độc lập của Local Coding Agent, tập trung vào một binary CLI duy nhất: quản lý workspace, chạy local MCP server, nối ChatGPT Web tunnel, bridge Figma Desktop MCP và cung cấp đầy đủ 78 coding tools.
+Codebridge là bản triển khai Go độc lập của Local Coding Agent, tập trung vào một binary CLI duy nhất: quản lý workspace, chạy local MCP server, nối ChatGPT Web tunnel, bridge Figma Desktop MCP và cung cấp đầy đủ 79 coding tools.
 
 Tên project được giữ đúng theo yêu cầu: `codebridge`.
 
@@ -8,7 +8,7 @@ Tên project được giữ đúng theo yêu cầu: `codebridge`.
 
 - Native Go CLI và lifecycle: `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, `tunnel`.
 - Streamable HTTP MCP stateless tại `/mcp`, health tại `/healthz`.
-- Đủ contract 78 tools: filesystem, command/process, git, skills, companion app, repo intelligence, patch/undo, quality gates, review, planner, policy/approval, profile và Figma.
+- Đủ contract 79 tools: filesystem, command/process, git, skills, companion app, repo intelligence, CodeGraph navigation, patch/undo, quality gates, review, planner, policy/approval, profile và Figma.
 - Root confinement có canonicalization để chặn traversal và symlink escape.
 - Exact-action approval dùng một lần cho policy `balanced`.
 - MCP Apps widget được embed trực tiếp vào binary.
@@ -20,6 +20,7 @@ Tên project được giữ đúng theo yêu cầu: `codebridge`.
 - Go 1.25 trở lên.
 - Git để tự nhận git root.
 - `rg` là tùy chọn; nếu thiếu sẽ dùng Go scanner.
+- `codegraph` là tùy chọn; `codegraph_explore` chỉ chạy khi project root có `.codegraph/`.
 - Tunnel ID và Runtime API key nếu dùng ChatGPT Web tunnel.
 - Figma Desktop MCP nếu dùng nhóm tool Figma.
 

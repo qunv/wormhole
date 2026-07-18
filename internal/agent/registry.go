@@ -94,6 +94,11 @@ func Tools() []ToolSpec {
 		ro("important_files", "Important files", "List key project and configuration files.", path),
 		ro("repo_map", "Repo map", "Return a cached tree plus project profile.", object(map[string]any{"path": str("Root."), "depth": integer(), "max_entries": integer(), "refresh": boolean()})),
 		ro("repo_symbols", "Repo symbols", "Scan source definitions for navigation.", object(map[string]any{"path": str("Root."), "max_files": integer(), "max_matches": integer(), "kind": str("Optional symbol kind.")})),
+		ro("codegraph_explore", "CodeGraph explore", "Navigate an indexed codebase in one call: return relevant symbols' verbatim source, call paths, dynamic-dispatch hops, and blast radius. Requires a .codegraph directory at the project root and the codegraph CLI.", object(map[string]any{
+			"query":       str("Code question, flow, file, or symbol names to explore."),
+			"projectPath": str("Indexed project root inside an allowed workspace root. Defaults to the primary workspace."),
+			"timeout_ms":  integer(), "max_output_chars": integer(),
+		}, "query")),
 		ro("index_status", "Index status", "Return repo index cache status.", empty),
 		ro("preview_patch", "Preview patch", "Dry-run a diff or structured operations.", object(map[string]any{"diff": str("Unified diff."), "operations": array(object(nil))})),
 		ro("validate_patch", "Validate patch", "Return patch conflicts without writing.", object(map[string]any{"diff": str("Unified diff."), "operations": array(object(nil))})),

@@ -4,7 +4,7 @@ import "testing"
 
 func TestToolRegistryContract(t *testing.T) {
 	tools := Tools()
-	if got, want := len(tools), 78; got != want {
+	if got, want := len(tools), 79; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	seen := map[string]bool{}
@@ -31,7 +31,7 @@ func TestToolRegistryContract(t *testing.T) {
 	}
 	for _, required := range []string{
 		"workspace_snapshot", "read_many", "apply_patch", "run_commands", "review_diff",
-		"request_approval_batch", "figma_get_design_context", "lca_input",
+		"request_approval_batch", "figma_get_design_context", "codegraph_explore", "lca_input",
 	} {
 		if !seen[required] {
 			t.Fatalf("missing contract tool: %s", required)

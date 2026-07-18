@@ -34,7 +34,7 @@ agent.Runtime.Handle
 | `internal/cli` | CLI grammar, setup, daemon lifecycle, tunnel install/profile |
 | `internal/server` | HTTP routing, health, auth, origin/CORS, limits |
 | `internal/mcpserver` | MCP server construction, widget resource, result adapter |
-| `internal/agent` | 78-tool registry, shared runtime, policy dispatch |
+| `internal/agent` | 79-tool registry, shared runtime, policy dispatch |
 | `internal/workspace` | Canonical paths, roots, list/search/tree |
 | `internal/security` | Shell/git guard, risk classification, approval, audit redaction |
 | `internal/patch` | Backup batches, operations, unified diff, undo |
@@ -69,7 +69,7 @@ Secret không được serialize vào config. Runtime API key nằm trong file `
 
 ## MCP contract
 
-`agent.Tools()` là source of truth duy nhất cho name, title, description, annotation, schema và Apps metadata. Test khóa số lượng ở 78, kiểm tra unique names và gọi round-trip bằng MCP in-memory transport.
+`agent.Tools()` là source of truth duy nhất cho name, title, description, annotation, schema và Apps metadata. Test khóa số lượng ở 79, kiểm tra unique names và gọi round-trip bằng MCP in-memory transport.
 
 Low-level `Server.AddTool` được dùng để:
 

@@ -229,7 +229,9 @@ func (a App) startChild(label string, cmd *exec.Cmd, background bool) (*exec.Cmd
 		logFile.Close()
 		return nil, err
 	}
-	_ = logFile.Close()
+	if background {
+		_ = logFile.Close()
+	}
 	return cmd, nil
 }
 

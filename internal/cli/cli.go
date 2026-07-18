@@ -71,6 +71,9 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	if err != nil {
 		return err
 	}
+	if runsInBackgroundByDefault(opts.Command) {
+		opts.Background = true
+	}
 	if opts.Command == "help" || opts.Command == "--help" || opts.Command == "-h" {
 		a.usage()
 		return nil
@@ -88,7 +91,6 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	case "", "run", "here":
 		cwd, _ := os.Getwd()
 		cfg.Workspace = detectWorkspace(cwd)
-		opts.Background = true
 		opts.Save = true
 		return a.start(ctx, cfg, opts)
 	case "serve", "__serve":
@@ -192,6 +194,15 @@ Options:
   --save                  Persist non-secret options
   --json
 `, a.Name)
+}
+
+func runsInBackgroundByDefault(command string) bool {
+	switch command {
+	case "", "run", "here", "restart":
+		return true
+	default:
+		return false
+	}
 }
 
 func parse(argv []string) (options, error) {
