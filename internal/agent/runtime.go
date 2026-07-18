@@ -17,6 +17,8 @@ import (
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
 	"codebridge/internal/figma"
+	"codebridge/internal/memory"
+	memoryfactory "codebridge/internal/memory/factory"
 	"codebridge/internal/patch"
 	"codebridge/internal/processx"
 	"codebridge/internal/security"
@@ -25,19 +27,26 @@ import (
 )
 
 type Runtime struct {
-	Config    config.Config
-	Workspace *workspace.Manager
-	Store     *state.Store
-	Approvals *security.ApprovalManager
-	Patches   *patch.Engine
-	Processes *processx.Registry
-	Figma     figma.Client
-	Version   string
-	Tier      string
-	ConfigID  string
+	Config                  config.Config
+	Workspace               *workspace.Manager
+	Store                   *state.Store
+	Approvals               *security.ApprovalManager
+	Patches                 *patch.Engine
+	Processes               *processx.Registry
+	Figma                   figma.Client
+	Memory                  memory.Provider
+	MemoryRecorder          *memory.Recorder
+	MemoryProject           string
+	MemoryFallbackSessionID string
+	Version                 string
+	Tier                    string
+	ConfigID                string
 
-	profileMu sync.RWMutex
-	profile   map[string]any
+	profileMu         sync.RWMutex
+	profile           map[string]any
+	memoryHealthMu    sync.Mutex
+	memoryHealthValue memory.HealthResult
+	memoryHealthAt    time.Time
 }
 
 func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
@@ -58,6 +67,28 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	memoryProvider, err := memoryfactory.New(cfg.Memory)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Memory.Enabled && cfg.Memory.Required {
+		health := memoryProvider.Health(context.Background())
+		if !health.Available {
+			_ = memoryProvider.Close()
+			return nil, fmt.Errorf("required memory provider %q is unavailable: %s", memoryProvider.Name(), health.Error)
+		}
+	}
+	memoryProject := memory.ResolveProject(manager.Primary, cfg.Memory.ProjectStrategy)
+	memorySessionID := fmt.Sprintf("codebridge-process-%d-%d", os.Getpid(), time.Now().UnixNano())
+	var memoryRecorder *memory.Recorder
+	if cfg.Memory.Enabled && cfg.Memory.CaptureMode != "off" && memoryProvider.Capabilities().Observe {
+		memoryRecorder = memory.NewRecorderWithConfig(memoryProvider, memory.RecorderConfig{
+			QueueSize:       cfg.Memory.QueueSize,
+			DeliveryTimeout: time.Duration(cfg.Memory.DeliveryTimeoutMS) * time.Millisecond,
+			MaxAttempts:     cfg.Memory.RetryMaxAttempts,
+			RetryBackoff:    time.Duration(cfg.Memory.RetryBackoffMS) * time.Millisecond,
+		})
+	}
 	runtime := &Runtime{
 		Config: cfg, Workspace: manager, Store: store,
 		Approvals: security.NewApprovalManager(store, cfg.ApprovalToken, 10*time.Minute),
@@ -66,25 +97,51 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 			Endpoint: cfg.FigmaDesktopURL, Timeout: time.Duration(cfg.FigmaDesktopTimeoutMS) * time.Millisecond,
 			AllowRemote: cfg.FigmaDesktopAllowRemote, Version: version,
 		},
+		Memory: memoryProvider, MemoryRecorder: memoryRecorder,
+		MemoryProject: memoryProject, MemoryFallbackSessionID: memorySessionID,
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
 	}
 	runtime.Patches = &patch.Engine{Workspace: manager, Store: store}
 	return runtime, nil
 }
 
-func (r *Runtime) Close() { r.Processes.StopAll() }
+func (r *Runtime) Close() {
+	r.Processes.StopAll()
+	if r.MemoryRecorder != nil {
+		r.MemoryRecorder.Close()
+	}
+	if r.Memory != nil {
+		_ = r.Memory.Close()
+	}
+}
 
 func (r *Runtime) Handle(ctx context.Context, name string, args map[string]any) (any, error) {
+	return r.HandleSession(ctx, "", name, args)
+}
+
+func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, args map[string]any) (any, error) {
 	if args == nil {
 		args = map[string]any{}
 	}
+	if sessionID == "" {
+		sessionID = r.MemoryFallbackSessionID
+	}
+	ctx = context.WithValue(ctx, memorySessionContextKey{}, sessionID)
 	if err := r.enforcePolicy(name, args); err != nil {
 		r.audit(name, args, false, err)
 		return nil, err
 	}
 	value, err := r.dispatch(ctx, name, args)
 	r.audit(name, args, err == nil, err)
+	r.captureMemoryObservation(sessionID, name, args, value, err)
 	return value, err
+}
+
+type memorySessionContextKey struct{}
+
+func memorySessionID(ctx context.Context) string {
+	value, _ := ctx.Value(memorySessionContextKey{}).(string)
+	return value
 }
 
 func (r *Runtime) audit(tool string, args map[string]any, ok bool, callErr error) {
@@ -136,7 +193,8 @@ var mutationTools = map[string]bool{
 	"proc_stop": true, "git": true, "create_skill": true, "delete_skill": true,
 	"undo_last_patch": true, "quality_gate": true, "run_tests": true, "run_build": true,
 	"run_lint": true, "run_changed_tests": true, "task_plan": true, "task_state": true,
-	"decision_log": true,
+	"decision_log": true, "memory_remember": true, "memory_commit": true, "memory_forget": true,
+	"memory_import": true,
 }
 
 func approvalAction(tool string, args map[string]any) string {
@@ -157,6 +215,9 @@ func approvalAction(tool string, args map[string]any) string {
 		return "delete_path:" + stringArg(args, "path", "")
 	case "delete_skill":
 		return "delete_skill:" + stringArg(args, "name", "")
+	case "memory_forget":
+		raw, _ := json.Marshal(args)
+		return "memory_forget:" + string(raw)
 	case "run_command", "proc_start":
 		command := stringArg(args, "command", "")
 		if security.Classify(command).NeedsApproval {
@@ -308,6 +369,8 @@ func (r *Runtime) dispatch(ctx context.Context, name string, args map[string]any
 		return r.handleRepo(ctx, name, args)
 	case workflowTools[name]:
 		return r.handleWorkflow(ctx, name, args)
+	case memoryTools[name]:
+		return r.handleMemory(ctx, name, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -331,6 +394,7 @@ var (
 		"run_tests", "run_build", "run_lint", "run_changed_tests", "session_report", "review_diff",
 		"security_scan", "todo_scan", "change_summary")
 	workflowTools = names("task_plan", "task_state", "decision_log")
+	memoryTools   = names("memory_status", "memory_context", "memory_search", "memory_remember", "memory_commit", "memory_forget", "memory_export", "memory_import")
 )
 
 func names(values ...string) map[string]bool {

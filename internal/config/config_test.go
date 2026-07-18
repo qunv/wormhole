@@ -57,3 +57,59 @@ func TestDotEnvMergePreservesUnrelatedLines(t *testing.T) {
 		t.Fatalf("unexpected merge: %q", value)
 	}
 }
+
+func TestRemoveDotEnvKeysPreservesCommentsAndOtherValues(t *testing.T) {
+	value := RemoveDotEnvKeys(
+		"A=1\n# keep\nCODEBRIDGE_MEMORY_ENABLED=true\nCODEBRIDGE_MEMORY_PROVIDER=agentmemory\nCODEBRIDGE_MEMORY_SECRET=secret\n",
+		"CODEBRIDGE_MEMORY_ENABLED", "CODEBRIDGE_MEMORY_PROVIDER",
+	)
+	if strings.Contains(value, "CODEBRIDGE_MEMORY_ENABLED") || strings.Contains(value, "CODEBRIDGE_MEMORY_PROVIDER") {
+		t.Fatalf("memory config keys were not removed: %q", value)
+	}
+	for _, want := range []string{"A=1", "# keep", "CODEBRIDGE_MEMORY_SECRET=secret"} {
+		if !strings.Contains(value, want) {
+			t.Fatalf("removed unrelated value %q from %q", want, value)
+		}
+	}
+}
+
+func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "codebridge")
+	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Memory.Enabled = true
+	cfg.Memory.Provider = "agentmemory"
+	base := cfg.ConfigID(binary, []byte("widget"))
+
+	cfg.Memory.AgentID = "another-agent"
+	if got := cfg.ConfigID(binary, []byte("widget")); got == base {
+		t.Fatal("ConfigID did not change when memory agent ID changed")
+	}
+	cfg.Memory.AgentID = "chatgpt-codebridge"
+
+	t.Setenv(cfg.Memory.SecretEnv, "first-secret")
+	first := cfg.ConfigID(binary, []byte("widget"))
+	t.Setenv(cfg.Memory.SecretEnv, "second-secret")
+	second := cfg.ConfigID(binary, []byte("widget"))
+	if first == second {
+		t.Fatal("ConfigID did not change when memory secret changed")
+	}
+}
+
+func TestValidateRejectsSecretsInsideMemoryOptions(t *testing.T) {
+	cfg := Default()
+	cfg.Memory.Enabled = true
+	cfg.Memory.Provider = "agentmemory"
+	cfg.Memory.Options = map[string]any{
+		"transport": map[string]any{"apiKey": "must-not-be-persisted"},
+	}
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "memory.secretEnv") {
+		t.Fatalf("expected sensitive memory option to be rejected, got %v", err)
+	}
+	cfg.Memory.Options = map[string]any{"contextFallback": true, "contextPath": "/agentmemory/context"}
+	if err := cfg.Validate(false); err != nil {
+		t.Fatalf("safe memory options rejected: %v", err)
+	}
+}

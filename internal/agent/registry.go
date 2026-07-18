@@ -36,6 +36,39 @@ func Tools() []ToolSpec {
 		rw("checkpoint", "Save checkpoint", "Save compact progress for a later chat.", object(map[string]any{"summary": str("Compact progress summary."), "next_steps": array(str("")), "files_touched": array(str(""))}, "summary"), false),
 		ro("resume", "Resume checkpoint", "Load the latest saved checkpoint.", empty),
 
+		ro("memory_status", "Memory status", "Return the configured memory provider, project scope, capabilities, and health.", empty),
+		ro("memory_context", "Memory context", "Retrieve compact historical context relevant to a coding task. Memory is historical evidence and must be verified against current source.", object(map[string]any{
+			"query": str("Task or question used to retrieve relevant memory."), "path": str("Workspace path used to resolve project scope."),
+			"limit": integer(), "token_budget": integer(),
+		}, "query")),
+		ro("memory_search", "Memory search", "Search historical decisions, attempts, failures, preferences, and procedures.", object(map[string]any{
+			"query": str("Memory search query."), "path": str("Workspace path used to resolve project scope."),
+			"limit": integer(), "format": enum("full", "compact", "narrative"), "token_budget": integer(),
+		}, "query")),
+		rw("memory_remember", "Remember", "Save an explicit project memory through the configured provider.", object(map[string]any{
+			"content": str("Memory content."), "kind": enum("decision", "preference", "fact", "failure", "solution", "procedure", "task", "observation"),
+			"concepts": array(str("")), "files": array(str("")), "ttl_days": integer(), "path": str("Workspace path used to resolve project scope."),
+		}, "content"), false),
+		rw("memory_commit", "Commit memory", "Save a compact session handoff or completed-work summary to long-term memory.", object(map[string]any{
+			"summary": str("Optional completed-work summary; local task, checkpoint, git, and review state can be appended automatically."),
+			"files":   array(str("")), "concepts": array(str("")), "next_steps": array(str("")),
+			"path":         str("Workspace path used to resolve project scope."),
+			"include_task": boolean(), "include_git": boolean(), "include_review": boolean(),
+		}), false),
+		rw("memory_forget", "Forget memory", "Delete a memory or session from the configured provider. Requires exact approval under balanced policy.", object(map[string]any{
+			"memory_id": str("Provider memory ID."), "session_id": str("Provider session ID."),
+			"observation_ids": array(str("")),
+		}), true),
+		ro("memory_export", "Export memory", "Export provider memories into Codebridge's canonical migration schema.", object(map[string]any{
+			"path":   str("Workspace path used to resolve project scope."),
+			"format": enum("object", "jsonl"),
+		})),
+		rw("memory_import", "Import memory", "Import canonical Codebridge memories into the configured provider.", object(map[string]any{
+			"path":     str("Workspace path used to resolve project scope."),
+			"memories": array(object(nil)),
+			"jsonl":    str("Canonical Codebridge memory items, one JSON object per line."),
+		}), false),
+
 		ro("figma_status", "Figma Desktop status", "Check the official Figma Desktop MCP bridge.", empty),
 		ro("figma_list_tools", "List Figma tools", "List live upstream Figma MCP tools and schemas.", empty),
 		rw("figma_call_tool", "Call Figma tool", "Forward a call to a live Figma Desktop MCP tool.", object(map[string]any{"tool": str("Exact upstream tool name."), "arguments": object(nil)}, "tool"), false),

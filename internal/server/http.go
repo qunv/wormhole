@@ -37,7 +37,7 @@ func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request)
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
 		"pid": os.Getpid(), "mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
-		"auth": ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
+		"auth":      ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
 		"config_id": h.Runtime.ConfigID,
 	})
 }

@@ -277,6 +277,7 @@ func (r *Runtime) workspaceSnapshot(ctx context.Context, args map[string]any) (a
 		"tree":            map[string]any{"depth": intArg(args, "depth", 3), "dirs": index.Dirs, "files": index.Files, "entries": index.Tree},
 		"important_files": index.ImportantFiles, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
 		"cache":             map[string]any{"hit": cached, "generated_at": index.TS, "ttl_seconds": 300},
+		"memory":            r.memoryStatus(ctx),
 		"recommended_reads": recommendedReads(index.ImportantFiles),
 		"next_best_actions": []string{"Read the relevant manifests and entry points.", "Use search_text with context.", "Use review_diff before handoff."},
 	}
@@ -293,12 +294,14 @@ func (r *Runtime) workspaceDoctor(ctx context.Context, args map[string]any) (any
 	}
 	profile, _ := r.projectProfile(root)
 	git, _ := r.gitStatus(ctx, r.Workspace.Relative(root))
+	memoryHealth := r.memoryHealth(ctx, false)
 	checks := []map[string]any{
 		{"id": "workspace", "status": "pass", "label": "Workspace", "detail": root},
 		{"id": "roots", "status": "pass", "label": "Root confinement", "detail": len(r.Workspace.Roots)},
 		{"id": "ripgrep", "status": ternary(r.Workspace.RGBin != "", "pass", "warn"), "label": "ripgrep", "detail": r.Workspace.RGBin},
 		{"id": "auth", "status": ternary(r.Config.AuthToken != "", "pass", "warn"), "label": "MCP auth", "detail": ternary(r.Config.AuthToken != "", "bearer enabled", "no bearer token")},
 		{"id": "git", "status": ternary(git.(map[string]any)["is_git_repo"] == true, "pass", "warn"), "label": "Git", "detail": git},
+		{"id": "memory", "status": ternary(!r.Config.Memory.Enabled || memoryHealth.Available, "pass", "warn"), "label": "Memory provider", "detail": memoryHealth},
 	}
 	score := 100
 	for _, check := range checks {
@@ -671,6 +674,7 @@ func (r *Runtime) sessionReport(ctx context.Context, args map[string]any) (any, 
 	return map[string]any{
 		"ts": time.Now().UTC(), "workspace": r.Workspace.Primary, "git": status,
 		"task": task, "checkpoint": checkpoint, "review": review,
+		"memory": r.memoryStatus(ctx),
 	}, nil
 }
 

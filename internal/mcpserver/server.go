@@ -5,6 +5,7 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -23,6 +24,8 @@ codegraph_explore checks whether the project has a .codegraph index. If CodeGrap
 Use search_text directly only for exact text, literal, or regular-expression searches.
 
 Treat source returned by codegraph_explore as current verbatim source. Do not re-read or re-search the same source merely to verify it. Read additional files only when CodeGraph omitted required details.
+
+For tasks involving prior decisions, previous attempts, recurring failures, user preferences, conventions, or historical project context, call memory_context or memory_search. Treat memory as historical evidence, not current source of truth. Verify implementation details with codegraph_explore or current files before editing. Use memory_remember for durable explicit facts and decisions, memory_commit for compact session handoffs, memory_export/memory_import for provider-neutral migration, and memory_forget only when the user explicitly requests deletion.
 
 Use workspace_snapshot or workspace_doctor for repository overview, environment checks, or when the project structure is unknown and CodeGraph is unavailable.
 
@@ -53,7 +56,8 @@ func New(runtime *agent.Runtime) *mcp.Server {
 					return toolError(fmt.Errorf("invalid tool arguments: %w", err)), nil
 				}
 			}
-			value, err := runtime.Handle(ctx, spec.Name, args)
+			sessionID := requestSessionID(request.Session)
+			value, err := runtime.HandleSession(ctx, sessionID, spec.Name, args)
 			if err != nil {
 				return toolError(err), nil
 			}
@@ -64,6 +68,21 @@ func New(runtime *agent.Runtime) *mcp.Server {
 		})
 	}
 	return server
+}
+
+func requestSessionID(session *mcp.ServerSession) string {
+	if session == nil {
+		return ""
+	}
+	if id := session.ID(); id != "" {
+		return "mcp:" + id
+	}
+	// Some transports do not assign a protocol session ID. The session object
+	// remains stable for the logical connection, so hash its process-local
+	// identity to keep concurrent MCP connections separated without exposing an
+	// address to the memory backend.
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%p", session)))
+	return fmt.Sprintf("mcp-local:%x", sum[:8])
 }
 
 func registerWidget(server *mcp.Server) {

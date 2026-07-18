@@ -1,6 +1,6 @@
 # Codebridge
 
-Codebridge là bản triển khai Go độc lập của Local Coding Agent, tập trung vào một binary CLI duy nhất: quản lý workspace, chạy local MCP server, nối ChatGPT Web tunnel, bridge Figma Desktop MCP và cung cấp đầy đủ 79 coding tools.
+Codebridge là bản triển khai Go độc lập của Local Coding Agent, tập trung vào một binary CLI duy nhất: quản lý workspace, chạy local MCP server, nối ChatGPT Web tunnel, bridge Figma Desktop MCP và cung cấp đầy đủ 87 coding tools.
 
 Tên project được giữ đúng theo yêu cầu: `codebridge`.
 
@@ -8,7 +8,7 @@ Tên project được giữ đúng theo yêu cầu: `codebridge`.
 
 - Native Go CLI và lifecycle: `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, `tunnel`.
 - Streamable HTTP MCP stateless tại `/mcp`, health tại `/healthz`.
-- Đủ contract 79 tools: filesystem, command/process, git, skills, companion app, repo intelligence, CodeGraph navigation, patch/undo, quality gates, review, planner, policy/approval, profile và Figma.
+- Đủ contract 87 tools: filesystem, command/process, git, skills, companion app, repo intelligence, CodeGraph navigation, patch/undo, quality gates, review, planner, policy/approval, profile, Figma và memory migration.
 - Root confinement có canonicalization để chặn traversal và symlink escape.
 - Exact-action approval dùng một lần cho policy `balanced`.
 - MCP Apps widget được embed trực tiếp vào binary.
@@ -120,6 +120,29 @@ codebridge figma tools
 
 Endpoint remote bị chặn mặc định. Chỉ bật `FIGMA_DESKTOP_ALLOW_REMOTE=1` khi đã hiểu rủi ro.
 
+## Memory provider
+
+Codebridge expose một contract MCP trung lập (`memory_status`, `memory_context`, `memory_search`, `memory_remember`, `memory_commit`, `memory_forget`, `memory_export`, `memory_import`). Backend mặc định là `none`; adapter đầu tiên hỗ trợ [agentmemory](https://github.com/rohitg00/agentmemory) qua REST API.
+
+```bash
+codebridge setup
+codebridge restart
+```
+
+Setup lưu cấu hình không nhạy cảm trong `~/.config/codebridge/config.json`. Chỉ secret, nếu agentmemory bật `AGENTMEMORY_SECRET`, được lưu trong `~/.config/codebridge/.env`:
+
+```bash
+CODEBRIDGE_MEMORY_SECRET=change-me
+```
+
+Agentmemory local không bật auth thì có thể để secret trống. Environment variables `CODEBRIDGE_MEMORY_*` vẫn được hỗ trợ như runtime overrides, nhưng không phải nơi lưu config mặc định.
+
+Memory được scope theo normalized Git remote (`git:github.com/owner/repo`) và fallback sang hash của configured owning root. Capture mặc định là `selected`: các tool quan trọng được đưa vào bounded async queue, retry có giới hạn và redaction trước khi gửi, nên backend memory chậm hoặc offline không chặn coding workflow. MCP session ID được dùng để tách observations giữa các kết nối. Memory là historical evidence; Codebridge hướng dẫn ChatGPT xác minh implementation bằng CodeGraph hoặc source hiện tại trước khi edit. `memory_forget` là destructive và cần exact approval trong policy `balanced`.
+
+`memory_export` trả schema canonical của Codebridge dưới dạng object hoặc JSONL. `memory_import` nhập schema này bằng provider adapter, giúp chuyển backend mà không phụ thuộc raw database dump.
+
+Provider-specific code nằm sau `memory.Provider`, nên có thể thêm backend khác mà không đổi MCP tools hoặc workflow ChatGPT.
+
 ## Security model
 
 - File tools và command `cwd` chỉ hoạt động trong các roots đã cấu hình.
@@ -137,7 +160,7 @@ cmd/codebridge/       executable entrypoint
 internal/app/         composition metadata
 internal/cli/         command parsing, setup, lifecycle, tunnel, release install
 internal/server/      HTTP routes, auth, CORS/origin, graceful shutdown
-internal/mcpserver/   MCP SDK adapter, resource và 78 tool registrations
+internal/mcpserver/   MCP SDK adapter, resource và 87 tool registrations
 internal/agent/       shared runtime và tool handlers
 internal/workspace/   root confinement, search, tree
 internal/security/    command guards, redaction, approvals

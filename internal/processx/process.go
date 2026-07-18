@@ -15,12 +15,12 @@ import (
 )
 
 type Result struct {
-	ExitCode       int    `json:"exit_code"`
-	TimedOut       bool   `json:"timed_out"`
-	Stdout         string `json:"stdout"`
-	Stderr         string `json:"stderr"`
-	StdoutTruncated bool  `json:"stdout_truncated"`
-	StderrTruncated bool  `json:"stderr_truncated"`
+	ExitCode        int    `json:"exit_code"`
+	TimedOut        bool   `json:"timed_out"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr"`
+	StdoutTruncated bool   `json:"stdout_truncated"`
+	StderrTruncated bool   `json:"stderr_truncated"`
 }
 
 func (b *lockedBuffer) Truncated() bool {

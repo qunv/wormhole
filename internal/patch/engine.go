@@ -130,7 +130,6 @@ func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[strin
 					return nil, fmt.Errorf("apply failed: %v; rollback failed: %w", err, rollbackErr)
 				}
 				return map[string]any{"ok": false, "mode": "operations", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
-				break
 			}
 			continue
 		}

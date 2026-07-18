@@ -22,6 +22,7 @@ agent.Runtime.Handle
    ├── policy + exact approval
    ├── audit redaction
    ├── workspace confinement
+   ├── provider-neutral memory + async recorder
    └── tool group handler
 ```
 
@@ -34,12 +35,13 @@ agent.Runtime.Handle
 | `internal/cli` | CLI grammar, setup, daemon lifecycle, tunnel install/profile |
 | `internal/server` | HTTP routing, health, auth, origin/CORS, limits |
 | `internal/mcpserver` | MCP server construction, widget resource, result adapter |
-| `internal/agent` | 79-tool registry, shared runtime, policy dispatch |
+| `internal/agent` | 87-tool registry, shared runtime, policy dispatch |
 | `internal/workspace` | Canonical paths, roots, list/search/tree |
 | `internal/security` | Shell/git guard, risk classification, approval, audit redaction |
 | `internal/patch` | Backup batches, operations, unified diff, undo |
 | `internal/processx` | Timeout, output cap, background process tree |
 | `internal/figma` | MCP client bridge đến Figma Desktop |
+| `internal/memory` | Provider contract, project scoping, async recorder và backend adapters |
 | `internal/state` | State tách theo workspace hash |
 | `internal/assets` | Embedded HTML widget và skills |
 
@@ -47,7 +49,7 @@ agent.Runtime.Handle
 
 Config có path theo OS:
 
-- Linux: `$XDG_CONFIG_HOME/Codebridge/config.json`
+- Linux: `$XDG_CONFIG_HOME/codebridge/config.json`
 - macOS: `~/Library/Application Support/Codebridge/config.json`
 - Windows: `%APPDATA%\Codebridge\config.json`
 
@@ -65,11 +67,17 @@ workspaces/<workspace-id>/
   approvals/
 ```
 
-Secret không được serialize vào config. Runtime API key nằm trong file `.env` permission `0600` hoặc environment.
+Secret không được serialize vào config. Runtime API key và optional memory secret nằm trong file `.env` permission `0600` hoặc environment; toàn bộ memory config không nhạy cảm nằm trong `config.json`.
+
+## Memory provider boundary
+
+ChatGPT chỉ thấy contract `memory_*` của Codebridge. `memory.Provider` map contract này sang backend cụ thể; adapter đầu tiên dùng agentmemory REST. Search/context/remember/forget outputs được normalize thành schema Codebridge thay vì trả raw backend data. Project scope ưu tiên normalized Git remote và fallback sang hash của configured owning root. MCP `ServerSession.ID()` tách observations theo kết nối. Recorder dùng bounded queue, retry/backoff, drain khi shutdown, fail-open và redaction trước khi gửi observation; provider offline không chặn code tools trừ khi `memory.required=true`.
+
+Provider factory dùng registry constructor. Optional `memory.Exporter` và `memory.Importer` tạo canonical object/JSONL migration boundary; agentmemory export được normalize, còn import replay qua provider `Remember` để không phụ thuộc raw dump format.
 
 ## MCP contract
 
-`agent.Tools()` là source of truth duy nhất cho name, title, description, annotation, schema và Apps metadata. Test khóa số lượng ở 79, kiểm tra unique names và gọi round-trip bằng MCP in-memory transport.
+`agent.Tools()` là source of truth duy nhất cho name, title, description, annotation, schema và Apps metadata. Test khóa số lượng ở 87, kiểm tra unique names và gọi round-trip bằng MCP in-memory transport.
 
 Low-level `Server.AddTool` được dùng để:
 

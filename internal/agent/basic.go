@@ -167,6 +167,10 @@ func (r *Runtime) workspaceInfo() map[string]any {
 		"mode": r.Config.Mode, "policy": r.Config.Policy, "host": r.Config.Host,
 		"port": r.Config.Port, "auth": ternary(r.Config.AuthToken != "", "bearer", "none"),
 		"config_id": r.ConfigID,
+		"memory": map[string]any{
+			"enabled": r.Config.Memory.Enabled, "provider": r.Memory.Name(),
+			"project": r.MemoryProject, "capture_mode": r.Config.Memory.CaptureMode,
+		},
 		"limits": map[string]any{
 			"max_read_chars": r.Config.MaxReadChars, "max_batch_read_chars": r.Config.MaxBatchReadChars,
 			"max_command_output": r.Config.MaxCommandOutput, "max_processes": r.Config.MaxProcesses,

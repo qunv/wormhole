@@ -23,6 +23,9 @@ import (
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
 	"codebridge/internal/figma"
+	memoryfactory "codebridge/internal/memory/factory"
+
+	"golang.org/x/term"
 )
 
 type processState struct {
@@ -173,6 +176,21 @@ func (a App) spawnServer(executable string, cfg config.Config, background bool) 
 		"MCP_ALLOWED_ORIGINS="+strings.Join(cfg.AllowedOrigins, ","),
 		"FIGMA_DESKTOP_MCP_URL="+cfg.FigmaDesktopURL,
 		"FIGMA_DESKTOP_TIMEOUT_MS="+strconv.Itoa(cfg.FigmaDesktopTimeoutMS),
+		"CODEBRIDGE_MEMORY_ENABLED="+strconv.FormatBool(cfg.Memory.Enabled),
+		"CODEBRIDGE_MEMORY_PROVIDER="+cfg.Memory.Provider,
+		"CODEBRIDGE_MEMORY_ENDPOINT="+cfg.Memory.Endpoint,
+		"CODEBRIDGE_MEMORY_SECRET_ENV="+cfg.Memory.SecretEnv,
+		"CODEBRIDGE_MEMORY_TIMEOUT_MS="+strconv.Itoa(cfg.Memory.TimeoutMS),
+		"CODEBRIDGE_MEMORY_CAPTURE="+cfg.Memory.CaptureMode,
+		"CODEBRIDGE_MEMORY_TOKEN_BUDGET="+strconv.Itoa(cfg.Memory.TokenBudget),
+		"CODEBRIDGE_MEMORY_AGENT_ID="+cfg.Memory.AgentID,
+		"CODEBRIDGE_MEMORY_REQUIRED="+strconv.FormatBool(cfg.Memory.Required),
+		"CODEBRIDGE_MEMORY_PROJECT_STRATEGY="+cfg.Memory.ProjectStrategy,
+		"CODEBRIDGE_MEMORY_QUEUE_SIZE="+strconv.Itoa(cfg.Memory.QueueSize),
+		"CODEBRIDGE_MEMORY_DELIVERY_TIMEOUT_MS="+strconv.Itoa(cfg.Memory.DeliveryTimeoutMS),
+		"CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
+		"CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
+		"CODEBRIDGE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
 	)
 	return a.startChild("server", cmd, background)
 }
@@ -302,6 +320,16 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	}
 	figmaStatus := figma.Client{Endpoint: cfg.FigmaDesktopURL, Timeout: 2 * time.Second, AllowRemote: cfg.FigmaDesktopAllowRemote, Version: a.Version}.Status(ctx)
 	checks = append(checks, check{"figma-desktop", figmaStatus["connected"] == true, fmt.Sprint(figmaStatus["endpoint"])})
+	if cfg.Memory.Enabled {
+		memoryProvider, memoryErr := memoryfactory.New(cfg.Memory)
+		if memoryErr != nil {
+			checks = append(checks, check{"memory", false, memoryErr.Error()})
+		} else {
+			memoryHealth := memoryProvider.Health(ctx)
+			_ = memoryProvider.Close()
+			checks = append(checks, check{"memory", memoryHealth.Available, fmt.Sprintf("%s %s", memoryHealth.Provider, memoryHealth.Endpoint)})
+		}
+	}
 	ok := true
 	for _, item := range checks {
 		if !item.OK && item.Name == "workspace" {
@@ -347,6 +375,12 @@ func (a App) setup(cfg config.Config, opts options) error {
 		}
 		return line
 	}
+	previousMemorySecretEnv := cfg.Memory.SecretEnv
+	previousMemorySecret := ""
+	if previousMemorySecretEnv != "" {
+		previousMemorySecret = os.Getenv(previousMemorySecretEnv)
+	}
+
 	if opts.Workspace == "" {
 		cfg.Workspace = ask("Workspace", cfg.Workspace)
 	}
@@ -384,14 +418,172 @@ func (a App) setup(cfg config.Config, opts options) error {
 		}
 		fmt.Fprintf(a.Stdout, "Runtime key is stored separately. Run: codebridge key set\n")
 	}
+
+	memoryAnswer := strings.ToLower(ask("Enable memory? (y/n)", ternary(cfg.Memory.Enabled, "y", "n")))
+	cfg.Memory.Enabled = memoryAnswer == "y" || memoryAnswer == "yes"
+	memorySecret := ""
+	clearMemorySecret := false
+	if cfg.Memory.Enabled {
+		if cfg.Memory.Provider == "" || cfg.Memory.Provider == "none" {
+			cfg.Memory.Provider = "agentmemory"
+		}
+		cfg.Memory.Provider = ask("Memory provider", cfg.Memory.Provider)
+		cfg.Memory.Endpoint = ask("Memory endpoint", cfg.Memory.Endpoint)
+		cfg.Memory.SecretEnv = ask("Memory secret env", cfg.Memory.SecretEnv)
+
+		existingSecret := ""
+		if cfg.Memory.SecretEnv != "" {
+			existingSecret = os.Getenv(cfg.Memory.SecretEnv)
+		}
+		if existingSecret == "" && cfg.Memory.SecretEnv != previousMemorySecretEnv {
+			existingSecret = previousMemorySecret
+		}
+		fmt.Fprint(a.Stdout, "Memory secret")
+		if existingSecret != "" {
+			fmt.Fprint(a.Stdout, " [configured]")
+		}
+		fmt.Fprint(a.Stdout, " (Enter keeps, - clears): ")
+		line, err := readSecretInput(reader, a.Stdin, a.Stdout)
+		if err != nil {
+			return fmt.Errorf("read memory secret: %w", err)
+		}
+		switch memorySecret = line; memorySecret {
+		case "-":
+			memorySecret = ""
+			clearMemorySecret = true
+		case "":
+			memorySecret = existingSecret
+		}
+
+		value := ask("Memory timeout (ms)", strconv.Itoa(cfg.Memory.TimeoutMS))
+		timeoutMS, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory timeout: %w", err)
+		}
+		cfg.Memory.TimeoutMS = timeoutMS
+		cfg.Memory.CaptureMode = ask("Memory capture (off/metadata/selected)", cfg.Memory.CaptureMode)
+		value = ask("Memory token budget", strconv.Itoa(cfg.Memory.TokenBudget))
+		tokenBudget, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory token budget: %w", err)
+		}
+		cfg.Memory.TokenBudget = tokenBudget
+		cfg.Memory.AgentID = ask("Memory agent ID", cfg.Memory.AgentID)
+		optionsJSON := "{}"
+		if cfg.Memory.Options != nil {
+			if raw, marshalErr := json.Marshal(cfg.Memory.Options); marshalErr == nil {
+				optionsJSON = string(raw)
+			}
+		}
+		optionsJSON = ask("Memory provider options JSON", optionsJSON)
+		var providerOptions map[string]any
+		if err := json.Unmarshal([]byte(optionsJSON), &providerOptions); err != nil {
+			return fmt.Errorf("invalid memory provider options JSON: %w", err)
+		}
+		cfg.Memory.Options = providerOptions
+		required := strings.ToLower(ask("Require memory at startup? (y/n)", ternary(cfg.Memory.Required, "y", "n")))
+		cfg.Memory.Required = required == "y" || required == "yes"
+		cfg.Memory.ProjectStrategy = ask("Memory project strategy (git-origin/path-hash)", cfg.Memory.ProjectStrategy)
+
+		value = ask("Memory observation queue size", strconv.Itoa(cfg.Memory.QueueSize))
+		queueSize, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory queue size: %w", err)
+		}
+		cfg.Memory.QueueSize = queueSize
+		value = ask("Memory delivery timeout (ms)", strconv.Itoa(cfg.Memory.DeliveryTimeoutMS))
+		deliveryTimeout, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory delivery timeout: %w", err)
+		}
+		cfg.Memory.DeliveryTimeoutMS = deliveryTimeout
+		value = ask("Memory retry max attempts", strconv.Itoa(cfg.Memory.RetryMaxAttempts))
+		retryAttempts, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory retry attempts: %w", err)
+		}
+		cfg.Memory.RetryMaxAttempts = retryAttempts
+		value = ask("Memory retry backoff (ms)", strconv.Itoa(cfg.Memory.RetryBackoffMS))
+		retryBackoff, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory retry backoff: %w", err)
+		}
+		cfg.Memory.RetryBackoffMS = retryBackoff
+		value = ask("Memory health cache (ms)", strconv.Itoa(cfg.Memory.HealthCacheMS))
+		healthCache, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid memory health cache: %w", err)
+		}
+		cfg.Memory.HealthCacheMS = healthCache
+	}
 	if err := cfg.Validate(true); err != nil {
 		return err
 	}
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.Stdout, "Saved %s\nRun: codebridge\n", config.ConfigPath())
+	if err := saveMemorySecret(cfg, previousMemorySecretEnv, memorySecret, clearMemorySecret); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Stdout, "Saved config: %s\n", config.ConfigPath())
+	if memorySecret != "" || clearMemorySecret {
+		fmt.Fprintf(a.Stdout, "Updated memory secret: %s\n", config.DotEnvPath())
+	}
+	fmt.Fprintln(a.Stdout, "Run: codebridge restart")
 	return nil
+}
+
+func readSecretInput(reader *bufio.Reader, input io.Reader, output io.Writer) (string, error) {
+	if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		raw, err := term.ReadPassword(int(file.Fd()))
+		fmt.Fprintln(output)
+		return strings.TrimSpace(string(raw)), err
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func saveMemorySecret(cfg config.Config, previousSecretEnv, secret string, clear bool) error {
+	path := config.DotEnvPath()
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	cleaned := config.RemoveDotEnvKeys(string(existing),
+		"CODEBRIDGE_MEMORY_ENABLED",
+		"CODEBRIDGE_MEMORY_PROVIDER",
+		"CODEBRIDGE_MEMORY_ENDPOINT",
+		"CODEBRIDGE_MEMORY_SECRET_ENV",
+		"CODEBRIDGE_MEMORY_TIMEOUT_MS",
+		"CODEBRIDGE_MEMORY_CAPTURE",
+		"CODEBRIDGE_MEMORY_TOKEN_BUDGET",
+		"CODEBRIDGE_MEMORY_AGENT_ID",
+		"CODEBRIDGE_MEMORY_REQUIRED",
+		"CODEBRIDGE_MEMORY_PROJECT_STRATEGY",
+	)
+	if previousSecretEnv != "" && previousSecretEnv != cfg.Memory.SecretEnv {
+		cleaned = config.RemoveDotEnvKeys(cleaned, previousSecretEnv)
+	}
+	if clear && cfg.Memory.SecretEnv != "" {
+		cleaned = config.RemoveDotEnvKeys(cleaned, cfg.Memory.SecretEnv)
+	}
+	if cfg.Memory.SecretEnv != "" && secret != "" {
+		cleaned = config.MergeDotEnv(cleaned, map[string]string{cfg.Memory.SecretEnv: secret})
+	}
+	if cleaned == "" {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return os.Remove(path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(cleaned), 0o600)
 }
 
 func (a App) installCLI() error {

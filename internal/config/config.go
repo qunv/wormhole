@@ -24,6 +24,49 @@ const (
 	DefaultFigmaDesktopURL = "http://127.0.0.1:3845/mcp"
 )
 
+type MemoryConfig struct {
+	Enabled           bool           `json:"enabled"`
+	Provider          string         `json:"provider"`
+	Endpoint          string         `json:"endpoint,omitempty"`
+	SecretEnv         string         `json:"secretEnv,omitempty"`
+	TimeoutMS         int            `json:"timeoutMs,omitempty"`
+	CaptureMode       string         `json:"captureMode,omitempty"`
+	TokenBudget       int            `json:"tokenBudget,omitempty"`
+	AgentID           string         `json:"agentId,omitempty"`
+	Required          bool           `json:"required,omitempty"`
+	ProjectStrategy   string         `json:"projectStrategy,omitempty"`
+	Options           map[string]any `json:"options,omitempty"`
+	QueueSize         int            `json:"queueSize,omitempty"`
+	DeliveryTimeoutMS int            `json:"deliveryTimeoutMs,omitempty"`
+	RetryMaxAttempts  int            `json:"retryMaxAttempts,omitempty"`
+	RetryBackoffMS    int            `json:"retryBackoffMs,omitempty"`
+	HealthCacheMS     int            `json:"healthCacheMs,omitempty"`
+}
+
+func validateMemoryOptions(value any, path string) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, entry := range typed {
+			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+			for _, forbidden := range []string{"secret", "password", "token", "apikey", "authorization", "credential"} {
+				if strings.Contains(normalized, forbidden) {
+					return fmt.Errorf("%s.%s must reference a secret through memory.secretEnv instead of storing it in config.json", path, key)
+				}
+			}
+			if err := validateMemoryOptions(entry, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, entry := range typed {
+			if err := validateMemoryOptions(entry, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type Config struct {
 	Workspace      string   `json:"workspace"`
 	ExtraRoots     []string `json:"extraRoots,omitempty"`
@@ -46,6 +89,8 @@ type Config struct {
 	FigmaDesktopURL         string `json:"figmaDesktopMcpUrl,omitempty"`
 	FigmaDesktopTimeoutMS   int    `json:"figmaDesktopTimeoutMs,omitempty"`
 	FigmaDesktopAllowRemote bool   `json:"figmaDesktopAllowRemote,omitempty"`
+
+	Memory MemoryConfig `json:"memory,omitempty"`
 
 	MaxReadChars      int `json:"maxReadChars,omitempty"`
 	ReadDefault       int `json:"readDefault,omitempty"`
@@ -73,16 +118,24 @@ func Default() Config {
 		TunnelBin:             filepath.Join(AppDataDir(), tunnelExecutable()),
 		FigmaDesktopURL:       DefaultFigmaDesktopURL,
 		FigmaDesktopTimeoutMS: 30_000,
-		MaxReadChars:          200_000,
-		ReadDefault:           30_000,
-		MaxBatchReadChars:     500_000,
-		MaxCommandOutput:      200_000,
-		CommandOutput:         20_000,
-		MaxBodyBytes:          16 * 1024 * 1024,
-		MaxProcesses:          24,
-		Audit:                 true,
-		AuditArgs:             true,
-		Workspace:             home,
+		Memory: MemoryConfig{
+			Enabled: false, Provider: "none", Endpoint: "http://127.0.0.1:3111",
+			SecretEnv: "CODEBRIDGE_MEMORY_SECRET", TimeoutMS: 3_000,
+			CaptureMode: "selected", TokenBudget: 1_600, AgentID: "chatgpt-codebridge",
+			ProjectStrategy: "git-origin",
+			QueueSize:       128, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
+			RetryBackoffMS: 100, HealthCacheMS: 5_000,
+		},
+		MaxReadChars:      200_000,
+		ReadDefault:       30_000,
+		MaxBatchReadChars: 500_000,
+		MaxCommandOutput:  200_000,
+		CommandOutput:     20_000,
+		MaxBodyBytes:      16 * 1024 * 1024,
+		MaxProcesses:      24,
+		Audit:             true,
+		AuditArgs:         true,
+		Workspace:         home,
 	}
 }
 
@@ -136,8 +189,9 @@ func AppDataDir() string {
 	}
 }
 
-func PIDPath() string { return filepath.Join(AppDataDir(), "processes.json") }
-func LogPath() string { return filepath.Join(AppDataDir(), "launcher.log") }
+func DotEnvPath() string { return filepath.Join(AppConfigDir(), ".env") }
+func PIDPath() string    { return filepath.Join(AppDataDir(), "processes.json") }
+func LogPath() string    { return filepath.Join(AppDataDir(), "launcher.log") }
 
 func Load() (Config, error) {
 	cfg := Default()
@@ -190,6 +244,10 @@ func (c Config) Validate(requireWorkspace bool) error {
 		{"maxBatchReadChars", c.MaxBatchReadChars}, {"maxCommandOutput", c.MaxCommandOutput},
 		{"commandOutputDefault", c.CommandOutput}, {"maxBodyBytes", c.MaxBodyBytes},
 		{"maxProcesses", c.MaxProcesses}, {"figmaDesktopTimeoutMs", c.FigmaDesktopTimeoutMS},
+		{"memory.timeoutMs", c.Memory.TimeoutMS}, {"memory.tokenBudget", c.Memory.TokenBudget},
+		{"memory.queueSize", c.Memory.QueueSize}, {"memory.deliveryTimeoutMs", c.Memory.DeliveryTimeoutMS},
+		{"memory.retryMaxAttempts", c.Memory.RetryMaxAttempts}, {"memory.retryBackoffMs", c.Memory.RetryBackoffMS},
+		{"memory.healthCacheMs", c.Memory.HealthCacheMS},
 	}
 	for _, limit := range limits {
 		if limit.value <= 0 {
@@ -201,6 +259,18 @@ func (c Config) Validate(requireWorkspace bool) error {
 	}
 	if c.CommandOutput > c.MaxCommandOutput {
 		return fmt.Errorf("commandOutputDefault must not exceed maxCommandOutput")
+	}
+	if c.Memory.Enabled && (strings.TrimSpace(c.Memory.Provider) == "" || c.Memory.Provider == "none") {
+		return fmt.Errorf("memory.provider is required when memory is enabled")
+	}
+	if c.Memory.CaptureMode != "off" && c.Memory.CaptureMode != "metadata" && c.Memory.CaptureMode != "selected" {
+		return fmt.Errorf("memory.captureMode must be off, metadata, or selected")
+	}
+	if c.Memory.ProjectStrategy != "git-origin" && c.Memory.ProjectStrategy != "path-hash" {
+		return fmt.Errorf("memory.projectStrategy must be git-origin or path-hash")
+	}
+	if err := validateMemoryOptions(c.Memory.Options, "memory.options"); err != nil {
+		return err
 	}
 	if requireWorkspace {
 		info, err := os.Stat(c.Workspace)
@@ -226,6 +296,13 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 		sum := sha256.Sum256(raw)
 		binaryHash = hex.EncodeToString(sum[:8])
 	}
+	secretFingerprint := ""
+	if c.Memory.SecretEnv != "" {
+		if secret := os.Getenv(c.Memory.SecretEnv); secret != "" {
+			sum := sha256.Sum256([]byte(secret))
+			secretFingerprint = hex.EncodeToString(sum[:8])
+		}
+	}
 	material, _ := json.Marshal(map[string]any{
 		"workspace":       filepath.Clean(c.Workspace),
 		"extraRoots":      c.ExtraRoots,
@@ -236,6 +313,9 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 		"binaryHash":      binaryHash,
 		"widgetHash":      fmt.Sprintf("%x", sha256.Sum256(widget)),
 		"figmaDesktopURL": c.FigmaDesktopURL,
+		"memory": map[string]any{
+			"config": c.Memory, "secretFingerprint": secretFingerprint,
+		},
 	})
 	sum := sha256.Sum256(material)
 	return hex.EncodeToString(sum[:8])
@@ -290,6 +370,32 @@ func MergeDotEnv(existing string, updates map[string]string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+func RemoveDotEnvKeys(existing string, keys ...string) string {
+	removed := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if key = strings.TrimSpace(key); key != "" {
+			removed[key] = true
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(existing, "\n"), "\n")
+	if existing == "" {
+		lines = nil
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export "))
+		key, _, ok := strings.Cut(trimmed, "=")
+		if ok && removed[strings.TrimSpace(key)] {
+			continue
+		}
+		out = append(out, line)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, "\n") + "\n"
+}
+
 func LoadDotEnv(path string, override bool) error {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -337,6 +443,48 @@ func normalize(c *Config) {
 	if c.FigmaDesktopTimeoutMS == 0 {
 		c.FigmaDesktopTimeoutMS = 30_000
 	}
+	if c.Memory.Provider == "" {
+		c.Memory.Provider = "none"
+	}
+	if c.Memory.Endpoint == "" {
+		c.Memory.Endpoint = "http://127.0.0.1:3111"
+	}
+	if c.Memory.SecretEnv == "" {
+		c.Memory.SecretEnv = "CODEBRIDGE_MEMORY_SECRET"
+	}
+	if c.Memory.TimeoutMS == 0 {
+		c.Memory.TimeoutMS = 3_000
+	}
+	if c.Memory.CaptureMode == "" {
+		c.Memory.CaptureMode = "selected"
+	}
+	if c.Memory.TokenBudget == 0 {
+		c.Memory.TokenBudget = 1_600
+	}
+	if c.Memory.AgentID == "" {
+		c.Memory.AgentID = "chatgpt-codebridge"
+	}
+	if c.Memory.ProjectStrategy == "" {
+		c.Memory.ProjectStrategy = "git-origin"
+	}
+	if c.Memory.QueueSize == 0 {
+		c.Memory.QueueSize = 128
+	}
+	if c.Memory.DeliveryTimeoutMS == 0 {
+		c.Memory.DeliveryTimeoutMS = 2_000
+	}
+	if c.Memory.RetryMaxAttempts == 0 {
+		c.Memory.RetryMaxAttempts = 3
+	}
+	if c.Memory.RetryBackoffMS == 0 {
+		c.Memory.RetryBackoffMS = 100
+	}
+	if c.Memory.HealthCacheMS == 0 {
+		c.Memory.HealthCacheMS = 5_000
+	}
+	c.Memory.Provider = strings.ToLower(strings.TrimSpace(c.Memory.Provider))
+	c.Memory.CaptureMode = strings.ToLower(strings.TrimSpace(c.Memory.CaptureMode))
+	c.Memory.ProjectStrategy = strings.ToLower(strings.TrimSpace(c.Memory.ProjectStrategy))
 	if c.MaxReadChars == 0 {
 		c.MaxReadChars = 200_000
 	}
@@ -383,8 +531,21 @@ func applyEnvironment(c *Config) {
 	stringEnv("TUNNEL_PROFILE", &c.Profile)
 	stringEnv("TUNNEL_PROFILE_DIR", &c.ProfileDir)
 	stringEnv("FIGMA_DESKTOP_MCP_URL", &c.FigmaDesktopURL)
+	stringEnv("CODEBRIDGE_MEMORY_PROVIDER", &c.Memory.Provider)
+	stringEnv("CODEBRIDGE_MEMORY_ENDPOINT", &c.Memory.Endpoint)
+	stringEnv("CODEBRIDGE_MEMORY_SECRET_ENV", &c.Memory.SecretEnv)
+	stringEnv("CODEBRIDGE_MEMORY_CAPTURE", &c.Memory.CaptureMode)
+	stringEnv("CODEBRIDGE_MEMORY_AGENT_ID", &c.Memory.AgentID)
+	stringEnv("CODEBRIDGE_MEMORY_PROJECT_STRATEGY", &c.Memory.ProjectStrategy)
 	intEnv("PORT", &c.Port)
 	intEnv("FIGMA_DESKTOP_TIMEOUT_MS", &c.FigmaDesktopTimeoutMS)
+	intEnv("CODEBRIDGE_MEMORY_TIMEOUT_MS", &c.Memory.TimeoutMS)
+	intEnv("CODEBRIDGE_MEMORY_TOKEN_BUDGET", &c.Memory.TokenBudget)
+	intEnv("CODEBRIDGE_MEMORY_QUEUE_SIZE", &c.Memory.QueueSize)
+	intEnv("CODEBRIDGE_MEMORY_DELIVERY_TIMEOUT_MS", &c.Memory.DeliveryTimeoutMS)
+	intEnv("CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS", &c.Memory.RetryMaxAttempts)
+	intEnv("CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS", &c.Memory.RetryBackoffMS)
+	intEnv("CODEBRIDGE_MEMORY_HEALTH_CACHE_MS", &c.Memory.HealthCacheMS)
 	intEnv("AGENT_MAX_READ_CHARS", &c.MaxReadChars)
 	intEnv("AGENT_READ_DEFAULT", &c.ReadDefault)
 	intEnv("AGENT_MAX_BATCH_READ_CHARS", &c.MaxBatchReadChars)
@@ -392,6 +553,8 @@ func applyEnvironment(c *Config) {
 	intEnv("AGENT_CMD_OUTPUT_DEFAULT", &c.CommandOutput)
 	intEnv("AGENT_MAX_BODY_BYTES", &c.MaxBodyBytes)
 	c.FigmaDesktopAllowRemote = envBool("FIGMA_DESKTOP_ALLOW_REMOTE", c.FigmaDesktopAllowRemote)
+	c.Memory.Enabled = envBool("CODEBRIDGE_MEMORY_ENABLED", c.Memory.Enabled)
+	c.Memory.Required = envBool("CODEBRIDGE_MEMORY_REQUIRED", c.Memory.Required)
 	c.Audit = !envIs("AGENT_AUDIT", "0", !c.Audit)
 	c.AuditArgs = !envIs("AGENT_AUDIT_ARGS", "0", !c.AuditArgs)
 	c.HTTPLog = envBool("AGENT_HTTP_LOG", c.HTTPLog)

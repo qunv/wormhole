@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -62,6 +65,63 @@ func TestForegroundChildKeepsLogWriterOpen(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("log missing %q: %q", want, raw)
 		}
+	}
+}
+
+func TestSaveMemorySecretKeepsOrClearsExistingValue(t *testing.T) {
+	base := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("APPDATA", base)
+	case "darwin":
+		t.Setenv("HOME", base)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", base)
+	}
+	path := config.DotEnvPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("CONTROL_PLANE_API_KEY=runtime\nCODEBRIDGE_MEMORY_SECRET=existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	if err := saveMemorySecret(cfg, cfg.Memory.SecretEnv, "", false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.ParseDotEnv(string(raw))[cfg.Memory.SecretEnv]; got != "existing" {
+		t.Fatalf("existing secret was overwritten: %q", got)
+	}
+	if err := saveMemorySecret(cfg, cfg.Memory.SecretEnv, "", true); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := config.ParseDotEnv(string(raw))
+	if _, exists := values[cfg.Memory.SecretEnv]; exists {
+		t.Fatalf("memory secret was not cleared: %s", raw)
+	}
+	if values["CONTROL_PLANE_API_KEY"] != "runtime" {
+		t.Fatalf("unrelated runtime key changed: %s", raw)
+	}
+}
+
+func TestReadSecretInputFallsBackForNonTerminalReader(t *testing.T) {
+	reader := strings.NewReader("secret value\n")
+	buffered := bufio.NewReader(reader)
+	var output bytes.Buffer
+	value, err := readSecretInput(buffered, reader, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "secret value" {
+		t.Fatalf("secret input = %q", value)
 	}
 }
 
@@ -129,5 +189,66 @@ func TestPortAvailableDetectsListener(t *testing.T) {
 	}
 	if !portAvailable("127.0.0.1", port) {
 		t.Fatalf("port %s should be available after close", strconv.Itoa(port))
+	}
+}
+
+func TestSaveMemorySecretStoresOnlySecret(t *testing.T) {
+	base := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("APPDATA", base)
+	case "darwin":
+		t.Setenv("HOME", base)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", base)
+	}
+	path := config.DotEnvPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := strings.Join([]string{
+		"CONTROL_PLANE_API_KEY=runtime-secret",
+		"CODEBRIDGE_MEMORY_ENABLED=true",
+		"CODEBRIDGE_MEMORY_PROVIDER=agentmemory",
+		"CODEBRIDGE_MEMORY_ENDPOINT=http://127.0.0.1:3111",
+		"CODEBRIDGE_MEMORY_SECRET=old-secret",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Memory.SecretEnv = "CUSTOM_MEMORY_SECRET"
+	if err := saveMemorySecret(cfg, "CODEBRIDGE_MEMORY_SECRET", "new secret", false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := config.ParseDotEnv(string(raw))
+	if got := values["CONTROL_PLANE_API_KEY"]; got != "runtime-secret" {
+		t.Fatalf("runtime secret changed: %q", got)
+	}
+	if got := values["CUSTOM_MEMORY_SECRET"]; got != "new secret" {
+		t.Fatalf("memory secret = %q, want new secret", got)
+	}
+	for _, key := range []string{
+		"CODEBRIDGE_MEMORY_ENABLED", "CODEBRIDGE_MEMORY_PROVIDER",
+		"CODEBRIDGE_MEMORY_ENDPOINT", "CODEBRIDGE_MEMORY_SECRET",
+	} {
+		if _, exists := values[key]; exists {
+			t.Fatalf("non-secret or old secret key %s remained in .env: %s", key, raw)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf(".env mode = %o, want 600", got)
+		}
 	}
 }

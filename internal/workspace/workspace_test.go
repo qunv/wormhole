@@ -51,3 +51,22 @@ func TestIsRootRecognizesCanonicalSymlinkTarget(t *testing.T) {
 		t.Fatalf("canonical root %q was not recognized", resolved)
 	}
 }
+
+func TestOwningRootUsesMostSpecificConfiguredRoot(t *testing.T) {
+	primary := t.TempDir()
+	nested := filepath.Join(primary, "packages", "api")
+	if err := os.MkdirAll(filepath.Join(nested, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(primary, []string{nested}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := manager.OwningRoot(filepath.Join(nested, "internal", "missing.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nested {
+		t.Fatalf("owning root = %q, want %q", got, nested)
+	}
+}

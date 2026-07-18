@@ -105,6 +105,31 @@ func (m *Manager) Resolve(input string) (string, error) {
 	return resolved, nil
 }
 
+// OwningRoot returns the configured workspace root that contains input.
+// When roots are nested, the most specific configured root wins. The lookup
+// uses the same canonicalization rules as Resolve, so missing targets and
+// symlinked ancestors still map to a stable configured root.
+func (m *Manager) OwningRoot(input string) (string, error) {
+	resolved, err := m.Resolve(input)
+	if err != nil {
+		return "", err
+	}
+	canonical := canonicalize(resolved)
+	bestIndex, bestLength := -1, -1
+	for index, realRoot := range m.realRoots {
+		if !within(canonical, []string{realRoot}) {
+			continue
+		}
+		if length := len(filepath.Clean(realRoot)); length > bestLength {
+			bestIndex, bestLength = index, length
+		}
+	}
+	if bestIndex < 0 {
+		return "", fmt.Errorf("path has no configured owning root: %s", input)
+	}
+	return m.Roots[bestIndex], nil
+}
+
 func (m *Manager) Relative(abs string) string {
 	abs = filepath.Clean(abs)
 	if samePath(abs, m.Primary) {

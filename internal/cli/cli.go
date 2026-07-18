@@ -66,7 +66,7 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	if a.Stdin == nil {
 		a.Stdin = os.Stdin
 	}
-	_ = config.LoadDotEnv(filepath.Join(config.AppConfigDir(), ".env"), false)
+	_ = config.LoadDotEnv(config.DotEnvPath(), false)
 	opts, err := parse(argv)
 	if err != nil {
 		return err
@@ -451,7 +451,7 @@ func (a App) keyCommand(opts options) error {
 	if len(opts.Rest) > 0 {
 		sub = opts.Rest[0]
 	}
-	path := filepath.Join(config.AppConfigDir(), ".env")
+	path := config.DotEnvPath()
 	switch sub {
 	case "set":
 		value := opts.RuntimeKey
