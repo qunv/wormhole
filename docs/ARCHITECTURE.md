@@ -1,19 +1,19 @@
 # Codebridge architecture
 
-## 1. Mục tiêu thiết kế
+## 1. Design goals
 
-Codebridge dùng một binary cho cả CLI supervisor và MCP server. CLI chỉ chịu trách nhiệm load config, quản lý process và tunnel; business logic của toàn bộ tools nằm trong `agent.Runtime`, nên foreground server, background server và tests cùng dùng một policy/state implementation.
+Codebridge uses one binary for both the CLI supervisor and the MCP server. The CLI is responsible only for loading configuration and managing processes and tunnels; all tool business logic lives in `agent.Runtime`, so foreground servers, background servers, and tests share the same policy and state implementation.
 
-Các mục tiêu chính:
+Primary goals:
 
-1. Một MCP gateway duy nhất cho workspace, CodeGraph, Figma và memory.
-2. Tool contract ổn định, không phụ thuộc backend cụ thể.
-3. Path confinement và policy enforcement trước mọi mutation.
-4. Secret tách khỏi persistent non-secret config.
-5. Memory fail-open theo mặc định, không làm chậm coding workflow.
-6. Có thể thêm provider hoặc migrate memory mà không đổi workflow của model.
+1. Provide a single MCP gateway for workspaces, CodeGraph, Figma, and memory.
+2. Maintain a stable tool contract that is independent of any specific backend.
+3. Enforce path confinement and policy checks before every mutation.
+4. Keep secrets separate from persistent non-secret configuration.
+5. Make memory fail open by default so it does not slow down the coding workflow.
+6. Allow providers to be added and memory to be migrated without changing the model's workflow.
 
-## 2. Control flow tổng thể
+## 2. Overall control flow
 
 ```text
 CLI command
@@ -32,7 +32,7 @@ CLI command
           ▼
 HTTP server
    ├── body limit
-   ├── bearer auth
+   ├── bearer authentication
    ├── Origin/CORS guard
    └── health endpoints
           │
@@ -45,35 +45,35 @@ Official MCP Go SDK
           │
           ▼
 agent.Runtime.HandleSession
-   ├── normalize args
+   ├── normalize arguments
    ├── enforce policy / consume exact approval
-   ├── dispatch group handler
-   ├── append redacted audit record
-   └── enqueue redacted memory observation
+   ├── dispatch to the tool-group handler
+   ├── append a redacted audit record
+   └── enqueue a redacted memory observation
 ```
 
-`Runtime.Handle` vẫn tồn tại cho internal callers và tests; nó dùng fallback session identity. MCP requests đi qua `HandleSession` để giữ logical connection identity.
+`Runtime.Handle` remains available for internal callers and tests and uses a fallback session identity. MCP requests go through `HandleSession` to preserve logical connection identity.
 
 ## 3. Package boundaries
 
-| Package | Trách nhiệm |
+| Package | Responsibility |
 |---|---|
-| `cmd/codebridge` | Process entrypoint và exit code |
-| `internal/app` | Version/tier metadata và composition root |
-| `internal/cli` | CLI grammar, setup, process lifecycle, tunnel install/profile |
-| `internal/server` | HTTP routing, health, auth, Origin/CORS và body limits |
-| `internal/mcpserver` | MCP server construction, session identity, widget và result adapter |
-| `internal/agent` | 87-tool registry, shared runtime, policy và tool handlers |
-| `internal/workspace` | Canonical paths, configured roots, owning-root, list/search/tree |
-| `internal/security` | Shell/Git guards, risk classification, approvals và redaction |
-| `internal/patch` | Backup batches, structured operations, unified diff và undo |
-| `internal/processx` | Timeout, output caps và managed process trees |
-| `internal/figma` | MCP client bridge đến Figma Desktop |
-| `internal/memory` | Canonical contracts, project identity, async recorder và adapters |
-| `internal/state` | Per-workspace notes, task, decisions, audit, index và backups |
-| `internal/assets` | Embedded MCP Apps widget và built-in skills |
+| `cmd/codebridge` | Process entrypoint and exit codes |
+| `internal/app` | Version/tier metadata and composition root |
+| `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
+| `internal/server` | HTTP routing, health, authentication, Origin/CORS, and body limits |
+| `internal/mcpserver` | MCP server construction, session identity, widget resource, and result adapter |
+| `internal/agent` | 87-tool registry, shared runtime, policy, and tool handlers |
+| `internal/workspace` | Canonical paths, configured roots, owning-root resolution, list/search/tree |
+| `internal/security` | Shell and Git guards, risk classification, approvals, and redaction |
+| `internal/patch` | Backup batches, structured operations, unified diffs, and undo |
+| `internal/processx` | Timeouts, output caps, and managed process trees |
+| `internal/figma` | MCP client bridge to Figma Desktop |
+| `internal/memory` | Canonical contracts, project identity, asynchronous recorder, and adapters |
+| `internal/state` | Per-workspace notes, tasks, decisions, audit, index, and backups |
+| `internal/assets` | Embedded MCP Apps widget and built-in skills |
 
-Dependency direction quan trọng:
+Important dependency direction:
 
 ```text
 mcpserver → agent → memory.Provider
@@ -81,33 +81,33 @@ mcpserver → agent → memory.Provider
              provider adapters
 ```
 
-`agent` không import `agentmemory`; adapter cụ thể chỉ được chọn qua `memory/factory`.
+`agent` does not import `agentmemory`; the concrete adapter is selected only through `memory/factory`.
 
 ## 4. Configuration lifecycle
 
-Config được hình thành theo thứ tự:
+Configuration is assembled in this order:
 
 ```text
 Default()
-  → JSON unmarshal từ config.json
+  → JSON unmarshal from config.json
   → environment overrides
   → normalize + validate
-  → CLI options của lần chạy hiện tại
+  → CLI options for the current invocation
 ```
 
-### Config locations
+### Configuration locations
 
-| Hệ điều hành | Config directory |
+| Operating system | Config directory |
 |---|---|
-| Linux | `$XDG_CONFIG_HOME/codebridge`, fallback `~/.config/codebridge` |
+| Linux | `$XDG_CONFIG_HOME/codebridge`, falling back to `~/.config/codebridge` |
 | macOS | `~/Library/Application Support/Codebridge` |
 | Windows | `%APPDATA%\Codebridge` |
 
-Runtime state dùng app-data/state directory:
+Runtime state uses the application data/state directory:
 
-| Hệ điều hành | State directory |
+| Operating system | State directory |
 |---|---|
-| Linux | `$XDG_STATE_HOME/codebridge`, fallback `~/.local/state/codebridge` |
+| Linux | `$XDG_STATE_HOME/codebridge`, falling back to `~/.local/state/codebridge` |
 | macOS | `~/Library/Application Support/Codebridge` |
 | Windows | `%LOCALAPPDATA%\Codebridge` |
 
@@ -116,77 +116,77 @@ Runtime state dùng app-data/state directory:
 ```text
 config.json
   workspace, mode, policy, tunnel metadata,
-  Figma config, memory config, limits
+  Figma configuration, memory configuration, limits
 
 .env
   CONTROL_PLANE_API_KEY
-  optional memory provider secret
+  optional memory-provider secret
 ```
 
-`Config.Save` xóa `AuthToken` và `ApprovalToken` trước khi serialize. Memory secret không nằm trong `MemoryConfig`; config chỉ lưu tên biến `secretEnv`.
+`Config.Save` clears `AuthToken` and `ApprovalToken` before serialization. The memory secret is not part of `MemoryConfig`; the configuration stores only the environment variable name in `secretEnv`.
 
-Memory provider options được validate đệ quy. Key có tên chứa `secret`, `password`, `token`, `apikey`, `authorization` hoặc `credential` bị từ chối để tránh ghi credential vào JSON.
+Memory-provider options are validated recursively. Keys containing `secret`, `password`, `token`, `apikey`, `authorization`, or `credential` are rejected to prevent credentials from being stored in JSON.
 
-### Config identity và process reuse
+### Configuration identity and process reuse
 
-Supervisor tạo `ConfigID` từ:
+The supervisor creates `ConfigID` from:
 
-- workspace và extra roots;
-- mode, policy, port và auth-enabled state;
-- binary hash và widget hash;
+- workspace and extra roots;
+- mode, policy, port, and whether authentication is enabled;
+- binary hash and widget hash;
 - Figma endpoint;
-- toàn bộ non-secret memory config;
-- fingerprint rút gọn của memory secret.
+- all non-secret memory configuration;
+- a shortened fingerprint of the memory secret.
 
-Nếu health endpoint báo cùng `ConfigID`, supervisor tái sử dụng server. Đổi memory agent ID, retry config, provider options hoặc secret làm `ConfigID` thay đổi và buộc server mới được tạo.
+When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server. Changing the memory agent ID, retry configuration, provider options, or secret changes `ConfigID` and causes a new server to be created.
 
-## 5. HTTP và MCP layer
+## 5. HTTP and MCP layers
 
-Codebridge expose:
+Codebridge exposes:
 
 ```text
 /mcp                 public MCP endpoint
-/healthz             public health
-/internal/healthz    supervisor health có PID và config ID
+/healthz             public health endpoint
+/internal/healthz    supervisor health with PID and config ID
 ```
 
-Non-loopback `host` bắt buộc có MCP bearer token. Browser Origin chỉ được phép nếu là loopback hoặc nằm trong explicit allowlist.
+A non-loopback `host` requires an MCP bearer token. A browser Origin is accepted only when it is loopback or included in the explicit allowlist.
 
-`agent.Tools()` là source of truth duy nhất cho:
+`agent.Tools()` is the single source of truth for:
 
 - name;
-- title và description;
+- title and description;
 - JSON input schema;
-- read-only/destructive annotations;
+- read-only and destructive annotations;
 - MCP Apps metadata.
 
-`internal/mcpserver` chuyển tool result thành cả JSON text và `structuredContent` khi output là object. Errors được trả bằng `CallToolResult{IsError:true}`, không biến thành protocol failure.
+`internal/mcpserver` converts a tool result into both JSON text and `structuredContent` when the output is an object. Errors are returned as `CallToolResult{IsError:true}` rather than becoming protocol failures.
 
-## 6. Runtime pipeline và policy
+## 6. Runtime pipeline and policy
 
-Mỗi tool request đi theo pipeline:
+Every tool request follows this pipeline:
 
 ```text
-args normalization
+argument normalization
   → enforcePolicy
   → dispatch
   → audit
   → captureMemoryObservation
 ```
 
-Nếu policy từ chối request, runtime vẫn ghi audit failure nhưng không capture post-tool observation vì tool chưa chạy.
+When policy rejects a request, the runtime still records an audit failure but does not capture a post-tool observation because the tool did not run.
 
 ### Policies
 
-- `strict`: chặn mutation tools.
-- `balanced`: cho phép edit nhưng yêu cầu exact one-time approval cho action rủi ro.
-- `full`: không yêu cầu approval thông thường, nhưng command guard vẫn chặn catastrophic operations.
+- `strict`: blocks mutation tools.
+- `balanced`: allows edits but requires exact one-time approval for risky actions.
+- `full`: does not require ordinary approvals, although command guards still block catastrophic operations.
 
-Approval action chứa exact target hoặc exact arguments. `memory_forget` serialize arguments vào approval action, nên approval không thể được tái sử dụng cho memory khác.
+An approval action includes the exact target or exact arguments. `memory_forget` serializes its arguments into the approval action, so an approval cannot be reused for a different memory.
 
-## 7. Workspace identity và confinement
+## 7. Workspace identity and confinement
 
-`workspace.Manager` giữ:
+`workspace.Manager` stores:
 
 ```text
 Primary
@@ -196,21 +196,21 @@ Skips
 RGBin
 ```
 
-`Resolve`:
+`Resolve` performs these steps:
 
-1. Resolve relative path từ primary root.
-2. Tìm longest existing ancestor.
-3. Canonicalize ancestor qua symlink.
-4. Ghép phần path chưa tồn tại trở lại.
-5. Kiểm tra path canonical nằm trong một configured real root.
+1. Resolve a relative path from the primary root.
+2. Find the longest existing ancestor.
+3. Canonicalize that ancestor through symlinks.
+4. Reattach the non-existent tail of the path.
+5. Verify that the canonical path remains inside a configured real root.
 
-Nhờ vậy cả target chưa tồn tại cũng không thể escape qua symlink.
+This prevents even non-existent targets from escaping through symlinks.
 
 ### Owning root
 
-Một resolved path có thể nằm trong primary root hoặc extra root. `OwningRoot` chọn configured root cụ thể nhất chứa path đó. Project identity, đặc biệt `path-hash`, luôn được tính từ owning root chứ không từ subdirectory/file.
+A resolved path can belong to the primary root or an extra root. `OwningRoot` selects the most specific configured root containing that path. Project identity, especially under `path-hash`, is always computed from the owning root rather than from a subdirectory or file.
 
-Ví dụ:
+Example:
 
 ```text
 configured root: /repo
@@ -218,13 +218,13 @@ request path:    /repo/internal/memory/provider.go
 project root:    /repo
 ```
 
-Điều này ngăn memory bị phân mảnh theo `cwd` hoặc thư mục con.
+This prevents memory from being fragmented by `cwd` or subdirectory.
 
 ## 8. Memory architecture
 
 ### 8.1 Canonical contract
 
-`memory.Provider` định nghĩa core operations:
+`memory.Provider` defines the core operations:
 
 ```text
 Health
@@ -243,7 +243,7 @@ memory.Exporter
 memory.Importer
 ```
 
-Outputs không trả raw backend payload. Adapter normalize thành:
+Outputs do not expose raw backend payloads. Adapters normalize results into:
 
 - `Item`;
 - `SearchResult`;
@@ -253,11 +253,11 @@ Outputs không trả raw backend payload. Adapter normalize thành:
 - `ExportResult`;
 - `ImportResult`.
 
-`ProviderID` giữ backend identifier, còn MCP clients chỉ phụ thuộc canonical fields.
+`ProviderID` preserves the backend identifier, while MCP clients depend only on canonical fields.
 
 ### 8.2 Provider registry
 
-`memory/factory` dùng registry:
+`memory/factory` uses a registry:
 
 ```go
 factory.Register("provider-name", constructor)
@@ -270,11 +270,11 @@ none
 agentmemory
 ```
 
-Khi memory tắt hoặc provider là `none`, factory trả no-op provider. Runtime và MCP tool registry không cần thay đổi khi thêm backend mới.
+When memory is disabled or the provider is `none`, the factory returns the no-op provider. Adding another backend does not require changes to the runtime or MCP tool registry.
 
 ### 8.3 Agentmemory adapter
 
-Adapter dùng REST endpoints mặc định:
+The adapter uses these default REST endpoints:
 
 ```text
 GET  /agentmemory/health
@@ -287,22 +287,22 @@ POST /agentmemory/forget
 GET  /agentmemory/export
 ```
 
-Paths và response-size limit có thể override qua `memory.options`.
+Paths and the response-size limit can be overridden through `memory.options`.
 
-Bearer header chỉ được gửi khi biến được chỉ định bởi `secretEnv` có giá trị.
+The bearer header is sent only when the variable named by `secretEnv` contains a value.
 
-Health capabilities bắt đầu từ adapter support, sau đó được điều chỉnh bằng health/flags response nếu backend công bố feature state. Context kết hợp session context với query search; khi context endpoint không được hỗ trợ, adapter fallback sang narrative search.
+Health capabilities begin with the features supported by the adapter and are then adjusted using the health and flags responses when the backend publishes feature state. Context retrieval combines session context with query search; when the context endpoint is unsupported, the adapter falls back to narrative search.
 
 ### 8.4 Project identity
 
-Hai strategy:
+Two strategies are available:
 
 ```text
 git-origin
 path-hash
 ```
 
-`git-origin` đọc `remote.origin.url`, hỗ trợ HTTPS, SSH và SCP-like URL, loại credentials, xóa `.git` và lowercase:
+`git-origin` reads `remote.origin.url`, supports HTTPS, SSH, and SCP-like URLs, strips credentials, removes `.git`, and lowercases the result:
 
 ```text
 git@github.com:Owner/Repo.git
@@ -311,62 +311,62 @@ https://github.com/Owner/Repo.git
 git:github.com/owner/repo
 ```
 
-Nếu Git origin không tồn tại hoặc không hợp lệ, resolver fallback sang:
+When the Git origin does not exist or is invalid, the resolver falls back to:
 
 ```text
 workspace:<sha256-prefix-of-owning-root>
 ```
 
-`path-hash` luôn dùng fallback form này.
+`path-hash` always uses this fallback form.
 
 ### 8.5 Session identity
 
-MCP layer lấy identity từ `ServerSession`:
+The MCP layer derives identity from `ServerSession`:
 
 ```text
 mcp:<protocol-session-id>
 ```
 
-Một số transports không gán protocol ID. Khi đó Codebridge hash process-local identity của stable session object:
+Some transports do not assign a protocol ID. In that case, Codebridge hashes the process-local identity of the stable session object:
 
 ```text
 mcp-local:<hash>
 ```
 
-Fallback process session chỉ dành cho internal callers không đi qua MCP. Vì vậy concurrent MCP connections được tách khỏi nhau.
+The process-level fallback session is used only by internal callers that do not go through MCP. Concurrent MCP connections therefore remain separate.
 
 ### 8.6 Retrieval semantics
 
-`memory_context` dùng:
+`memory_context` uses:
 
 - task query;
 - project ID;
-- owning-root cwd;
+- owning-root `cwd`;
 - agent ID;
 - MCP session ID;
 - token budget.
 
-Adapter có thể dùng session context endpoint, search endpoint hoặc cả hai. Result vẫn theo canonical `ContextResult`.
+An adapter can use a session-context endpoint, a search endpoint, or both. The result still follows the canonical `ContextResult` schema.
 
-Memory là historical evidence. MCP instructions yêu cầu model verify implementation details bằng CodeGraph hoặc current files trước khi edit.
+Memory is historical evidence. MCP instructions require the model to verify implementation details with CodeGraph or current files before editing.
 
 ### 8.7 Explicit writes
 
-`memory_remember` lưu một durable memory có kind, concepts, files và optional TTL.
+`memory_remember` stores durable memory with a kind, concepts, files, and optional TTL.
 
-`memory_commit` có thể tự tổng hợp:
+`memory_commit` can automatically assemble:
 
-- summary do caller cung cấp;
-- current task plan;
-- checkpoint;
+- a caller-provided summary;
+- the current task plan;
+- the checkpoint;
 - Git change summary;
 - review result;
-- files touched;
+- touched files;
 - next steps.
 
-Memory được gắn project, agent và MCP session identity.
+The resulting memory is associated with the project, agent, and MCP session identity.
 
-### 8.8 Auto-capture
+### 8.8 Automatic capture
 
 Capture modes:
 
@@ -376,26 +376,26 @@ selected
 metadata
 ```
 
-`selected` chỉ capture nhóm tools có historical value: notes/checkpoints, plan/decision, file mutations, Git, tests/build/lint, quality gate, CodeGraph, review và session report.
+`selected` captures only tool groups with durable historical value: notes and checkpoints, plans and decisions, file mutations, Git, tests/build/lint, quality gates, CodeGraph, reviews, and session reports.
 
-`metadata` capture rộng hơn nhưng chỉ giữ các field như path, cwd, staged, recursive và kind.
+`metadata` captures a broader set of calls but keeps only fields such as path, `cwd`, staged, recursive, and kind.
 
-Memory tools, `ping` và `proc_output` không được auto-capture để tránh recursion hoặc output leakage.
+Memory tools, `ping`, and `proc_output` are excluded from automatic capture to prevent recursion and output leakage.
 
-Before enqueue:
+Before enqueueing:
 
-1. Input đi qua recursive redaction.
-2. Git chỉ giữ operation và arg count, không giữ remote/auth arguments.
-3. Result chỉ lấy whitelist fields.
-4. Failure chỉ ghi generic message; raw error nằm trong local audit.
+1. Input passes through recursive redaction.
+2. Git retains only the operation and argument count, not remote or authentication arguments.
+3. Results are reduced to whitelisted fields.
+4. Failures store a generic message; the raw error remains in the local audit log.
 
 ### 8.9 Recorder delivery guarantees
 
-Recorder dùng bounded channel và non-blocking enqueue:
+The recorder uses a bounded channel and non-blocking enqueue:
 
 ```text
 queue available → enqueued
-queue full      → dropped++, tool response không bị block
+queue full      → dropped++, tool response is not blocked
 ```
 
 Worker delivery:
@@ -403,18 +403,18 @@ Worker delivery:
 ```text
 per-attempt timeout
   → exponential retry
-  → max attempts
-  → delivered hoặc failed
+  → maximum attempts
+  → delivered or failed
 ```
 
-Backoff cap là 2 giây. Khi shutdown:
+Backoff is capped at two seconds. During shutdown:
 
-1. `closed=true` chặn records mới.
-2. Worker nhận stop.
-3. Queue hiện tại được drain.
-4. Provider đóng sau recorder.
+1. `closed=true` rejects new records.
+2. The worker receives the stop signal.
+3. The current queue is drained.
+4. The provider closes after the recorder.
 
-Recorder stats:
+Recorder statistics:
 
 ```text
 queue_depth
@@ -426,40 +426,40 @@ failed
 dropped
 ```
 
-Đây là at-most-once enqueue với bounded retry delivery; không có durable local spool. Process crash vẫn có thể mất observations chưa gửi.
+This provides at-most-once enqueue with bounded retry delivery; there is no durable local spool. A process crash can still lose observations that have not been delivered.
 
-### 8.10 Health và fail-open
+### 8.10 Health and fail-open behavior
 
-`memory.required=false`:
+With `memory.required=false`:
 
-- runtime khởi động dù provider offline;
-- memory tool calls có thể trả lỗi;
-- coding tools tiếp tục hoạt động;
-- async failures chỉ tăng recorder counters.
+- the runtime starts even when the provider is offline;
+- memory tool calls may return errors;
+- coding tools continue to work;
+- asynchronous failures only increment recorder counters.
 
-`memory.required=true`:
+With `memory.required=true`:
 
-- startup gọi provider health;
-- unavailable provider làm runtime creation fail.
+- startup calls provider health;
+- an unavailable provider causes runtime creation to fail.
 
-Health được cache theo `healthCacheMs` để `workspace_snapshot` và `workspace_doctor` không gọi backend liên tục.
+Health is cached according to `healthCacheMs` so `workspace_snapshot` and `workspace_doctor` do not continuously call the backend.
 
 ### 8.11 Migration boundary
 
-`memory_export` trả canonical schema version 1 dưới dạng object hoặc JSONL.
+`memory_export` returns canonical schema version 1 as an object or JSONL.
 
-Agentmemory export có thể trả nhiều project; adapter normalize rồi lọc theo requested project. `memory_import` replay từng canonical item qua provider `Remember` thay vì restore raw database dump.
+An agentmemory export can contain multiple projects; the adapter normalizes it and filters it to the requested project. `memory_import` replays each canonical item through the provider's `Remember` operation instead of restoring a raw database dump.
 
-Trade-off:
+Trade-offs:
 
-- portable giữa providers;
-- không phụ thuộc database schema;
-- provider-specific fields chỉ được giữ trong bounded metadata;
-- import có thể không bảo toàn internal embeddings hoặc graph IDs.
+- portable between providers;
+- independent of database schema;
+- provider-specific fields are retained only in bounded metadata;
+- imports may not preserve internal embeddings or graph identifiers.
 
 ## 9. Local state ownership
 
-Per-workspace state nằm dưới:
+Per-workspace state is stored under:
 
 ```text
 workspaces/<workspace-id>/
@@ -474,40 +474,40 @@ workspaces/<workspace-id>/
   approvals/
 ```
 
-Workspace ID dùng canonical primary workspace path. Memory provider data không được lưu trong local state directory, ngoại trừ audit/counters liên quan tool calls.
+The workspace ID is derived from the canonical primary workspace path. Memory-provider data is not stored in the local state directory, except for audit records and counters associated with tool calls.
 
 ## 10. Security invariants
 
-1. Mọi file path được resolve trong configured roots.
-2. Longest existing ancestor được canonicalize trước containment check.
-3. Configured root không thể bị delete/rename qua dedicated tools hoặc patch operations.
-4. Command `cwd` bị root-confined, nhưng command execution không phải OS sandbox.
-5. Raw Git chặn flags có thể ghi arbitrary output, đổi worktree hoặc chạy external program.
-6. Balanced policy dùng exact expiring one-time approvals.
-7. Audit args được redact đệ quy.
-8. Auto-memory capture không gửi raw source, patch, command, stdout hoặc raw errors.
-9. Provider options không được chứa secret-like keys.
-10. Browser Origin bị chặn mặc định ngoài loopback/allowlist.
-11. Non-loopback MCP listener bắt buộc có bearer token.
-12. HTTP response từ memory provider bị giới hạn kích thước trước decode.
+1. Every file path is resolved inside configured roots.
+2. The longest existing ancestor is canonicalized before the containment check.
+3. A configured root cannot be deleted or renamed through dedicated tools or patch operations.
+4. Command `cwd` is root-confined, but command execution is not an operating-system sandbox.
+5. Raw Git blocks flags that can write arbitrary output, change the worktree, or execute an external program.
+6. The balanced policy uses exact, expiring, one-time approvals.
+7. Audit arguments are recursively redacted.
+8. Automatic memory capture does not send raw source, patches, commands, stdout, or raw errors.
+9. Provider options cannot contain secret-like keys.
+10. Browser Origins are blocked by default unless they are loopback or explicitly allowed.
+11. A non-loopback MCP listener requires a bearer token.
+12. HTTP responses from memory providers are size-limited before decoding.
 
 ## 11. Testing strategy
 
-Contract tests khóa:
+Contract tests lock down:
 
-- tool count và unique dispatch group;
-- MCP in-memory round trip;
-- session ID propagation;
-- path traversal/root deletion rejection;
-- secret separation và `.env` permission;
+- tool count and unique dispatch groups;
+- MCP in-memory round trips;
+- session-ID propagation;
+- path traversal and root-deletion rejection;
+- secret separation and `.env` permissions;
 - ConfigID sensitivity;
-- provider REST mapping và response normalization;
-- no-secret auth behavior;
+- provider REST mapping and response normalization;
+- behavior without an authentication secret;
 - context fallback;
-- project normalization và owning-root behavior;
-- recorder delivery, retry, drain và dropped counters;
-- required/optional provider startup behavior;
-- export filtering và canonical import.
+- project normalization and owning-root behavior;
+- recorder delivery, retry, drain, and dropped counters;
+- required and optional provider startup behavior;
+- export filtering and canonical import.
 
 Recommended verification:
 
@@ -522,16 +522,16 @@ GOOS=darwin GOARCH=arm64 go build ./...
 
 ## 12. Release
 
-`.goreleaser.yml` build binaries cho:
+`.goreleaser.yml` builds binaries for:
 
 - Linux amd64/arm64;
 - macOS amd64/arm64;
 - Windows amd64/arm64.
 
-Version được inject qua:
+The version is injected through:
 
 ```text
 -X codebridge/internal/app.Version=<version>
 ```
 
-MCP tool contract là public compatibility surface. Thay provider adapter không nên đổi tool names hoặc canonical result fields; breaking contract changes cần versioning/migration rõ ràng.
+The MCP tool contract is a public compatibility surface. Replacing a provider adapter should not change tool names or canonical result fields; breaking contract changes require explicit versioning and migration.
