@@ -1,30 +1,30 @@
 # Codebridge
 
-Codebridge là bản triển khai Go độc lập của Local Coding Agent, tập trung vào một binary CLI duy nhất: quản lý workspace, chạy local MCP server, nối ChatGPT Web tunnel, bridge Figma Desktop MCP và cung cấp đầy đủ 87 coding tools.
+Codebridge là local coding agent viết bằng Go, đóng gói trong một binary duy nhất. Binary này quản lý workspace, chạy MCP server local, nối ChatGPT Web qua Secure MCP Tunnel, bridge Figma Desktop MCP, tích hợp CodeGraph và cung cấp **87 MCP tools** cho đọc/sửa code, chạy lệnh, Git, planning, review, approval và project memory.
 
-Tên project được giữ đúng theo yêu cầu: `codebridge`.
+## Điểm chính
 
-## Trạng thái migration
-
-- Native Go CLI và lifecycle: `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, `tunnel`.
-- Streamable HTTP MCP stateless tại `/mcp`, health tại `/healthz`.
-- Đủ contract 87 tools: filesystem, command/process, git, skills, companion app, repo intelligence, CodeGraph navigation, patch/undo, quality gates, review, planner, policy/approval, profile, Figma và memory migration.
-- Root confinement có canonicalization để chặn traversal và symlink escape.
-- Exact-action approval dùng một lần cho policy `balanced`.
-- MCP Apps widget được embed trực tiếp vào binary.
-- Tunnel-client có thể tải từ official GitHub release, kiểm tra SHA256 khi release có `SHA256SUMS.txt`.
-- Build được cho Linux, macOS và Windows.
+- Native Go CLI cho `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma` và `tunnel`.
+- Stateless Streamable HTTP MCP tại `/mcp`; public health tại `/healthz` và supervisor health tại `/internal/healthz`.
+- 87 tools được đăng ký từ một contract duy nhất trong `agent.Tools()`.
+- Root confinement chặn path traversal và symlink escape.
+- Policy `strict`, `balanced`, `full`; exact-action approval dùng một lần cho hành động rủi ro.
+- Embedded MCP Apps widget, không cần web bundle riêng.
+- Optional CodeGraph navigation và Figma Desktop MCP bridge.
+- Provider-neutral project memory với agentmemory adapter, async capture, retry/backoff và export/import canonical.
+- Build cho Linux, macOS và Windows.
 
 ## Yêu cầu
 
 - Go 1.25 trở lên.
-- Git để tự nhận git root.
-- `rg` là tùy chọn; nếu thiếu sẽ dùng Go scanner.
-- `codegraph` là tùy chọn; `codegraph_explore` chỉ chạy khi project root có `.codegraph/`.
+- Git để nhận repository root và project identity.
+- `rg` là tùy chọn; nếu thiếu Codebridge dùng Go scanner.
+- `codegraph` là tùy chọn; `codegraph_explore` chỉ chạy khi project có `.codegraph/`.
 - Tunnel ID và Runtime API key nếu dùng ChatGPT Web tunnel.
 - Figma Desktop MCP nếu dùng nhóm tool Figma.
+- agentmemory nếu bật project memory.
 
-## Build
+## Build và cài đặt
 
 ```bash
 cd codebridge
@@ -35,63 +35,131 @@ go build -o dist/codebridge ./cmd/codebridge
 Hoặc:
 
 ```bash
-make
+make build
 ```
 
-## Sử dụng nhanh
-
-Chạy setup:
+Cài vào user bin:
 
 ```bash
-./dist/codebridge setup
+install -Dm755 dist/codebridge "$HOME/.local/bin/codebridge"
 ```
 
-Nếu chỉ muốn local MCP, không dùng tunnel:
+Binary cũng hỗ trợ:
 
 ```bash
-./dist/codebridge start --workspace /path/to/repo --no-tunnel --background --save
+./dist/codebridge install-cli
 ```
 
-Daily use trong repo bất kỳ:
+## Bắt đầu nhanh
+
+Chạy wizard:
+
+```bash
+codebridge setup
+```
+
+Chạy trong repository hiện tại:
 
 ```bash
 cd /path/to/repo
 codebridge
 ```
 
-Lệnh trên tự lấy git root hiện tại, lưu workspace và chạy background. Các lệnh quản lý:
+Lệnh mặc định tự nhận Git root, lưu workspace và chạy background.
+
+Chỉ chạy local MCP, không dùng tunnel:
 
 ```bash
-codebridge status
-codebridge doctor
-codebridge workspace
-codebridge restart
-codebridge stop
-codebridge logs
+codebridge start \
+  --workspace /path/to/repo \
+  --no-tunnel \
+  --background \
+  --save
 ```
 
-Chạy server foreground để debug:
+Chạy foreground để debug:
 
 ```bash
 codebridge serve --workspace /path/to/repo --no-tunnel
 ```
 
-Endpoint:
+Các endpoint mặc định:
 
 - MCP: `http://127.0.0.1:8789/mcp`
 - Health: `http://127.0.0.1:8789/healthz`
+- Supervisor health: `http://127.0.0.1:8789/internal/healthz`
 
-## Tunnel và secret
+## CLI thường dùng
 
 ```bash
-codebridge keys
-codebridge tunnel install
-codebridge key set
-codebridge profile
-codebridge start --background
+codebridge status
+codebridge status --json
+codebridge doctor
+codebridge doctor --json
+codebridge workspace
+codebridge workspace /path/to/repo
+codebridge restart
+codebridge stop
+codebridge logs
+codebridge config get
+codebridge config path
+codebridge skills list
+codebridge figma status
 ```
 
-`config.json` không lưu MCP bearer token, approval token hoặc Runtime API key. Runtime key được lưu riêng với permission `0600`, hoặc có thể truyền bằng environment:
+Xem toàn bộ command và option:
+
+```bash
+codebridge help
+```
+
+## ChatGPT Web tunnel
+
+```bash
+codebridge tunnel install
+codebridge setup
+codebridge key set
+codebridge profile
+codebridge restart
+```
+
+`codebridge key set` lưu Runtime API key vào local `.env` với permission `0600`. Trong ChatGPT Web:
+
+1. Mở **Settings → Connectors → Developer mode**.
+2. Thêm custom MCP connector.
+3. Chọn tunnel đã cấu hình.
+4. Chọn `No auth`; Runtime API key nằm trên máy local, không nhập vào connector.
+5. Gọi `workspace_info` hoặc `workspace_snapshot` để kiểm tra kết nối.
+
+## Cấu hình và secret
+
+Codebridge nạp cấu hình theo thứ tự:
+
+```text
+defaults
+  → config.json
+  → environment overrides
+  → CLI options của lần chạy hiện tại
+```
+
+Đường dẫn config:
+
+| Hệ điều hành | Config directory |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/codebridge` hoặc `~/.config/codebridge` |
+| macOS | `~/Library/Application Support/Codebridge` |
+| Windows | `%APPDATA%\Codebridge` |
+
+Các file chính:
+
+```text
+config.json   non-secret configuration
+.env          Runtime API key và optional memory secret
+```
+
+`config.json` và `.env` được ghi với permission `0600` trên Unix. Codebridge không serialize MCP bearer token hoặc approval token vào `config.json`.
+
+Runtime-only secret có thể truyền qua environment:
 
 ```bash
 export CONTROL_PLANE_API_KEY="..."
@@ -99,85 +167,199 @@ export MCP_AUTH_TOKEN="..."
 export AGENT_APPROVAL_TOKEN="..."
 ```
 
-## ChatGPT Web Connector
-
-Trong ChatGPT Web:
-
-1. Settings → Connectors → Developer mode.
-2. Add custom MCP connector.
-3. Chọn tunnel đã cấu hình.
-4. Auth chọn `No auth`; Runtime API key nằm ở local machine, không nhập vào connector.
-5. Gọi `workspace_info` hoặc `workspace_snapshot` để verify.
-
 ## Figma Desktop
 
-Mặc định Codebridge kết nối `http://127.0.0.1:3845/mcp`.
+Mặc định Codebridge kết nối:
+
+```text
+http://127.0.0.1:3845/mcp
+```
+
+Kiểm tra:
 
 ```bash
 codebridge figma status
 codebridge figma tools
 ```
 
-Endpoint remote bị chặn mặc định. Chỉ bật `FIGMA_DESKTOP_ALLOW_REMOTE=1` khi đã hiểu rủi ro.
+Remote Figma endpoint bị chặn mặc định. Chỉ bật `FIGMA_DESKTOP_ALLOW_REMOTE=1` khi đã hiểu rủi ro.
 
-## Memory provider
+# Project memory
 
-Codebridge expose một contract MCP trung lập (`memory_status`, `memory_context`, `memory_search`, `memory_remember`, `memory_commit`, `memory_forget`, `memory_export`, `memory_import`). Backend mặc định là `none`; adapter đầu tiên hỗ trợ [agentmemory](https://github.com/rohitg00/agentmemory) qua REST API.
+Codebridge expose contract trung lập, không để ChatGPT phụ thuộc trực tiếp vào agentmemory:
+
+| Tool | Mục đích |
+|---|---|
+| `memory_status` | Provider, project scope, capabilities, health và recorder stats |
+| `memory_context` | Lấy historical context gọn cho task hiện tại |
+| `memory_search` | Tìm decisions, failures, solutions, preferences và procedures |
+| `memory_remember` | Lưu một fact/decision/solution rõ ràng |
+| `memory_commit` | Tạo session handoff từ summary và local project state |
+| `memory_forget` | Xóa memory/session; destructive trong policy `balanced` |
+| `memory_export` | Xuất schema canonical dạng object hoặc JSONL |
+| `memory_import` | Nhập schema canonical để chuyển backend |
+
+Memory là **historical evidence**, không phải current source of truth. Agent vẫn phải kiểm tra source hiện tại bằng CodeGraph hoặc file tools trước khi sửa code.
+
+## Bật memory
+
+Cách khuyến nghị:
 
 ```bash
 codebridge setup
 codebridge restart
+codebridge doctor
 ```
 
-Setup lưu cấu hình không nhạy cảm trong `~/.config/codebridge/config.json`. Chỉ secret, nếu agentmemory bật `AGENTMEMORY_SECRET`, được lưu trong `~/.config/codebridge/.env`:
+Setup lưu non-secret settings vào `config.json`. Chỉ secret, nếu backend yêu cầu, được lưu vào `.env`.
 
-```bash
-CODEBRIDGE_MEMORY_SECRET=change-me
+Tại prompt secret:
+
+```text
+Enter  giữ secret cũ
+-      xóa secret
+value  thay secret
 ```
 
-Agentmemory local không bật auth thì có thể để secret trống. Environment variables `CODEBRIDGE_MEMORY_*` vẫn được hỗ trợ như runtime overrides, nhưng không phải nơi lưu config mặc định.
+Nếu agentmemory chỉ bind local và không bật `AGENTMEMORY_SECRET`, có thể để secret trống. Khi secret có giá trị, Codebridge gửi:
 
-Memory được scope theo normalized Git remote (`git:github.com/owner/repo`) và fallback sang hash của configured owning root. Capture mặc định là `selected`: các tool quan trọng được đưa vào bounded async queue, retry có giới hạn và redaction trước khi gửi, nên backend memory chậm hoặc offline không chặn coding workflow. MCP session ID được dùng để tách observations giữa các kết nối. Memory là historical evidence; Codebridge hướng dẫn ChatGPT xác minh implementation bằng CodeGraph hoặc source hiện tại trước khi edit. `memory_forget` là destructive và cần exact approval trong policy `balanced`.
+```text
+Authorization: Bearer <secret>
+```
 
-`memory_export` trả schema canonical của Codebridge dưới dạng object hoặc JSONL. `memory_import` nhập schema này bằng provider adapter, giúp chuyển backend mà không phụ thuộc raw database dump.
+## Memory config mẫu
 
-Provider-specific code nằm sau `memory.Provider`, nên có thể thêm backend khác mà không đổi MCP tools hoặc workflow ChatGPT.
+```json
+{
+  "memory": {
+    "enabled": true,
+    "provider": "agentmemory",
+    "endpoint": "http://127.0.0.1:3111",
+    "secretEnv": "CODEBRIDGE_MEMORY_SECRET",
+    "timeoutMs": 3000,
+    "captureMode": "selected",
+    "tokenBudget": 1600,
+    "agentId": "chatgpt-codebridge",
+    "required": false,
+    "projectStrategy": "git-origin",
+    "queueSize": 128,
+    "deliveryTimeoutMs": 2000,
+    "retryMaxAttempts": 3,
+    "retryBackoffMs": 100,
+    "healthCacheMs": 5000,
+    "options": {}
+  }
+}
+```
 
-## Security model
+### `required`
 
-- File tools và command `cwd` chỉ hoạt động trong các roots đã cấu hình.
-- Symlink/junction escape bị chặn bằng canonical path.
-- Đây không phải OS sandbox; command được phép vẫn chạy với quyền của user hiện tại.
-- `safe` mode chặn destructive shell patterns và git mutation.
+- `false`: fail-open. Provider offline không ngăn Codebridge khởi động hoặc chạy coding tools.
+- `true`: startup fail nếu health check không thành công.
+
+### `captureMode`
+
+- `off`: không auto-capture; các tool memory gọi thủ công vẫn hoạt động.
+- `selected`: chỉ capture các tool có giá trị lâu dài như edit, test, build, Git, plan, decision và review.
+- `metadata`: capture nhiều tool hơn nhưng chỉ giữ metadata tối thiểu.
+
+Codebridge không gửi raw source, patch, command output hoặc secret trong auto-capture. Input được redact; result chỉ lấy các field đã whitelist.
+
+### `projectStrategy`
+
+- `git-origin`: chuẩn hóa remote thành dạng `git:github.com/owner/repo`; clone ở thư mục khác vẫn dùng cùng project memory.
+- `path-hash`: hash configured owning root; các checkout khác nhau có memory riêng.
+
+File hoặc thư mục con luôn được quy về configured owning root trước khi tạo project ID, tránh phân mảnh memory theo subdirectory.
+
+### Session identity
+
+Mỗi logical MCP connection có memory session riêng. Codebridge ưu tiên protocol session ID; nếu transport không cung cấp ID, nó tạo process-local hash ổn định từ session object. Nhiều cuộc chat/kết nối đồng thời không bị gom vào một process-level session chung.
+
+### Async recorder
+
+Auto-capture dùng bounded queue và không block tool response:
+
+```text
+tool completed
+  → redact + whitelist
+  → enqueue non-blocking
+  → deliver với timeout
+  → retry exponential có giới hạn
+  → delivered / failed / dropped counters
+```
+
+Khi shutdown, recorder đóng nhận mới rồi drain queue còn lại. `memory_status` hiển thị `enqueued`, `delivered`, `retried`, `failed`, `dropped` và queue depth.
+
+## Provider options
+
+`memory.options` dành cho cấu hình adapter, ví dụ custom REST paths hoặc response limit. Codebridge từ chối mọi key có tên chứa `secret`, `password`, `token`, `apiKey`, `authorization` hoặc `credential`; secret phải đi qua `memory.secretEnv`.
+
+Provider mới có thể đăng ký qua `memory/factory.Register` mà không đổi MCP tools hoặc runtime dispatch.
+
+## Export và import
+
+Xuất memory qua MCP:
+
+```json
+{
+  "path": ".",
+  "format": "jsonl"
+}
+```
+
+Import lại:
+
+```json
+{
+  "path": ".",
+  "jsonl": "{\"id\":\"...\",\"content\":\"...\"}\n"
+}
+```
+
+Export được normalize sang schema Codebridge. Import replay từng item qua provider `Remember`, thay vì restore raw database dump, nên phù hợp cho migration giữa backend khác nhau.
+
+# Security model
+
+- File tools và command `cwd` chỉ hoạt động trong configured roots.
+- Canonicalization chặn traversal, symlink và junction escape.
+- Configured root không thể bị delete hoặc rename qua dedicated tools/patch operations.
+- Đây không phải OS sandbox; command hợp lệ vẫn chạy với quyền user hiện tại.
+- `safe` mode chặn destructive shell patterns và Git mutation.
 - `strict` policy chỉ cho phép đọc/phân tích.
-- `balanced` cho phép edit nhưng yêu cầu exact one-time approval cho delete, install, network, git mutation và mutating Figma calls.
-- `full` mở workflow dự án nhưng vẫn chặn catastrophic system commands.
+- `balanced` cho phép edit nhưng yêu cầu exact one-time approval cho delete, install, network, mutating Git, mutating Figma và `memory_forget`.
+- `full` mở project workflow nhưng vẫn chặn catastrophic system commands.
+- Audit args được redact đệ quy trước khi ghi local state.
+- Non-loopback MCP host bắt buộc có bearer token.
 
-## Cấu trúc
+# Cấu trúc repository
 
 ```text
 cmd/codebridge/       executable entrypoint
-internal/app/         composition metadata
-internal/cli/         command parsing, setup, lifecycle, tunnel, release install
-internal/server/      HTTP routes, auth, CORS/origin, graceful shutdown
-internal/mcpserver/   MCP SDK adapter, resource và 87 tool registrations
-internal/agent/       shared runtime và tool handlers
-internal/workspace/   root confinement, search, tree
-internal/security/    command guards, redaction, approvals
-internal/patch/       backup, unified diff, preview, validate, undo
-internal/processx/    bounded foreground/background process execution
-internal/figma/       official Figma Desktop MCP bridge
-internal/state/       per-workspace state store
-internal/assets/      embedded MCP Apps widget và built-in skills
+internal/app/         version/tier metadata
+internal/cli/         command parsing, setup, lifecycle, tunnel và install
+internal/server/      HTTP routes, auth, CORS/origin và limits
+internal/mcpserver/   MCP SDK adapter, session identity và widget resource
+internal/agent/       87-tool registry, runtime, policy và handlers
+internal/workspace/   root confinement, owning-root, search và tree
+internal/security/    command guards, redaction và approvals
+internal/patch/       backup, diff, preview, validate và undo
+internal/processx/    bounded process execution và process tree
+internal/figma/       Figma Desktop MCP bridge
+internal/memory/      canonical contracts, recorder, scoping và adapters
+internal/state/       per-workspace local state
+internal/assets/      embedded widget và built-in skills
 ```
 
 Thiết kế chi tiết: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Verification
+# Verification
 
 ```bash
 go test ./...
+go test -race ./internal/memory/... ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver
 go vet ./...
+go build ./...
 GOOS=windows GOARCH=amd64 go build ./...
 GOOS=darwin GOARCH=arm64 go build ./...
 ```
@@ -189,4 +371,4 @@ CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8789/mcp \
   go test ./internal/server -run TestExternalStreamableHTTP -v
 ```
 
-Project nằm trong repository AGPL-3.0-or-later hiện tại và tuân theo file `LICENSE` ở repository root.
+Codebridge được phát hành theo AGPL-3.0-or-later; xem `LICENSE` ở repository root.
