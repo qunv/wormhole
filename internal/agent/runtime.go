@@ -16,6 +16,8 @@ import (
 
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
+	"codebridge/internal/database"
+	databasefactory "codebridge/internal/database/factory"
 	"codebridge/internal/figma"
 	"codebridge/internal/memory"
 	memoryfactory "codebridge/internal/memory/factory"
@@ -34,6 +36,7 @@ type Runtime struct {
 	Patches                 *patch.Engine
 	Processes               *processx.Registry
 	Figma                   figma.Client
+	Database                *database.Manager
 	Memory                  memory.Provider
 	MemoryRecorder          *memory.Recorder
 	MemoryProject           string
@@ -89,6 +92,14 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 			RetryBackoff:    time.Duration(cfg.Memory.RetryBackoffMS) * time.Millisecond,
 		})
 	}
+	databaseManager, err := databasefactory.New(cfg.Database)
+	if err != nil {
+		if memoryRecorder != nil {
+			memoryRecorder.Close()
+		}
+		_ = memoryProvider.Close()
+		return nil, err
+	}
 	runtime := &Runtime{
 		Config: cfg, Workspace: manager, Store: store,
 		Approvals: security.NewApprovalManager(store, cfg.ApprovalToken, 10*time.Minute),
@@ -97,7 +108,8 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 			Endpoint: cfg.FigmaDesktopURL, Timeout: time.Duration(cfg.FigmaDesktopTimeoutMS) * time.Millisecond,
 			AllowRemote: cfg.FigmaDesktopAllowRemote, Version: version,
 		},
-		Memory: memoryProvider, MemoryRecorder: memoryRecorder,
+		Database: databaseManager,
+		Memory:   memoryProvider, MemoryRecorder: memoryRecorder,
 		MemoryProject: memoryProject, MemoryFallbackSessionID: memorySessionID,
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
 	}
@@ -107,6 +119,9 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 
 func (r *Runtime) Close() {
 	r.Processes.StopAll()
+	if r.Database != nil {
+		r.Database.Close()
+	}
 	if r.MemoryRecorder != nil {
 		r.MemoryRecorder.Close()
 	}
@@ -371,6 +386,8 @@ func (r *Runtime) dispatch(ctx context.Context, name string, args map[string]any
 		return r.handleWorkflow(ctx, name, args)
 	case memoryTools[name]:
 		return r.handleMemory(ctx, name, args)
+	case databaseTools[name]:
+		return r.handleDatabase(ctx, name, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -395,7 +412,49 @@ var (
 		"security_scan", "todo_scan", "change_summary")
 	workflowTools = names("task_plan", "task_state", "decision_log")
 	memoryTools   = names("memory_status", "memory_context", "memory_search", "memory_remember", "memory_commit", "memory_forget", "memory_export", "memory_import")
+	databaseTools = names("db_list_connections", "db_describe", "db_query", "db_explain")
 )
+
+func ToolGroup(name string) string {
+	switch {
+	case basicTools[name]:
+		return "basic"
+	case fsTools[name]:
+		return "filesystem"
+	case execTools[name]:
+		return "execution"
+	case figmaTools[name]:
+		return "figma"
+	case repoTools[name]:
+		return "repo"
+	case workflowTools[name]:
+		return "workflow"
+	case memoryTools[name]:
+		return "memory"
+	case databaseTools[name]:
+		return "database"
+	default:
+		return ""
+	}
+}
+
+func ToolEnabled(exposure config.ToolExposureConfig, name string) bool {
+	for _, denied := range exposure.DeniedTools {
+		if denied == name {
+			return false
+		}
+	}
+	if len(exposure.AllowedGroups) == 0 {
+		return true
+	}
+	group := ToolGroup(name)
+	for _, allowed := range exposure.AllowedGroups {
+		if allowed == group {
+			return true
+		}
+	}
+	return false
+}
 
 func names(values ...string) map[string]bool {
 	out := map[string]bool{}

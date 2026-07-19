@@ -22,6 +22,7 @@ import (
 
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
+	databasefactory "codebridge/internal/database/factory"
 	"codebridge/internal/figma"
 	memoryfactory "codebridge/internal/memory/factory"
 
@@ -191,6 +192,7 @@ func (a App) spawnServer(executable string, cfg config.Config, background bool) 
 		"CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
 		"CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
 		"CODEBRIDGE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
+		"CODEBRIDGE_DATABASE_ENABLED="+strconv.FormatBool(cfg.Database.Enabled),
 	)
 	return a.startChild("server", cmd, background)
 }
@@ -328,6 +330,25 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 			memoryHealth := memoryProvider.Health(ctx)
 			_ = memoryProvider.Close()
 			checks = append(checks, check{"memory", memoryHealth.Available, fmt.Sprintf("%s %s", memoryHealth.Provider, memoryHealth.Endpoint)})
+		}
+	}
+	if cfg.Database.Enabled {
+		databaseManager, databaseErr := databasefactory.New(cfg.Database)
+		if databaseErr != nil {
+			checks = append(checks, check{"database", false, databaseErr.Error()})
+		} else {
+			connections := databaseManager.List(ctx, true)
+			databaseManager.Close()
+			available := 0
+			for _, connection := range connections {
+				if connection.Available {
+					available++
+				}
+			}
+			checks = append(checks, check{
+				"database", available == len(connections),
+				fmt.Sprintf("%d/%d connections available", available, len(connections)),
+			})
 		}
 	}
 	ok := true

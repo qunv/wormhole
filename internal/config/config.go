@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -42,6 +43,83 @@ type MemoryConfig struct {
 	RetryBackoffMS    int            `json:"retryBackoffMs,omitempty"`
 	HealthCacheMS     int            `json:"healthCacheMs,omitempty"`
 }
+
+func validateDatabaseOptions(value any, path string) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, entry := range typed {
+			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+			for _, forbidden := range []string{"secret", "password", "token", "apikey", "authorization", "credential", "dsn", "databaseurl", "connectionstring"} {
+				if strings.Contains(normalized, forbidden) {
+					return fmt.Errorf("%s.%s must reference credentials through credentialRef instead of storing them in config.json", path, key)
+				}
+			}
+			if err := validateDatabaseOptions(entry, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, entry := range typed {
+			if err := validateDatabaseOptions(entry, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type CredentialReference struct {
+	Provider string `json:"provider"`
+	Name     string `json:"name"`
+}
+
+type DatabaseAccessConfig struct {
+	Mode           string   `json:"mode"`
+	AllowedSchemas []string `json:"allowedSchemas,omitempty"`
+	DeniedTables   []string `json:"deniedTables,omitempty"`
+	MaskColumns    []string `json:"maskColumns,omitempty"`
+}
+
+type DatabaseLimitsConfig struct {
+	QueryTimeoutMS       int `json:"queryTimeoutMs,omitempty"`
+	MaxRows              int `json:"maxRows,omitempty"`
+	MaxResultBytes       int `json:"maxResultBytes,omitempty"`
+	MaxCellBytes         int `json:"maxCellBytes,omitempty"`
+	MaxConcurrentQueries int `json:"maxConcurrentQueries,omitempty"`
+}
+
+type DatabasePoolConfig struct {
+	MaxOpen            int `json:"maxOpen,omitempty"`
+	MaxIdle            int `json:"maxIdle,omitempty"`
+	MaxLifetimeSeconds int `json:"maxLifetimeSeconds,omitempty"`
+}
+
+type DatabaseConnectionConfig struct {
+	Driver        string               `json:"driver"`
+	Environment   string               `json:"environment"`
+	CredentialRef CredentialReference  `json:"credentialRef"`
+	Required      bool                 `json:"required,omitempty"`
+	Access        DatabaseAccessConfig `json:"access"`
+	Limits        DatabaseLimitsConfig `json:"limits"`
+	Pool          DatabasePoolConfig   `json:"pool"`
+	Options       map[string]any       `json:"options,omitempty"`
+}
+
+type DatabaseConfig struct {
+	Enabled     bool                                `json:"enabled"`
+	Connections map[string]DatabaseConnectionConfig `json:"connections,omitempty"`
+}
+
+type ToolExposureConfig struct {
+	AllowedGroups []string `json:"allowedGroups,omitempty"`
+	DeniedTools   []string `json:"deniedTools,omitempty"`
+}
+
+var (
+	databaseAliasPattern  = regexp.MustCompile(`^[a-z][a-z0-9._-]{1,63}$`)
+	databaseDriverPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	envNamePattern        = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
 
 func validateMemoryOptions(value any, path string) error {
 	switch typed := value.(type) {
@@ -90,7 +168,9 @@ type Config struct {
 	FigmaDesktopTimeoutMS   int    `json:"figmaDesktopTimeoutMs,omitempty"`
 	FigmaDesktopAllowRemote bool   `json:"figmaDesktopAllowRemote,omitempty"`
 
-	Memory MemoryConfig `json:"memory,omitempty"`
+	Memory   MemoryConfig       `json:"memory,omitempty"`
+	Database DatabaseConfig     `json:"database,omitempty"`
+	Tools    ToolExposureConfig `json:"tools,omitempty"`
 
 	MaxReadChars      int `json:"maxReadChars,omitempty"`
 	ReadDefault       int `json:"readDefault,omitempty"`
@@ -126,6 +206,7 @@ func Default() Config {
 			QueueSize:       128, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
 			RetryBackoffMS: 100, HealthCacheMS: 5_000,
 		},
+		Database:          DatabaseConfig{Enabled: false, Connections: map[string]DatabaseConnectionConfig{}},
 		MaxReadChars:      200_000,
 		ReadDefault:       30_000,
 		MaxBatchReadChars: 500_000,
@@ -272,6 +353,74 @@ func (c Config) Validate(requireWorkspace bool) error {
 	if err := validateMemoryOptions(c.Memory.Options, "memory.options"); err != nil {
 		return err
 	}
+	if c.Database.Enabled && len(c.Database.Connections) == 0 {
+		return fmt.Errorf("database.connections is required when database is enabled")
+	}
+	for alias, connection := range c.Database.Connections {
+		if !databaseAliasPattern.MatchString(alias) {
+			return fmt.Errorf("database alias %q must match %s", alias, databaseAliasPattern.String())
+		}
+		if !databaseDriverPattern.MatchString(connection.Driver) {
+			return fmt.Errorf("database connection %q driver must match %s", alias, databaseDriverPattern.String())
+		}
+		if connection.Environment == "" {
+			return fmt.Errorf("database connection %q environment is required", alias)
+		}
+		if connection.CredentialRef.Provider != "env" {
+			return fmt.Errorf("database connection %q credentialRef.provider must be env", alias)
+		}
+		if !envNamePattern.MatchString(connection.CredentialRef.Name) {
+			return fmt.Errorf("database connection %q credentialRef.name must be an environment variable name", alias)
+		}
+		if connection.Access.Mode != "read-only" && connection.Access.Mode != "read-write" {
+			return fmt.Errorf("database connection %q access.mode must be read-only or read-write", alias)
+		}
+		if (connection.Environment == "prod" || connection.Environment == "production") && connection.Access.Mode != "read-only" {
+			return fmt.Errorf("production database connection %q must be read-only", alias)
+		}
+		for _, schema := range connection.Access.AllowedSchemas {
+			if strings.TrimSpace(schema) == "" {
+				return fmt.Errorf("database connection %q contains an empty allowed schema", alias)
+			}
+		}
+		limits := []struct {
+			name  string
+			value int
+		}{
+			{"queryTimeoutMs", connection.Limits.QueryTimeoutMS},
+			{"maxRows", connection.Limits.MaxRows},
+			{"maxResultBytes", connection.Limits.MaxResultBytes},
+			{"maxCellBytes", connection.Limits.MaxCellBytes},
+			{"maxConcurrentQueries", connection.Limits.MaxConcurrentQueries},
+			{"pool.maxOpen", connection.Pool.MaxOpen},
+			{"pool.maxLifetimeSeconds", connection.Pool.MaxLifetimeSeconds},
+		}
+		for _, limit := range limits {
+			if limit.value <= 0 {
+				return fmt.Errorf("database connection %q %s must be greater than zero", alias, limit.name)
+			}
+		}
+		if connection.Pool.MaxIdle < 0 || connection.Pool.MaxIdle > connection.Pool.MaxOpen {
+			return fmt.Errorf("database connection %q pool.maxIdle must be between zero and pool.maxOpen", alias)
+		}
+		if err := validateDatabaseOptions(connection.Options, "database.connections."+alias+".options"); err != nil {
+			return err
+		}
+	}
+	allowedGroups := map[string]bool{
+		"basic": true, "filesystem": true, "execution": true, "figma": true,
+		"repo": true, "workflow": true, "memory": true, "database": true,
+	}
+	for _, group := range c.Tools.AllowedGroups {
+		if !allowedGroups[group] {
+			return fmt.Errorf("unsupported tools.allowedGroups value %q", group)
+		}
+	}
+	for _, name := range c.Tools.DeniedTools {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("tools.deniedTools must not contain empty names")
+		}
+	}
 	if requireWorkspace {
 		info, err := os.Stat(c.Workspace)
 		if err != nil || !info.IsDir() {
@@ -303,6 +452,16 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 			secretFingerprint = hex.EncodeToString(sum[:8])
 		}
 	}
+	databaseSecretFingerprints := map[string]string{}
+	for alias, connection := range c.Database.Connections {
+		if connection.CredentialRef.Provider != "env" || connection.CredentialRef.Name == "" {
+			continue
+		}
+		if secret := os.Getenv(connection.CredentialRef.Name); secret != "" {
+			sum := sha256.Sum256([]byte(secret))
+			databaseSecretFingerprints[alias] = hex.EncodeToString(sum[:8])
+		}
+	}
 	material, _ := json.Marshal(map[string]any{
 		"workspace":       filepath.Clean(c.Workspace),
 		"extraRoots":      c.ExtraRoots,
@@ -316,6 +475,10 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 		"memory": map[string]any{
 			"config": c.Memory, "secretFingerprint": secretFingerprint,
 		},
+		"database": map[string]any{
+			"config": c.Database, "secretFingerprints": databaseSecretFingerprints,
+		},
+		"tools": c.Tools,
 	})
 	sum := sha256.Sum256(material)
 	return hex.EncodeToString(sum[:8])
@@ -482,6 +645,53 @@ func normalize(c *Config) {
 	if c.Memory.HealthCacheMS == 0 {
 		c.Memory.HealthCacheMS = 5_000
 	}
+	if c.Database.Connections == nil {
+		c.Database.Connections = map[string]DatabaseConnectionConfig{}
+	}
+	for alias, connection := range c.Database.Connections {
+		connection.Driver = strings.ToLower(strings.TrimSpace(connection.Driver))
+		connection.Environment = strings.ToLower(strings.TrimSpace(connection.Environment))
+		if connection.Environment == "" {
+			connection.Environment = "unspecified"
+		}
+		connection.CredentialRef.Provider = strings.ToLower(strings.TrimSpace(connection.CredentialRef.Provider))
+		connection.CredentialRef.Name = strings.TrimSpace(connection.CredentialRef.Name)
+		connection.Access.Mode = strings.ToLower(strings.TrimSpace(connection.Access.Mode))
+		if connection.Access.Mode == "" {
+			connection.Access.Mode = "read-only"
+		}
+		if connection.Limits.QueryTimeoutMS == 0 {
+			connection.Limits.QueryTimeoutMS = 10_000
+		}
+		if connection.Limits.MaxRows == 0 {
+			connection.Limits.MaxRows = 500
+		}
+		if connection.Limits.MaxResultBytes == 0 {
+			connection.Limits.MaxResultBytes = 1 << 20
+		}
+		if connection.Limits.MaxCellBytes == 0 {
+			connection.Limits.MaxCellBytes = 64 << 10
+		}
+		if connection.Limits.MaxConcurrentQueries == 0 {
+			connection.Limits.MaxConcurrentQueries = 4
+		}
+		if connection.Pool.MaxOpen == 0 {
+			connection.Pool.MaxOpen = 5
+		}
+		if connection.Pool.MaxIdle == 0 {
+			connection.Pool.MaxIdle = min(2, connection.Pool.MaxOpen)
+		}
+		if connection.Pool.MaxLifetimeSeconds == 0 {
+			connection.Pool.MaxLifetimeSeconds = 1800
+		}
+		c.Database.Connections[alias] = connection
+	}
+	for index, group := range c.Tools.AllowedGroups {
+		c.Tools.AllowedGroups[index] = strings.ToLower(strings.TrimSpace(group))
+	}
+	for index, name := range c.Tools.DeniedTools {
+		c.Tools.DeniedTools[index] = strings.TrimSpace(name)
+	}
 	c.Memory.Provider = strings.ToLower(strings.TrimSpace(c.Memory.Provider))
 	c.Memory.CaptureMode = strings.ToLower(strings.TrimSpace(c.Memory.CaptureMode))
 	c.Memory.ProjectStrategy = strings.ToLower(strings.TrimSpace(c.Memory.ProjectStrategy))
@@ -555,6 +765,7 @@ func applyEnvironment(c *Config) {
 	c.FigmaDesktopAllowRemote = envBool("FIGMA_DESKTOP_ALLOW_REMOTE", c.FigmaDesktopAllowRemote)
 	c.Memory.Enabled = envBool("CODEBRIDGE_MEMORY_ENABLED", c.Memory.Enabled)
 	c.Memory.Required = envBool("CODEBRIDGE_MEMORY_REQUIRED", c.Memory.Required)
+	c.Database.Enabled = envBool("CODEBRIDGE_DATABASE_ENABLED", c.Database.Enabled)
 	c.Audit = !envIs("AGENT_AUDIT", "0", !c.Audit)
 	c.AuditArgs = !envIs("AGENT_AUDIT_ARGS", "0", !c.AuditArgs)
 	c.HTTPLog = envBool("AGENT_HTTP_LOG", c.HTTPLog)

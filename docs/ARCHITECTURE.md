@@ -41,7 +41,7 @@ Official MCP Go SDK
    ├── Streamable HTTP
    ├── logical ServerSession
    ├── embedded Apps resource
-   └── 87 registered tools
+   └── 91 registered tools
           │
           ▼
 agent.Runtime.HandleSession
@@ -63,13 +63,14 @@ agent.Runtime.HandleSession
 | `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
 | `internal/server` | HTTP routing, health, authentication, Origin/CORS, and body limits |
 | `internal/mcpserver` | MCP server construction, session identity, widget resource, and result adapter |
-| `internal/agent` | 87-tool registry, shared runtime, policy, and tool handlers |
+| `internal/agent` | 91-tool registry, shared runtime, policy, and tool handlers |
 | `internal/workspace` | Canonical paths, configured roots, owning-root resolution, list/search/tree |
 | `internal/security` | Shell and Git guards, risk classification, approvals, and redaction |
 | `internal/patch` | Backup batches, structured operations, unified diffs, and undo |
 | `internal/processx` | Timeouts, output caps, and managed process trees |
 | `internal/figma` | MCP client bridge to Figma Desktop |
 | `internal/memory` | Canonical contracts, project identity, asynchronous recorder, and adapters |
+| `internal/database` | Alias routing, shared `database/sql` execution core, driver dialects, limits, and masking |
 | `internal/state` | Per-workspace notes, tasks, decisions, audit, index, and backups |
 | `internal/assets` | Embedded MCP Apps widget and built-in skills |
 

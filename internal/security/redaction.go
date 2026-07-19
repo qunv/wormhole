@@ -9,7 +9,7 @@ import (
 	"regexp"
 )
 
-var auditRedact = regexp.MustCompile(`(?i)^(content|body|diff|patch|old_text|new_text|command|token|approval_token|mcp_auth_token|control_plane_api_key|key|secret|password|authorization|auth|api[_-]?key)$`)
+var auditRedact = regexp.MustCompile(`(?i)^(content|body|diff|patch|old_text|new_text|command|sql|query|params|parameters|rows|result|dsn|database[_-]?url|connection[_-]?string|credential[_-]?ref|token|approval_token|mcp_auth_token|control_plane_api_key|key|secret|password|authorization|auth|api[_-]?key)$`)
 
 func RedactDeep(value any, depth int) any {
 	if depth > 8 {

@@ -98,6 +98,32 @@ func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
 	}
 }
 
+func TestDatabaseConfigAcceptsRegisteredDriverNamesWithoutHardcoding(t *testing.T) {
+	cfg := Default()
+	cfg.Database.Enabled = true
+	cfg.Database.Connections = map[string]DatabaseConnectionConfig{
+		"db.example": {
+			Driver: "future_driver", Environment: "dev",
+			CredentialRef: CredentialReference{Provider: "env", Name: "CODEBRIDGE_FUTURE_DATABASE_DSN"},
+			Access:        DatabaseAccessConfig{Mode: "read-only"},
+			Limits: DatabaseLimitsConfig{
+				QueryTimeoutMS: 1000, MaxRows: 10, MaxResultBytes: 1024,
+				MaxCellBytes: 128, MaxConcurrentQueries: 1,
+			},
+			Pool: DatabasePoolConfig{MaxOpen: 1, MaxIdle: 1, MaxLifetimeSeconds: 60},
+		},
+	}
+	if err := cfg.Validate(false); err != nil {
+		t.Fatalf("syntactically valid future driver was rejected by config: %v", err)
+	}
+	connection := cfg.Database.Connections["db.example"]
+	connection.Driver = "Future/Driver"
+	cfg.Database.Connections["db.example"] = connection
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "driver must match") {
+		t.Fatalf("invalid driver name was not rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsSecretsInsideMemoryOptions(t *testing.T) {
 	cfg := Default()
 	cfg.Memory.Enabled = true

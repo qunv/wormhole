@@ -171,6 +171,13 @@ func (r *Runtime) workspaceInfo() map[string]any {
 			"enabled": r.Config.Memory.Enabled, "provider": r.Memory.Name(),
 			"project": r.MemoryProject, "capture_mode": r.Config.Memory.CaptureMode,
 		},
+		"database": map[string]any{
+			"enabled": r.Config.Database.Enabled, "aliases": r.Database.Aliases(),
+			"connections": r.Database.List(context.Background(), false),
+		},
+		"tools": map[string]any{
+			"allowed_groups": r.Config.Tools.AllowedGroups, "denied_tools": r.Config.Tools.DeniedTools,
+		},
 		"limits": map[string]any{
 			"max_read_chars": r.Config.MaxReadChars, "max_batch_read_chars": r.Config.MaxBatchReadChars,
 			"max_command_output": r.Config.MaxCommandOutput, "max_processes": r.Config.MaxProcesses,

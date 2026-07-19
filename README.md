@@ -1,12 +1,12 @@
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **87 MCP tools** for reading and editing code, running commands, Git operations, planning, review, approvals, and project memory.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **91 MCP tools** for reading and editing code, running commands, Git operations, planning, review, approvals, and project memory.
 
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, and `tunnel`.
 - Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
-- 87 tools registered from a single contract in `agent.Tools()`.
+- 91 tools registered from a single contract in `agent.Tools()`.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
@@ -166,6 +166,54 @@ export CONTROL_PLANE_API_KEY="..."
 export MCP_AUTH_TOKEN="..."
 export AGENT_APPROVAL_TOKEN="..."
 ```
+
+## Database MCP
+
+CodeBridge exposes stable, alias-routed, read-only database tools:
+
+```text
+db_list_connections
+db_describe
+db_query
+db_explain
+```
+
+The shared execution path lives in `internal/database/sqlcore` and uses `database/sql` for pooling, read-only transactions, row scanning, masking, and result limits. Driver packages provide only a dialect adapter and their `database/sql` driver. PostgreSQL uses `pgx/v5/stdlib`; MySQL uses `go-sql-driver/mysql`.
+
+A database connection stores only a credential reference:
+
+```json
+{
+  "database": {
+    "enabled": true,
+    "connections": {
+      "db.codebridge_dev": {
+        "driver": "postgres",
+        "environment": "dev",
+        "credentialRef": {
+          "provider": "env",
+          "name": "CODEBRIDGE_DB_CODEBRIDGE_DEV_DSN"
+        },
+        "access": {
+          "mode": "read-only",
+          "allowedSchemas": ["public"]
+        }
+      }
+    }
+  }
+}
+```
+
+The DSN belongs in `.env` or another runtime secret source, never in `config.json`:
+
+```bash
+CODEBRIDGE_DB_CODEBRIDGE_DEV_DSN="postgres://..."
+CODEBRIDGE_DB_MYSQL_DEV_DSN="user:password@tcp(127.0.0.1:3306)/app?tls=true"
+```
+
+For a MySQL alias, set `"driver": "mysql"`. When `allowedSchemas` is configured, the DSN must select one of those databases. Production MySQL TCP connections require verified TLS; Unix sockets are permitted without TLS. CodeBridge rejects MySQL DSNs enabling multi-statements, client-side parameter interpolation, unrestricted local files, cleartext/old passwords, plaintext fallback, or TLS verification bypass.
+
+Adding another SQL driver requires implementing `sqlcore.Dialect`, constructing the common client with `sqlcore.Open` or `sqlcore.NewWithDB`, and registering it through `database/factory.Register`. See `docs/ADR-DATABASE-MCP.md`.
 
 ## Figma Desktop
 
@@ -340,13 +388,14 @@ internal/app/         version and tier metadata
 internal/cli/         command parsing, setup, lifecycle, tunnel, and installation
 internal/server/      HTTP routes, authentication, CORS/origin, and limits
 internal/mcpserver/   MCP SDK adapter, session identity, and widget resource
-internal/agent/       87-tool registry, runtime, policy, and handlers
+internal/agent/       91-tool registry, runtime, policy, and handlers
 internal/workspace/   root confinement, owning-root resolution, search, and tree
 internal/security/    command guards, redaction, and approvals
 internal/patch/       backup, diff, preview, validation, and undo
 internal/processx/    bounded process execution and process-tree management
 internal/figma/       Figma Desktop MCP bridge
 internal/memory/      canonical contracts, recorder, scoping, and adapters
+internal/database/    alias routing, shared database/sql core, and dialect adapters
 internal/state/       per-workspace local state
 internal/assets/      embedded widget and built-in skills
 ```
@@ -369,6 +418,13 @@ External Streamable HTTP smoke test:
 ```bash
 CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8789/mcp \
   go test ./internal/server -run TestExternalStreamableHTTP -v
+```
+
+Optional MySQL integration test:
+
+```bash
+CODEBRIDGE_TEST_MYSQL_DSN='user:password@tcp(127.0.0.1:3306)/app?tls=true' \
+  go test ./internal/database/mysql -run TestMySQLIntegration -v
 ```
 
 Codebridge is released under AGPL-3.0-or-later; see `LICENSE` at the repository root.

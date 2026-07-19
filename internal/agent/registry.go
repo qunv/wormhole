@@ -9,6 +9,7 @@ type ToolSpec struct {
 	Description string
 	ReadOnly    bool
 	Destructive bool
+	OpenWorld   bool
 	Schema      map[string]any
 	Meta        map[string]any
 }
@@ -68,6 +69,40 @@ func Tools() []ToolSpec {
 			"memories": array(object(nil)),
 			"jsonl":    str("Canonical Codebridge memory items, one JSON object per line."),
 		}), false),
+
+		{
+			Name: "db_list_connections", Title: "List database connections",
+			Description: "List configured database aliases and safe capability metadata. Credentials and endpoints are never returned.",
+			ReadOnly:    true, OpenWorld: true,
+			Schema: object(map[string]any{"check_health": boolean()}),
+		},
+		{
+			Name: "db_describe", Title: "Describe database schema",
+			Description: "Describe allowed SQL schemas, tables, columns, and optional indexes through an exact connection alias.",
+			ReadOnly:    true, OpenWorld: true,
+			Schema: object(map[string]any{
+				"alias": str("Exact configured database alias."), "schema": str("Optional schema filter."),
+				"table": str("Optional table filter."), "include_indexes": boolean(),
+			}, "alias"),
+		},
+		{
+			Name: "db_query", Title: "Query database",
+			Description: "Run one bounded, parameterized, read-only SELECT or WITH query through an exact connection alias.",
+			ReadOnly:    true, OpenWorld: true,
+			Schema: object(map[string]any{
+				"alias": str("Exact configured database alias."), "sql": str("One read-only SQL statement."),
+				"params": array(map[string]any{}), "max_rows": integer(),
+			}, "alias", "sql"),
+		},
+		{
+			Name: "db_explain", Title: "Explain database query",
+			Description: "Run the selected SQL driver's non-executing EXPLAIN form for one bounded, parameterized, read-only query.",
+			ReadOnly:    true, OpenWorld: true,
+			Schema: object(map[string]any{
+				"alias": str("Exact configured database alias."), "sql": str("One read-only SQL statement."),
+				"params": array(map[string]any{}),
+			}, "alias", "sql"),
+		},
 
 		ro("figma_status", "Figma Desktop status", "Check the official Figma Desktop MCP bridge.", empty),
 		ro("figma_list_tools", "List Figma tools", "List live upstream Figma MCP tools and schemas.", empty),
