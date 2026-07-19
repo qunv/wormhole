@@ -176,6 +176,7 @@ func (r *Runtime) workspaceInfo() map[string]any {
 			"connections": r.Database.List(context.Background(), false),
 		},
 		"tools": map[string]any{
+			"count": len(r.Tools()), "modules": r.ModuleNames(),
 			"allowed_groups": r.Config.Tools.AllowedGroups, "denied_tools": r.Config.Tools.DeniedTools,
 		},
 		"limits": map[string]any{

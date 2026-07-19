@@ -6,7 +6,7 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, and `tunnel`.
 - Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
-- 93 tools registered from a single contract in `agent.Tools()`.
+- 93 tools assembled from eight functional `ToolModule` implementations through `runtime.Tools()`.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
@@ -23,6 +23,31 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 - A Tunnel ID and Runtime API key when using the ChatGPT Web tunnel.
 - Figma Desktop MCP when using the Figma tool group.
 - agentmemory when project memory is enabled.
+
+## Tool module architecture
+
+Tool groups implement a common extension boundary:
+
+```go
+type ToolModule interface {
+    Name() string
+    Specs() []ToolSpec
+    Handle(context.Context, CallIdentity, string, map[string]any) (any, error)
+    Health(context.Context) any
+    Close() error
+}
+```
+
+The built-in modules are `basic`, `filesystem`, `repo`, `workflow`, `figma`, `memory`, `database`, and `execution`. `Runtime` validates module and tool uniqueness, builds an O(1) tool-to-module index, and keeps policy, audit, and memory capture as shared cross-cutting behavior. Strict policy derives write access from `ToolSpec.ReadOnly`; every external tool with `ReadOnly=false` requires a hashed exact-argument approval under balanced policy unless its module supplies a custom `ToolPolicyProvider`.
+
+Additional modules such as Redis, MongoDB, Elasticsearch, Kafka, Kubernetes, cloud providers, or upstream MCP bridges can be registered before server construction:
+
+```go
+if err := runtime.RegisterModule(customModule); err != nil {
+    return err
+}
+server := mcpserver.New(runtime)
+```
 
 ## Build and install
 
@@ -446,7 +471,7 @@ internal/app/         version and tier metadata
 internal/cli/         command parsing, setup, lifecycle, tunnel, and installation
 internal/server/      HTTP routes, authentication, CORS/origin, and limits
 internal/mcpserver/   MCP SDK adapter, session identity, and widget resource
-internal/agent/       93-tool registry, runtime, policy, and handlers
+internal/agent/       tool-module registry, runtime pipeline, policy, and functional modules
 internal/workspace/   root confinement, owning-root resolution, search, and tree
 internal/security/    command guards, redaction, and approvals
 internal/patch/       backup, diff, preview, validation, and undo

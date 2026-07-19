@@ -5,6 +5,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +47,16 @@ type Runtime struct {
 	Version                 string
 	Tier                    string
 	ConfigID                string
+
+	modules       map[string]ToolModule
+	toolModules   map[string]ToolModule
+	toolSpecs     []ToolSpec
+	toolSpecIndex map[string]ToolSpec
+	moduleOrder   []string
+	moduleMu      sync.RWMutex
+	modulesClosed bool
+	closeOnce     sync.Once
+	closeErr      error
 
 	profileMu         sync.RWMutex
 	profile           map[string]any
@@ -115,21 +127,35 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
 	}
 	runtime.Patches = &patch.Engine{Workspace: manager, Store: store}
+	modules := []ToolModule{
+		newBasicModule(runtime),
+		newFilesystemModule(runtime),
+		newRepoModule(runtime),
+		newWorkflowModule(runtime),
+		newFigmaModule(runtime),
+		newMemoryModule(runtime),
+		newDatabaseModule(runtime),
+		newExecutionModule(runtime),
+	}
+	for _, module := range modules {
+		if err := runtime.RegisterModule(module); err != nil {
+			for index := len(modules) - 1; index >= 0; index-- {
+				_ = modules[index].Close()
+			}
+			return nil, err
+		}
+	}
 	return runtime, nil
 }
 
-func (r *Runtime) Close() {
-	r.Processes.StopAll()
-	if r.Database != nil {
-		r.Database.Close()
-	}
-	if r.MemoryRecorder != nil {
-		r.MemoryRecorder.Close()
-	}
-	if r.Memory != nil {
-		_ = r.Memory.Close()
-	}
+func (r *Runtime) Shutdown() error {
+	r.closeOnce.Do(func() {
+		r.closeErr = r.closeModules()
+	})
+	return r.closeErr
 }
+
+func (r *Runtime) Close() { _ = r.Shutdown() }
 
 func (r *Runtime) Handle(ctx context.Context, name string, args map[string]any) (any, error) {
 	return r.HandleSession(ctx, "", name, args)
@@ -142,12 +168,13 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 	if sessionID == "" {
 		sessionID = r.MemoryFallbackSessionID
 	}
-	ctx = context.WithValue(ctx, memorySessionContextKey{}, sessionID)
+	identity := CallIdentity{SessionID: sessionID}
+	ctx = context.WithValue(ctx, memorySessionContextKey{}, identity.SessionID)
 	if err := r.enforcePolicy(name, args); err != nil {
 		r.audit(name, args, nil, false, err)
 		return nil, err
 	}
-	value, err := r.dispatch(ctx, name, args)
+	value, err := r.dispatch(ctx, identity, name, args)
 	r.audit(name, args, value, err == nil, err)
 	r.captureMemoryObservation(sessionID, name, args, value, err)
 	return value, err
@@ -168,18 +195,19 @@ func (r *Runtime) audit(tool string, args map[string]any, value any, ok bool, ca
 		"ts": time.Now().UTC().Format(time.RFC3339Nano), "tool": tool, "ok": ok,
 		"workspace": r.Workspace.Primary,
 	}
+	databaseTool := r.ToolModuleName(tool) == "database"
 	if r.Config.AuditArgs {
-		if databaseTools[tool] {
+		if databaseTool {
 			record["args"] = databaseAuditArguments(args)
 		} else {
 			record["args"] = security.RedactDeep(args, 0)
 		}
 	}
-	if metadata := databaseAuditMetadata(tool, args, value); metadata != nil {
-		record["database"] = metadata
+	if databaseTool {
+		record["database"] = databaseAuditMetadata(tool, args, value)
 	}
 	if callErr != nil {
-		if databaseTools[tool] {
+		if databaseTool {
 			record["error"] = database.SanitizeError(callErr)
 		} else {
 			record["error"] = callErr.Error()
@@ -216,9 +244,6 @@ func databaseAuditArguments(args map[string]any) map[string]any {
 }
 
 func databaseAuditMetadata(tool string, args map[string]any, value any) map[string]any {
-	if !databaseTools[tool] {
-		return nil
-	}
 	metadata := map[string]any{"operation": strings.TrimPrefix(tool, "db_")}
 	if alias := stringArg(args, "alias", ""); alias != "" {
 		metadata["alias"] = alias
@@ -245,41 +270,54 @@ func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {
 	if policyTools[tool] {
 		return nil
 	}
-	if r.Config.Policy == "strict" && mutationTools[tool] {
+
+	spec, registered := r.ToolSpec(tool)
+	if r.Config.Policy == "strict" && registered && !spec.ReadOnly {
 		return fmt.Errorf("tool %q is blocked by policy=strict", tool)
 	}
-	if tool == "db_mutate" {
-		action := approvalAction(tool, args)
-		if action == "" {
-			return nil
-		}
-		if err := r.Approvals.Consume(action); err != nil {
-			return fmt.Errorf("approval required: call db_preview_mutation, then request_approval with action=%q and approve_request: %w", action, err)
-		}
+	policy := r.toolCallPolicy(tool, args, spec, registered)
+	if policy.AlwaysRequireApproval {
+		return r.consumeToolApproval(tool, policy.ApprovalAction)
+	}
+	if r.Config.Policy == "full" || r.Config.Policy != "balanced" || !policy.RequiresApproval {
 		return nil
 	}
-	if r.Config.Policy == "full" || r.Config.Policy != "balanced" {
-		return nil
+	return r.consumeToolApproval(tool, policy.ApprovalAction)
+}
+
+func (r *Runtime) toolCallPolicy(tool string, args map[string]any, spec ToolSpec, registered bool) ToolCallPolicy {
+	r.moduleMu.RLock()
+	module := r.toolModules[tool]
+	r.moduleMu.RUnlock()
+	if provider, ok := module.(ToolPolicyProvider); ok {
+		return provider.ToolPolicy(tool, args)
 	}
-	action := approvalAction(tool, args)
+	if registered && !spec.ReadOnly {
+		return ToolCallPolicy{
+			ApprovalAction:   genericToolApprovalAction(tool, args),
+			RequiresApproval: true,
+		}
+	}
+	return ToolCallPolicy{}
+}
+
+func (r *Runtime) consumeToolApproval(tool, action string) error {
 	if action == "" {
 		return nil
 	}
 	if err := r.Approvals.Consume(action); err != nil {
+		if tool == "db_mutate" {
+			return fmt.Errorf("approval required: call db_preview_mutation, then request_approval with action=%q and approve_request: %w", action, err)
+		}
 		return fmt.Errorf("approval required: call request_approval with action=%q, then approve_request: %w", action, err)
 	}
 	return nil
 }
 
-var mutationTools = map[string]bool{
-	"figma_call_tool": true, "save_note": true, "checkpoint": true, "write_file": true,
-	"replace_in_file": true, "apply_patch": true, "make_dir": true, "move_path": true,
-	"delete_path": true, "run_command": true, "run_commands": true, "proc_start": true,
-	"proc_stop": true, "git": true, "create_skill": true, "delete_skill": true,
-	"undo_last_patch": true, "quality_gate": true, "run_tests": true, "run_build": true,
-	"run_lint": true, "run_changed_tests": true, "task_plan": true, "task_state": true,
-	"decision_log": true, "memory_remember": true, "memory_commit": true, "memory_forget": true,
-	"memory_import": true, "db_mutate": true,
+func genericToolApprovalAction(tool string, args map[string]any) string {
+	material, _ := json.Marshal(map[string]any{"tool": tool, "args": args})
+	sum := sha256.Sum256(material)
+	return fmt.Sprintf("%s:sha256:%s", tool, hex.EncodeToString(sum[:12]))
 }
 
 func approvalAction(tool string, args map[string]any) string {
@@ -445,92 +483,6 @@ func capText(value string, max int) (string, bool) {
 		return value[:max], true
 	}
 	return value, false
-}
-
-func (r *Runtime) dispatch(ctx context.Context, name string, args map[string]any) (any, error) {
-	switch {
-	case basicTools[name]:
-		return r.handleBasic(ctx, name, args)
-	case fsTools[name]:
-		return r.handleFS(ctx, name, args)
-	case execTools[name]:
-		return r.handleExec(ctx, name, args)
-	case figmaTools[name]:
-		return r.handleFigma(ctx, name, args)
-	case repoTools[name]:
-		return r.handleRepo(ctx, name, args)
-	case workflowTools[name]:
-		return r.handleWorkflow(ctx, name, args)
-	case memoryTools[name]:
-		return r.handleMemory(ctx, name, args)
-	case databaseTools[name]:
-		return r.handleDatabase(ctx, name, args)
-	default:
-		return nil, fmt.Errorf("unknown tool: %s", name)
-	}
-}
-
-var (
-	basicTools = names("ping", "workspace_info", "lca", "save_note", "list_notes", "checkpoint", "resume",
-		"list_skills", "read_skill", "create_skill", "delete_skill", "workspace_search", "slash_commands",
-		"compose_prompt", "lca_input", "policy_status", "explain_risk", "request_approval",
-		"request_approval_batch", "approve_request", "deny_request", "profile_status", "reload_profile")
-	fsTools = names("list_files", "read_file", "stat_path", "search_text", "find_files", "read_many",
-		"repo_overview", "write_file", "replace_in_file", "apply_patch", "make_dir", "move_path",
-		"delete_path", "preview_patch", "validate_patch", "undo_last_patch")
-	execTools = names("run_command", "run_commands", "proc_start", "proc_list", "proc_output", "proc_stop",
-		"git", "git_status", "git_diff")
-	figmaTools = names("figma_status", "figma_list_tools", "figma_call_tool", "figma_get_design_context",
-		"figma_get_screenshot", "figma_get_metadata", "figma_get_variable_defs", "figma_get_code_connect_map",
-		"figma_get_figjam")
-	repoTools = names("workspace_doctor", "workspace_snapshot", "project_profile", "important_files",
-		"repo_map", "repo_symbols", "codegraph_explore", "index_status", "quality_gate", "detect_test_commands",
-		"run_tests", "run_build", "run_lint", "run_changed_tests", "session_report", "review_diff",
-		"security_scan", "todo_scan", "change_summary")
-	workflowTools = names("task_plan", "task_state", "decision_log")
-	memoryTools   = names("memory_status", "memory_context", "memory_search", "memory_remember", "memory_commit", "memory_forget", "memory_export", "memory_import")
-	databaseTools = names("db_list_connections", "db_describe", "db_query", "db_explain", "db_preview_mutation", "db_mutate")
-)
-
-func ToolGroup(name string) string {
-	switch {
-	case basicTools[name]:
-		return "basic"
-	case fsTools[name]:
-		return "filesystem"
-	case execTools[name]:
-		return "execution"
-	case figmaTools[name]:
-		return "figma"
-	case repoTools[name]:
-		return "repo"
-	case workflowTools[name]:
-		return "workflow"
-	case memoryTools[name]:
-		return "memory"
-	case databaseTools[name]:
-		return "database"
-	default:
-		return ""
-	}
-}
-
-func ToolEnabled(exposure config.ToolExposureConfig, name string) bool {
-	for _, denied := range exposure.DeniedTools {
-		if denied == name {
-			return false
-		}
-	}
-	if len(exposure.AllowedGroups) == 0 {
-		return true
-	}
-	group := ToolGroup(name)
-	for _, allowed := range exposure.AllowedGroups {
-		if allowed == group {
-			return true
-		}
-	}
-	return false
 }
 
 func names(values ...string) map[string]bool {

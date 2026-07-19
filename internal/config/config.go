@@ -120,6 +120,7 @@ var (
 	databaseAliasPattern      = regexp.MustCompile(`^[a-z][a-z0-9._-]{1,63}$`)
 	databaseDriverPattern     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	credentialProviderPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	toolModulePattern         = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	envNamePattern            = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
@@ -418,13 +419,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 			return err
 		}
 	}
-	allowedGroups := map[string]bool{
-		"basic": true, "filesystem": true, "execution": true, "figma": true,
-		"repo": true, "workflow": true, "memory": true, "database": true,
-	}
 	for _, group := range c.Tools.AllowedGroups {
-		if !allowedGroups[group] {
-			return fmt.Errorf("unsupported tools.allowedGroups value %q", group)
+		if !toolModulePattern.MatchString(group) {
+			return fmt.Errorf("tools.allowedGroups value %q must be a valid module name", group)
 		}
 	}
 	for _, name := range c.Tools.DeniedTools {

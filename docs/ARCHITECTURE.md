@@ -2,7 +2,7 @@
 
 ## 1. Design goals
 
-Codebridge uses one binary for both the CLI supervisor and the MCP server. The CLI is responsible only for loading configuration and managing processes and tunnels; all tool business logic lives in `agent.Runtime`, so foreground servers, background servers, and tests share the same policy and state implementation.
+Codebridge uses one binary for both the CLI supervisor and the MCP server. The CLI is responsible only for loading configuration and managing processes and tunnels. Tool business logic is organized into `agent.ToolModule` implementations coordinated by `agent.Runtime`, so foreground servers, background servers, and tests share the same policy, identity, audit, and state pipeline.
 
 Primary goals:
 
@@ -45,9 +45,10 @@ Official MCP Go SDK
           │
           ▼
 agent.Runtime.HandleSession
-   ├── normalize arguments
+   ├── normalize arguments and build CallIdentity
    ├── enforce policy / consume exact approval
-   ├── dispatch to the tool-group handler
+   ├── O(1) lookup in the tool-to-module registry
+   ├── ToolModule.Handle(ctx, identity, tool, args)
    ├── append a redacted audit record
    └── enqueue a redacted memory observation
 ```
@@ -63,7 +64,7 @@ agent.Runtime.HandleSession
 | `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
 | `internal/server` | HTTP routing, health, authentication, Origin/CORS, and body limits |
 | `internal/mcpserver` | MCP server construction, session identity, widget resource, and result adapter |
-| `internal/agent` | 93-tool registry, shared runtime, policy, and tool handlers |
+| `internal/agent` | Tool-module registry, shared runtime pipeline, policy, identity, audit, and functional module handlers |
 | `internal/workspace` | Canonical paths, configured roots, owning-root resolution, list/search/tree |
 | `internal/security` | Shell and Git guards, risk classification, approvals, and redaction |
 | `internal/patch` | Backup batches, structured operations, unified diffs, and undo |
@@ -77,12 +78,47 @@ agent.Runtime.HandleSession
 Important dependency direction:
 
 ```text
-mcpserver → agent → memory.Provider
-                    ↑
-             provider adapters
+mcpserver → agent.Runtime → ToolModule
+                              ├── memory.Provider ← provider adapters
+                              ├── database.Manager ← SQL drivers / credential resolvers
+                              ├── figma.Client
+                              └── workspace / process / state services
 ```
 
 `agent` does not import `agentmemory`; the concrete adapter is selected only through `memory/factory`.
+
+### 3.1 Tool module registry
+
+The MCP runtime is extended through one interface:
+
+```go
+type ToolModule interface {
+    Name() string
+    Specs() []ToolSpec
+    Handle(context.Context, CallIdentity, string, map[string]any) (any, error)
+    Health(context.Context) any
+    Close() error
+}
+```
+
+`Runtime` keeps both a module registry and an O(1) tool-to-module index. Registration rejects empty modules, invalid specifications, duplicate module names, and duplicate tool names before mutating the registry. Registration is protected by an RW lock; handler, health, and close calls run without holding the registry lock.
+
+The built-in functional modules are:
+
+```text
+basic
+filesystem
+repo
+workflow
+figma
+memory
+database
+execution
+```
+
+Each module owns its tool specifications, group-local routing, health result, and lifecycle behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, database error sanitization, and memory observation capture. `CallIdentity` currently carries the logical MCP session ID and can be extended without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy. `Runtime.Shutdown()` closes modules in reverse registration order and returns aggregated close errors; `Runtime.Close()` remains as the compatibility wrapper.
+
+`internal/mcpserver` enumerates `runtime.Tools()` rather than a static global catalog. External modules must be registered with `runtime.RegisterModule` before constructing the MCP server. The package-level `agent.Tools()` function remains only as a compatibility catalog for existing callers and tests.
 
 ## 4. Configuration lifecycle
 
@@ -153,13 +189,14 @@ Codebridge exposes:
 
 A non-loopback `host` requires an MCP bearer token. A browser Origin is accepted only when it is loopback or included in the explicit allowlist.
 
-`agent.Tools()` is the single source of truth for:
+Each module's `Specs()` output is the source of truth for its tools, and `runtime.Tools()` is the assembled server contract:
 
 - name;
 - title and description;
 - JSON input schema;
 - read-only and destructive annotations;
-- MCP Apps metadata.
+- MCP Apps metadata;
+- functional ownership through the module name.
 
 `internal/mcpserver` converts a tool result into both JSON text and `structuredContent` when the output is an object. Errors are returned as `CallToolResult{IsError:true}` rather than becoming protocol failures.
 
@@ -168,9 +205,9 @@ A non-loopback `host` requires an MCP bearer token. A browser Origin is accepted
 Every tool request follows this pipeline:
 
 ```text
-argument normalization
+argument normalization + CallIdentity
   → enforcePolicy
-  → dispatch
+  → toolModules[tool].Handle
   → audit
   → captureMemoryObservation
 ```
@@ -496,9 +533,9 @@ The workspace ID is derived from the canonical primary workspace path. Memory-pr
 
 Contract tests lock down:
 
-- tool count and unique dispatch groups;
-- MCP in-memory round trips;
-- session-ID propagation;
+- tool count and unique module ownership;
+- duplicate module/tool rejection and close-once lifecycle;
+- MCP in-memory round trips, runtime module enumeration, and session-ID propagation;
 - path traversal and root-deletion rejection;
 - secret separation and `.env` permissions;
 - ConfigID sensitivity;

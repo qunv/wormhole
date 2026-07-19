@@ -41,8 +41,8 @@ func New(runtime *agent.Runtime) *mcp.Server {
 		&mcp.ServerOptions{Instructions: Instructions, PageSize: 100},
 	)
 	registerWidget(server)
-	for _, spec := range agent.Tools() {
-		if !agent.ToolEnabled(runtime.Config.Tools, spec.Name) {
+	for _, spec := range runtime.Tools() {
+		if !runtime.ToolEnabled(spec.Name) {
 			continue
 		}
 		spec := spec

@@ -36,6 +36,7 @@ Aliases are routing identifiers, not authorization boundaries. Security is enfor
 13. SQL, parameters, rows, mutation values, predicates, DSNs, endpoints, and credentials are excluded from audit and automatic memory capture. Audit retains only safe metadata such as alias, environment, query hash, duration, row/affected-row counts, target identifiers, and truncation status.
 14. Per-alias summaries expose safe operation counters and `database/sql` pool statistics.
 15. Database cells are untrusted data and must never be interpreted as instructions.
+16. MCP exposure is owned by the `database` `ToolModule`, including specifications, routing, health, and manager lifecycle. Adding another top-level integration does not require another branch in `Runtime.dispatch`.
 
 ## Consequences
 
