@@ -283,7 +283,7 @@ Figma Desktop can be connected through the same generic HTTP bridge:
 
 Important behavior:
 
-- The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`. Legacy `toolPrefix` values are ignored and removed when configuration is saved.
+- The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`.
 - Tool discovery runs once during Codebridge startup. Restart Codebridge after an upstream server changes its tool list.
 - `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
 - Community tool annotations are untrusted by default. Unknown tools require approval under `balanced`; `alwaysApproveTools` still requires exact approval under `policy=full`.
@@ -303,17 +303,9 @@ Tool exposure works through module ownership:
 }
 ```
 
-## Migrating database and Figma integrations
+## Database and Figma integrations
 
-Database and Figma are no longer built-in modules. Configure their MCP servers under `mcpServers`, then restart Codebridge so their tools are discovered and registered. Legacy `database` and `figmaDesktop*` fields are ignored when loading old configuration and are removed the next time `config.json` is saved.
-
-Typical migration:
-
-```text
-built-in db_query                 → postgres__query or the upstream server's discovered name
-built-in figma_get_screenshot     → figma__get_screenshot
-built-in database/figma CLI       → edit mcpServers, then use workspace_info and tools/list
-```
+Database and Figma integrations are provided through upstream MCP servers configured under `mcpServers`. Restart Codebridge after changing the configuration so their tools are discovered and registered.
 
 The exact upstream tool names depend on the selected community server. Use restrictive upstream access modes and explicit `readOnlyTools`/`alwaysApproveTools` policy lists rather than assuming a server's annotations are trustworthy.
 
