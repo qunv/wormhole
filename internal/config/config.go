@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	DefaultPort            = 8789
-	DefaultTunnelVersion   = "v0.0.10"
-	DefaultFigmaDesktopURL = "http://127.0.0.1:3845/mcp"
+	DefaultPort          = 8789
+	DefaultTunnelVersion = "v0.0.10"
 )
 
 type MemoryConfig struct {
@@ -44,84 +43,14 @@ type MemoryConfig struct {
 	HealthCacheMS     int            `json:"healthCacheMs,omitempty"`
 }
 
-func validateDatabaseOptions(value any, path string) error {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, entry := range typed {
-			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
-			for _, forbidden := range []string{"secret", "password", "token", "apikey", "authorization", "credential", "dsn", "databaseurl", "connectionstring"} {
-				if strings.Contains(normalized, forbidden) {
-					return fmt.Errorf("%s.%s must reference credentials through credentialRef instead of storing them in config.json", path, key)
-				}
-			}
-			if err := validateDatabaseOptions(entry, path+"."+key); err != nil {
-				return err
-			}
-		}
-	case []any:
-		for index, entry := range typed {
-			if err := validateDatabaseOptions(entry, fmt.Sprintf("%s[%d]", path, index)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-type CredentialReference struct {
-	Provider string `json:"provider"`
-	Name     string `json:"name"`
-}
-
-type DatabaseAccessConfig struct {
-	Mode           string   `json:"mode"`
-	AllowedSchemas []string `json:"allowedSchemas,omitempty"`
-	DeniedTables   []string `json:"deniedTables,omitempty"`
-	MaskColumns    []string `json:"maskColumns,omitempty"`
-}
-
-type DatabaseLimitsConfig struct {
-	QueryTimeoutMS       int `json:"queryTimeoutMs,omitempty"`
-	MaxRows              int `json:"maxRows,omitempty"`
-	MaxResultBytes       int `json:"maxResultBytes,omitempty"`
-	MaxCellBytes         int `json:"maxCellBytes,omitempty"`
-	MaxConcurrentQueries int `json:"maxConcurrentQueries,omitempty"`
-}
-
-type DatabasePoolConfig struct {
-	MaxOpen            int `json:"maxOpen,omitempty"`
-	MaxIdle            int `json:"maxIdle,omitempty"`
-	MaxLifetimeSeconds int `json:"maxLifetimeSeconds,omitempty"`
-}
-
-type DatabaseConnectionConfig struct {
-	Driver        string               `json:"driver"`
-	Environment   string               `json:"environment"`
-	CredentialRef CredentialReference  `json:"credentialRef"`
-	FileRoot      string               `json:"fileRoot,omitempty"`
-	Required      bool                 `json:"required,omitempty"`
-	Access        DatabaseAccessConfig `json:"access"`
-	Limits        DatabaseLimitsConfig `json:"limits"`
-	Pool          DatabasePoolConfig   `json:"pool"`
-	Options       map[string]any       `json:"options,omitempty"`
-}
-
-type DatabaseConfig struct {
-	Enabled     bool                                `json:"enabled"`
-	Connections map[string]DatabaseConnectionConfig `json:"connections,omitempty"`
-}
-
 type ToolExposureConfig struct {
 	AllowedGroups []string `json:"allowedGroups,omitempty"`
 	DeniedTools   []string `json:"deniedTools,omitempty"`
 }
 
 var (
-	databaseAliasPattern      = regexp.MustCompile(`^[a-z][a-z0-9._-]{1,63}$`)
-	databaseDriverPattern     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	credentialProviderPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	toolModulePattern         = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	envNamePattern            = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	toolModulePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	envNamePattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func validateMemoryOptions(value any, path string) error {
@@ -167,12 +96,7 @@ type Config struct {
 	ProfileDir    string `json:"profileDir,omitempty"`
 	RuntimeKeyEnv string `json:"runtimeKeyEnv,omitempty"`
 
-	FigmaDesktopURL         string `json:"figmaDesktopMcpUrl,omitempty"`
-	FigmaDesktopTimeoutMS   int    `json:"figmaDesktopTimeoutMs,omitempty"`
-	FigmaDesktopAllowRemote bool   `json:"figmaDesktopAllowRemote,omitempty"`
-
 	Memory     MemoryConfig               `json:"memory,omitempty"`
-	Database   DatabaseConfig             `json:"database,omitempty"`
 	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 	Tools      ToolExposureConfig         `json:"tools,omitempty"`
 
@@ -192,16 +116,14 @@ type Config struct {
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
-		Mode:                  "safe",
-		Policy:                "balanced",
-		Port:                  DefaultPort,
-		Host:                  "127.0.0.1",
-		Profile:               "codebridge",
-		ProfileDir:            filepath.Join(AppDataDir(), "profiles"),
-		RuntimeKeyEnv:         "CONTROL_PLANE_API_KEY",
-		TunnelBin:             filepath.Join(AppDataDir(), tunnelExecutable()),
-		FigmaDesktopURL:       DefaultFigmaDesktopURL,
-		FigmaDesktopTimeoutMS: 30_000,
+		Mode:          "safe",
+		Policy:        "balanced",
+		Port:          DefaultPort,
+		Host:          "127.0.0.1",
+		Profile:       "codebridge",
+		ProfileDir:    filepath.Join(AppDataDir(), "profiles"),
+		RuntimeKeyEnv: "CONTROL_PLANE_API_KEY",
+		TunnelBin:     filepath.Join(AppDataDir(), tunnelExecutable()),
 		Memory: MemoryConfig{
 			Enabled: false, Provider: "none", Endpoint: "http://127.0.0.1:3111",
 			SecretEnv: "CODEBRIDGE_MEMORY_SECRET", TimeoutMS: 3_000,
@@ -210,7 +132,6 @@ func Default() Config {
 			QueueSize:       128, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
 			RetryBackoffMS: 100, HealthCacheMS: 5_000,
 		},
-		Database:          DatabaseConfig{Enabled: false, Connections: map[string]DatabaseConnectionConfig{}},
 		MCPServers:        map[string]MCPServerConfig{},
 		MaxReadChars:      200_000,
 		ReadDefault:       30_000,
@@ -329,7 +250,7 @@ func (c Config) Validate(requireWorkspace bool) error {
 		{"maxReadChars", c.MaxReadChars}, {"readDefault", c.ReadDefault},
 		{"maxBatchReadChars", c.MaxBatchReadChars}, {"maxCommandOutput", c.MaxCommandOutput},
 		{"commandOutputDefault", c.CommandOutput}, {"maxBodyBytes", c.MaxBodyBytes},
-		{"maxProcesses", c.MaxProcesses}, {"figmaDesktopTimeoutMs", c.FigmaDesktopTimeoutMS},
+		{"maxProcesses", c.MaxProcesses},
 		{"memory.timeoutMs", c.Memory.TimeoutMS}, {"memory.tokenBudget", c.Memory.TokenBudget},
 		{"memory.queueSize", c.Memory.QueueSize}, {"memory.deliveryTimeoutMs", c.Memory.DeliveryTimeoutMS},
 		{"memory.retryMaxAttempts", c.Memory.RetryMaxAttempts}, {"memory.retryBackoffMs", c.Memory.RetryBackoffMS},
@@ -357,69 +278,6 @@ func (c Config) Validate(requireWorkspace bool) error {
 	}
 	if err := validateMemoryOptions(c.Memory.Options, "memory.options"); err != nil {
 		return err
-	}
-	if c.Database.Enabled && len(c.Database.Connections) == 0 {
-		return fmt.Errorf("database.connections is required when database is enabled")
-	}
-	for alias, connection := range c.Database.Connections {
-		if !databaseAliasPattern.MatchString(alias) {
-			return fmt.Errorf("database alias %q must match %s", alias, databaseAliasPattern.String())
-		}
-		if !databaseDriverPattern.MatchString(connection.Driver) {
-			return fmt.Errorf("database connection %q driver must match %s", alias, databaseDriverPattern.String())
-		}
-		if connection.Environment == "" {
-			return fmt.Errorf("database connection %q environment is required", alias)
-		}
-		if connection.Driver == "sqlite" && strings.TrimSpace(connection.FileRoot) == "" {
-			return fmt.Errorf("database connection %q fileRoot is required for sqlite", alias)
-		}
-		if connection.Driver != "sqlite" && strings.TrimSpace(connection.FileRoot) != "" {
-			return fmt.Errorf("database connection %q fileRoot is only supported for sqlite", alias)
-		}
-		if !credentialProviderPattern.MatchString(connection.CredentialRef.Provider) {
-			return fmt.Errorf("database connection %q credentialRef.provider must match %s", alias, credentialProviderPattern.String())
-		}
-		if strings.TrimSpace(connection.CredentialRef.Name) == "" {
-			return fmt.Errorf("database connection %q credentialRef.name is required", alias)
-		}
-		if connection.CredentialRef.Provider == "env" && !envNamePattern.MatchString(connection.CredentialRef.Name) {
-			return fmt.Errorf("database connection %q credentialRef.name must be an environment variable name for provider env", alias)
-		}
-		if connection.Access.Mode != "read-only" && connection.Access.Mode != "read-write" {
-			return fmt.Errorf("database connection %q access.mode must be read-only or read-write", alias)
-		}
-		if (connection.Environment == "prod" || connection.Environment == "production") && connection.Access.Mode != "read-only" {
-			return fmt.Errorf("production database connection %q must be read-only", alias)
-		}
-		for _, schema := range connection.Access.AllowedSchemas {
-			if strings.TrimSpace(schema) == "" {
-				return fmt.Errorf("database connection %q contains an empty allowed schema", alias)
-			}
-		}
-		limits := []struct {
-			name  string
-			value int
-		}{
-			{"queryTimeoutMs", connection.Limits.QueryTimeoutMS},
-			{"maxRows", connection.Limits.MaxRows},
-			{"maxResultBytes", connection.Limits.MaxResultBytes},
-			{"maxCellBytes", connection.Limits.MaxCellBytes},
-			{"maxConcurrentQueries", connection.Limits.MaxConcurrentQueries},
-			{"pool.maxOpen", connection.Pool.MaxOpen},
-			{"pool.maxLifetimeSeconds", connection.Pool.MaxLifetimeSeconds},
-		}
-		for _, limit := range limits {
-			if limit.value <= 0 {
-				return fmt.Errorf("database connection %q %s must be greater than zero", alias, limit.name)
-			}
-		}
-		if connection.Pool.MaxIdle < 0 || connection.Pool.MaxIdle > connection.Pool.MaxOpen {
-			return fmt.Errorf("database connection %q pool.maxIdle must be between zero and pool.maxOpen", alias)
-		}
-		if err := validateDatabaseOptions(connection.Options, "database.connections."+alias+".options"); err != nil {
-			return err
-		}
 	}
 	if err := validateMCPServers(c); err != nil {
 		return err
@@ -465,43 +323,18 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 			secretFingerprint = hex.EncodeToString(sum[:8])
 		}
 	}
-	databaseSecretFingerprints := map[string]string{}
-	for alias, connection := range c.Database.Connections {
-		if connection.CredentialRef.Name == "" {
-			continue
-		}
-		var secret []byte
-		switch connection.CredentialRef.Provider {
-		case "env":
-			secret = []byte(os.Getenv(connection.CredentialRef.Name))
-		case "file":
-			path := connection.CredentialRef.Name
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(AppConfigDir(), path)
-			}
-			secret, _ = os.ReadFile(path)
-		}
-		if len(secret) > 0 {
-			sum := sha256.Sum256(secret)
-			databaseSecretFingerprints[alias] = hex.EncodeToString(sum[:8])
-		}
-	}
 	mcpServerSecretFingerprints := MCPServerSecretFingerprints(c.MCPServers)
 	material, _ := json.Marshal(map[string]any{
-		"workspace":       filepath.Clean(c.Workspace),
-		"extraRoots":      c.ExtraRoots,
-		"mode":            c.Mode,
-		"policy":          c.Policy,
-		"port":            c.Port,
-		"authEnabled":     c.AuthToken != "",
-		"binaryHash":      binaryHash,
-		"widgetHash":      fmt.Sprintf("%x", sha256.Sum256(widget)),
-		"figmaDesktopURL": c.FigmaDesktopURL,
+		"workspace":   filepath.Clean(c.Workspace),
+		"extraRoots":  c.ExtraRoots,
+		"mode":        c.Mode,
+		"policy":      c.Policy,
+		"port":        c.Port,
+		"authEnabled": c.AuthToken != "",
+		"binaryHash":  binaryHash,
+		"widgetHash":  fmt.Sprintf("%x", sha256.Sum256(widget)),
 		"memory": map[string]any{
 			"config": c.Memory, "secretFingerprint": secretFingerprint,
-		},
-		"database": map[string]any{
-			"config": c.Database, "secretFingerprints": databaseSecretFingerprints,
 		},
 		"mcpServers": map[string]any{
 			"config": c.MCPServers, "secretFingerprints": mcpServerSecretFingerprints,
@@ -628,12 +461,6 @@ func normalize(c *Config) {
 	if c.TunnelBin == "" {
 		c.TunnelBin = filepath.Join(AppDataDir(), tunnelExecutable())
 	}
-	if c.FigmaDesktopURL == "" {
-		c.FigmaDesktopURL = DefaultFigmaDesktopURL
-	}
-	if c.FigmaDesktopTimeoutMS == 0 {
-		c.FigmaDesktopTimeoutMS = 30_000
-	}
 	if c.Memory.Provider == "" {
 		c.Memory.Provider = "none"
 	}
@@ -672,53 +499,6 @@ func normalize(c *Config) {
 	}
 	if c.Memory.HealthCacheMS == 0 {
 		c.Memory.HealthCacheMS = 5_000
-	}
-	if c.Database.Connections == nil {
-		c.Database.Connections = map[string]DatabaseConnectionConfig{}
-	}
-	for alias, connection := range c.Database.Connections {
-		connection.Driver = strings.ToLower(strings.TrimSpace(connection.Driver))
-		connection.Environment = strings.ToLower(strings.TrimSpace(connection.Environment))
-		if connection.Environment == "" {
-			connection.Environment = "unspecified"
-		}
-		connection.CredentialRef.Provider = strings.ToLower(strings.TrimSpace(connection.CredentialRef.Provider))
-		connection.CredentialRef.Name = strings.TrimSpace(connection.CredentialRef.Name)
-		connection.FileRoot = strings.TrimSpace(connection.FileRoot)
-		if connection.FileRoot != "" {
-			if absolute, err := filepath.Abs(connection.FileRoot); err == nil {
-				connection.FileRoot = filepath.Clean(absolute)
-			}
-		}
-		connection.Access.Mode = strings.ToLower(strings.TrimSpace(connection.Access.Mode))
-		if connection.Access.Mode == "" {
-			connection.Access.Mode = "read-only"
-		}
-		if connection.Limits.QueryTimeoutMS == 0 {
-			connection.Limits.QueryTimeoutMS = 10_000
-		}
-		if connection.Limits.MaxRows == 0 {
-			connection.Limits.MaxRows = 500
-		}
-		if connection.Limits.MaxResultBytes == 0 {
-			connection.Limits.MaxResultBytes = 1 << 20
-		}
-		if connection.Limits.MaxCellBytes == 0 {
-			connection.Limits.MaxCellBytes = 64 << 10
-		}
-		if connection.Limits.MaxConcurrentQueries == 0 {
-			connection.Limits.MaxConcurrentQueries = 4
-		}
-		if connection.Pool.MaxOpen == 0 {
-			connection.Pool.MaxOpen = 5
-		}
-		if connection.Pool.MaxIdle == 0 {
-			connection.Pool.MaxIdle = min(2, connection.Pool.MaxOpen)
-		}
-		if connection.Pool.MaxLifetimeSeconds == 0 {
-			connection.Pool.MaxLifetimeSeconds = 1800
-		}
-		c.Database.Connections[alias] = connection
 	}
 	normalizeMCPServers(c)
 	for index, group := range c.Tools.AllowedGroups {
@@ -775,7 +555,6 @@ func applyEnvironment(c *Config) {
 	stringEnv("TUNNEL_BIN", &c.TunnelBin)
 	stringEnv("TUNNEL_PROFILE", &c.Profile)
 	stringEnv("TUNNEL_PROFILE_DIR", &c.ProfileDir)
-	stringEnv("FIGMA_DESKTOP_MCP_URL", &c.FigmaDesktopURL)
 	stringEnv("CODEBRIDGE_MEMORY_PROVIDER", &c.Memory.Provider)
 	stringEnv("CODEBRIDGE_MEMORY_ENDPOINT", &c.Memory.Endpoint)
 	stringEnv("CODEBRIDGE_MEMORY_SECRET_ENV", &c.Memory.SecretEnv)
@@ -783,7 +562,6 @@ func applyEnvironment(c *Config) {
 	stringEnv("CODEBRIDGE_MEMORY_AGENT_ID", &c.Memory.AgentID)
 	stringEnv("CODEBRIDGE_MEMORY_PROJECT_STRATEGY", &c.Memory.ProjectStrategy)
 	intEnv("PORT", &c.Port)
-	intEnv("FIGMA_DESKTOP_TIMEOUT_MS", &c.FigmaDesktopTimeoutMS)
 	intEnv("CODEBRIDGE_MEMORY_TIMEOUT_MS", &c.Memory.TimeoutMS)
 	intEnv("CODEBRIDGE_MEMORY_TOKEN_BUDGET", &c.Memory.TokenBudget)
 	intEnv("CODEBRIDGE_MEMORY_QUEUE_SIZE", &c.Memory.QueueSize)
@@ -797,10 +575,8 @@ func applyEnvironment(c *Config) {
 	intEnv("AGENT_MAX_COMMAND_OUTPUT", &c.MaxCommandOutput)
 	intEnv("AGENT_CMD_OUTPUT_DEFAULT", &c.CommandOutput)
 	intEnv("AGENT_MAX_BODY_BYTES", &c.MaxBodyBytes)
-	c.FigmaDesktopAllowRemote = envBool("FIGMA_DESKTOP_ALLOW_REMOTE", c.FigmaDesktopAllowRemote)
 	c.Memory.Enabled = envBool("CODEBRIDGE_MEMORY_ENABLED", c.Memory.Enabled)
 	c.Memory.Required = envBool("CODEBRIDGE_MEMORY_REQUIRED", c.Memory.Required)
-	c.Database.Enabled = envBool("CODEBRIDGE_DATABASE_ENABLED", c.Database.Enabled)
 	c.Audit = !envIs("AGENT_AUDIT", "0", !c.Audit)
 	c.AuditArgs = !envIs("AGENT_AUDIT_ARGS", "0", !c.AuditArgs)
 	c.HTTPLog = envBool("AGENT_HTTP_LOG", c.HTTPLog)

@@ -59,7 +59,7 @@ func newAgentUpstreamHTTPServer(t *testing.T) *httptest.Server {
 
 func agentUpstreamConfig(endpoint string) config.MCPServerConfig {
 	return config.MCPServerConfig{
-		Transport: "streamable-http", URL: endpoint, ToolPrefix: "community",
+		Transport: "streamable-http", URL: endpoint,
 		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000, MaxTools: 10,
 		Policy: config.MCPServerPolicyConfig{
 			Default: "approval", ReadOnlyTools: []string{"read.data"},
@@ -68,34 +68,34 @@ func agentUpstreamConfig(endpoint string) config.MCPServerConfig {
 	}
 }
 
-func TestRuntimeRegistersConfiguredUpstreamMCPModule(t *testing.T) {
+func TestRuntimeUsesMCPServerNameAsToolNamespace(t *testing.T) {
 	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
-	cfg.MCPServers["community"] = agentUpstreamConfig(upstream.URL)
+	cfg.MCPServers["postgres_prod"] = agentUpstreamConfig(upstream.URL)
 	runtime, err := New(cfg, "test", "pro", "test-config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
 
-	if got := runtime.ToolModuleName("community__read_data"); got != "mcp_community" {
+	if got := runtime.ToolModuleName("postgres_prod__read_data"); got != "mcp_postgres_prod" {
 		t.Fatalf("read tool module = %q", got)
 	}
-	if got, want := len(runtime.Tools()), 95; got != want {
+	if got, want := len(runtime.Tools()), 80; got != want {
 		t.Fatalf("runtime tools = %d, want %d", got, want)
 	}
-	readSpec, ok := runtime.ToolSpec("community__read_data")
+	readSpec, ok := runtime.ToolSpec("postgres_prod__read_data")
 	if !ok || !readSpec.ReadOnly || readSpec.Destructive {
 		t.Fatalf("unexpected read spec: %#v ok=%t", readSpec, ok)
 	}
-	writeSpec, ok := runtime.ToolSpec("community__write_data")
+	writeSpec, ok := runtime.ToolSpec("postgres_prod__write_data")
 	if !ok || writeSpec.ReadOnly || !writeSpec.Destructive {
 		t.Fatalf("unexpected write spec: %#v ok=%t", writeSpec, ok)
 	}
 
-	result, err := runtime.Handle(context.Background(), "community__read_data", map[string]any{
+	result, err := runtime.Handle(context.Background(), "postgres_prod__read_data", map[string]any{
 		"query": "private-query-value", "undeclared-payload-marker": "ignored",
 	})
 	if err != nil {
@@ -118,15 +118,44 @@ func TestRuntimeRegistersConfiguredUpstreamMCPModule(t *testing.T) {
 	}
 
 	args := map[string]any{"value": "new-value"}
-	err = runtime.enforcePolicy("community__write_data", args)
-	if err == nil || !strings.Contains(err.Error(), genericToolApprovalAction("community__write_data", args)) {
+	err = runtime.enforcePolicy("postgres_prod__write_data", args)
+	if err == nil || !strings.Contains(err.Error(), genericToolApprovalAction("postgres_prod__write_data", args)) {
 		t.Fatalf("always-approval upstream tool was not protected under policy=full: %v", err)
 	}
 
 	health := runtime.ModuleHealth(context.Background())
-	status, ok := health["mcp_community"].(map[string]any)
+	status, ok := health["mcp_postgres_prod"].(map[string]any)
 	if !ok || status["available"] != true || status["registered_tools"] != 2 {
-		t.Fatalf("unexpected upstream health: %#v", health["mcp_community"])
+		t.Fatalf("unexpected upstream health: %#v", health["mcp_postgres_prod"])
+	}
+}
+
+func TestMultipleMCPServersWithSameToolsUseDistinctNamespaces(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	upstream := newAgentUpstreamHTTPServer(t)
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
+	cfg.MCPServers["postgres_dev"] = agentUpstreamConfig(upstream.URL)
+	cfg.MCPServers["postgres_prod"] = agentUpstreamConfig(upstream.URL)
+	runtime, err := New(cfg, "test", "pro", "test-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	if got, want := len(runtime.Tools()), 82; got != want {
+		t.Fatalf("runtime tools = %d, want %d", got, want)
+	}
+	for tool, module := range map[string]string{
+		"postgres_dev__read_data":  "mcp_postgres_dev",
+		"postgres_prod__read_data": "mcp_postgres_prod",
+	} {
+		if got := runtime.ToolModuleName(tool); got != module {
+			t.Fatalf("module for %s = %q, want %q", tool, got, module)
+		}
+		if _, err := runtime.Handle(context.Background(), tool, map[string]any{"query": tool}); err != nil {
+			t.Fatalf("call %s: %v", tool, err)
+		}
 	}
 }
 
@@ -135,7 +164,7 @@ func TestOptionalAndRequiredUpstreamStartupBehavior(t *testing.T) {
 	base := config.Default()
 	base.Workspace, base.NoTunnel = t.TempDir(), true
 	missing := config.MCPServerConfig{
-		Command: "codebridge-command-that-does-not-exist", ToolPrefix: "missing",
+		Command:          "codebridge-command-that-does-not-exist",
 		StartupTimeoutMS: 500, CallTimeoutMS: 500, HealthTimeoutMS: 500, MaxTools: 10,
 		Policy: config.MCPServerPolicyConfig{Default: "approval"},
 	}
@@ -208,9 +237,7 @@ func TestUpstreamToolNormalizationAndSchemaValidation(t *testing.T) {
 	module := &upstreamMCPModule{
 		serverName: "collision", upstream: map[string]string{}, readOnly: map[string]bool{}, policy: map[string]string{},
 	}
-	cfg := config.MCPServerConfig{
-		ToolPrefix: "collision", Policy: config.MCPServerPolicyConfig{Default: "approval"},
-	}
+	cfg := config.MCPServerConfig{Policy: config.MCPServerPolicyConfig{Default: "approval"}}
 	tools := []*mcp.Tool{
 		{Name: "foo-bar", Description: "one", InputSchema: map[string]any{"type": "object"}},
 		{Name: "foo_bar", Description: "two", InputSchema: map[string]any{"type": "object"}},

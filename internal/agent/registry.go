@@ -19,7 +19,7 @@ type ToolSpec struct {
 func Tools() []ToolSpec {
 	groups := [][]ToolSpec{
 		basicToolSpecs(), filesystemToolSpecs(), repoToolSpecs(), workflowToolSpecs(),
-		figmaToolSpecs(), memoryToolSpecs(), databaseToolSpecs(), executionToolSpecs(),
+		memoryToolSpecs(), executionToolSpecs(),
 	}
 	var tools []ToolSpec
 	for _, group := range groups {
@@ -71,12 +71,4 @@ func array(items any) map[string]any {
 }
 func enum(values ...string) map[string]any {
 	return map[string]any{"type": "string", "enum": values}
-}
-
-func figmaReadSchema() map[string]any {
-	return object(map[string]any{
-		"url": str("Optional Figma URL."), "node_id": str("Optional node ID."),
-		"client_languages": array(str("")), "client_frameworks": array(str("")),
-		"force_code": boolean(), "enable_base64_response": boolean(), "arguments": object(nil),
-	})
 }

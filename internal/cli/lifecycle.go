@@ -22,8 +22,6 @@ import (
 
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
-	databasefactory "codebridge/internal/database/factory"
-	"codebridge/internal/figma"
 	memoryfactory "codebridge/internal/memory/factory"
 
 	"golang.org/x/term"
@@ -175,8 +173,6 @@ func (a App) spawnServer(executable string, cfg config.Config, background bool) 
 		"MCP_AUTH_TOKEN="+cfg.AuthToken,
 		"AGENT_APPROVAL_TOKEN="+cfg.ApprovalToken,
 		"MCP_ALLOWED_ORIGINS="+strings.Join(cfg.AllowedOrigins, ","),
-		"FIGMA_DESKTOP_MCP_URL="+cfg.FigmaDesktopURL,
-		"FIGMA_DESKTOP_TIMEOUT_MS="+strconv.Itoa(cfg.FigmaDesktopTimeoutMS),
 		"CODEBRIDGE_MEMORY_ENABLED="+strconv.FormatBool(cfg.Memory.Enabled),
 		"CODEBRIDGE_MEMORY_PROVIDER="+cfg.Memory.Provider,
 		"CODEBRIDGE_MEMORY_ENDPOINT="+cfg.Memory.Endpoint,
@@ -192,7 +188,6 @@ func (a App) spawnServer(executable string, cfg config.Config, background bool) 
 		"CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
 		"CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
 		"CODEBRIDGE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
-		"CODEBRIDGE_DATABASE_ENABLED="+strconv.FormatBool(cfg.Database.Enabled),
 	)
 	return a.startChild("server", cmd, background)
 }
@@ -320,8 +315,6 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 		checks = append(checks, check{"tunnel-id", cfg.TunnelID != "", ternary(cfg.TunnelID != "", "configured", "missing")})
 		checks = append(checks, check{"runtime-key", os.Getenv(cfg.RuntimeKeyEnv) != "", cfg.RuntimeKeyEnv})
 	}
-	figmaStatus := figma.Client{Endpoint: cfg.FigmaDesktopURL, Timeout: 2 * time.Second, AllowRemote: cfg.FigmaDesktopAllowRemote, Version: a.Version}.Status(ctx)
-	checks = append(checks, check{"figma-desktop", figmaStatus["connected"] == true, fmt.Sprint(figmaStatus["endpoint"])})
 	if cfg.Memory.Enabled {
 		memoryProvider, memoryErr := memoryfactory.New(cfg.Memory)
 		if memoryErr != nil {
@@ -330,25 +323,6 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 			memoryHealth := memoryProvider.Health(ctx)
 			_ = memoryProvider.Close()
 			checks = append(checks, check{"memory", memoryHealth.Available, fmt.Sprintf("%s %s", memoryHealth.Provider, memoryHealth.Endpoint)})
-		}
-	}
-	if cfg.Database.Enabled {
-		databaseManager, databaseErr := databasefactory.New(cfg.Database)
-		if databaseErr != nil {
-			checks = append(checks, check{"database", false, databaseErr.Error()})
-		} else {
-			connections := databaseManager.List(ctx, true)
-			databaseManager.Close()
-			available := 0
-			for _, connection := range connections {
-				if connection.Available {
-					available++
-				}
-			}
-			checks = append(checks, check{
-				"database", available == len(connections),
-				fmt.Sprintf("%d/%d connections available", available, len(connections)),
-			})
 		}
 	}
 	ok := true

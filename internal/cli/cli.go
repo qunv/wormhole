@@ -14,12 +14,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"codebridge/internal/agent"
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
-	"codebridge/internal/figma"
 	"codebridge/internal/server"
 )
 
@@ -121,10 +119,6 @@ func (a App) Run(ctx context.Context, argv []string) error {
 			fmt.Fprintln(a.Stdout, path)
 		}
 		return err
-	case "figma":
-		return a.figma(ctx, cfg, opts)
-	case "database", "db":
-		return a.databaseCommand(ctx, cfg, opts)
 	case "tunnel":
 		return a.tunnelCommand(ctx, cfg, opts)
 	case "keys":
@@ -168,8 +162,6 @@ Usage:
   codebridge status [--json]    Show health and PID state
   codebridge doctor [--json]    Check local readiness
   codebridge workspace [path]   Show or set the default workspace
-  codebridge figma [status|tools]
-  codebridge database add|list|test|remove|doctor
   codebridge tunnel [status|install]
   codebridge keys                Print Tunnel/API-key setup URLs
   codebridge profile            Write the tunnel-client YAML profile
@@ -492,33 +484,6 @@ func (a App) keyCommand(opts options) error {
 	return nil
 }
 
-func (a App) figma(ctx context.Context, cfg config.Config, opts options) error {
-	client := figma.Client{
-		Endpoint: cfg.FigmaDesktopURL, Timeout: timeDurationMS(cfg.FigmaDesktopTimeoutMS),
-		AllowRemote: cfg.FigmaDesktopAllowRemote, Version: a.Version,
-	}
-	sub := "status"
-	if len(opts.Rest) > 0 {
-		sub = opts.Rest[0]
-	}
-	var value any
-	switch sub {
-	case "status":
-		value = client.Status(ctx)
-	case "tools":
-		tools, err := client.ListTools(ctx)
-		if err != nil {
-			return err
-		}
-		value = map[string]any{"count": len(tools), "tools": tools}
-	default:
-		return errors.New("usage: codebridge figma status|tools")
-	}
-	raw, _ := json.MarshalIndent(value, "", "  ")
-	fmt.Fprintln(a.Stdout, string(raw))
-	return nil
-}
-
 func (a App) skillsCommand(ctx context.Context, cfg config.Config, opts options) error {
 	executable, _ := os.Executable()
 	runtime, err := agent.NewContext(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
@@ -546,8 +511,6 @@ func (a App) skillsCommand(ctx context.Context, cfg config.Config, opts options)
 	fmt.Fprintln(a.Stdout, string(raw))
 	return nil
 }
-
-func timeDurationMS(value int) time.Duration { return time.Duration(value) * time.Millisecond }
 
 func ternary[T any](condition bool, yes, no T) T {
 	if condition {

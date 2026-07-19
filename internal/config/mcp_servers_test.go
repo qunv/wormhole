@@ -24,8 +24,8 @@ func TestMCPServersAcceptGenericCommandsAndApplyDefaults(t *testing.T) {
 		cfg.MCPServers["postgres"] = validStdioServer(command)
 		normalize(&cfg)
 		server := cfg.MCPServers["postgres"]
-		if server.EffectiveTransport() != "stdio" || server.ToolPrefix != "postgres" {
-			t.Fatalf("command %q normalized to transport=%q prefix=%q", command, server.EffectiveTransport(), server.ToolPrefix)
+		if server.EffectiveTransport() != "stdio" {
+			t.Fatalf("command %q normalized to transport=%q", command, server.EffectiveTransport())
 		}
 		if server.StartupTimeoutMS != DefaultMCPStartupTimeoutMS || server.CallTimeoutMS != DefaultMCPCallTimeoutMS || server.MaxTools != DefaultMCPMaxTools {
 			t.Fatalf("command %q did not receive defaults: %#v", command, server)

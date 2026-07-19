@@ -7,11 +7,9 @@ func TestToolRegistryContract(t *testing.T) {
 		"basic":      basicToolSpecs(),
 		"filesystem": filesystemToolSpecs(),
 		"execution":  executionToolSpecs(),
-		"figma":      figmaToolSpecs(),
 		"repo":       repoToolSpecs(),
 		"workflow":   workflowToolSpecs(),
 		"memory":     memoryToolSpecs(),
-		"database":   databaseToolSpecs(),
 	}
 	seen := map[string]string{}
 	for group, tools := range groups {
@@ -31,7 +29,7 @@ func TestToolRegistryContract(t *testing.T) {
 			}
 		}
 	}
-	if got, want := len(seen), 93; got != want {
+	if got, want := len(seen), 78; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	if got := len(Tools()); got != len(seen) {
@@ -39,12 +37,19 @@ func TestToolRegistryContract(t *testing.T) {
 	}
 	for _, required := range []string{
 		"workspace_snapshot", "read_many", "apply_patch", "run_commands", "review_diff",
-		"request_approval_batch", "figma_get_design_context", "codegraph_explore", "lca_input",
-		"memory_export", "memory_import", "db_list_connections", "db_describe", "db_query", "db_explain",
-		"db_preview_mutation", "db_mutate",
+		"request_approval_batch", "codegraph_explore", "lca_input",
+		"memory_export", "memory_import",
 	} {
 		if seen[required] == "" {
 			t.Fatalf("missing contract tool: %s", required)
+		}
+	}
+	for _, removed := range []string{
+		"db_list_connections", "db_describe", "db_query", "db_explain", "db_preview_mutation", "db_mutate",
+		"figma_status", "figma_list_tools", "figma_call_tool", "figma_get_design_context", "figma_get_screenshot",
+	} {
+		if owner := seen[removed]; owner != "" {
+			t.Fatalf("removed built-in tool %s remains owned by %s", removed, owner)
 		}
 	}
 }

@@ -12,16 +12,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
-	"codebridge/internal/database"
-	databasefactory "codebridge/internal/database/factory"
-	"codebridge/internal/figma"
 	"codebridge/internal/memory"
 	memoryfactory "codebridge/internal/memory/factory"
 	"codebridge/internal/patch"
@@ -38,8 +34,6 @@ type Runtime struct {
 	Approvals               *security.ApprovalManager
 	Patches                 *patch.Engine
 	Processes               *processx.Registry
-	Figma                   figma.Client
-	Database                *database.Manager
 	Memory                  memory.Provider
 	MemoryRecorder          *memory.Recorder
 	MemoryProject           string
@@ -110,24 +104,11 @@ func NewContext(ctx context.Context, cfg config.Config, version, tier, configID 
 			RetryBackoff:    time.Duration(cfg.Memory.RetryBackoffMS) * time.Millisecond,
 		})
 	}
-	databaseManager, err := databasefactory.New(cfg.Database)
-	if err != nil {
-		if memoryRecorder != nil {
-			memoryRecorder.Close()
-		}
-		_ = memoryProvider.Close()
-		return nil, err
-	}
 	runtime := &Runtime{
 		Config: cfg, Workspace: manager, Store: store,
 		Approvals: security.NewApprovalManager(store, cfg.ApprovalToken, 10*time.Minute),
 		Processes: processx.NewRegistry(cfg.MaxProcesses),
-		Figma: figma.Client{
-			Endpoint: cfg.FigmaDesktopURL, Timeout: time.Duration(cfg.FigmaDesktopTimeoutMS) * time.Millisecond,
-			AllowRemote: cfg.FigmaDesktopAllowRemote, Version: version,
-		},
-		Database: databaseManager,
-		Memory:   memoryProvider, MemoryRecorder: memoryRecorder,
+		Memory:    memoryProvider, MemoryRecorder: memoryRecorder,
 		MemoryProject: memoryProject, MemoryFallbackSessionID: memorySessionID,
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
 	}
@@ -137,9 +118,7 @@ func NewContext(ctx context.Context, cfg config.Config, version, tier, configID 
 		newFilesystemModule(runtime),
 		newRepoModule(runtime),
 		newWorkflowModule(runtime),
-		newFigmaModule(runtime),
 		newMemoryModule(runtime),
-		newDatabaseModule(runtime),
 		newExecutionModule(runtime),
 	}
 	for _, module := range modules {
@@ -216,14 +195,10 @@ func (r *Runtime) audit(tool string, args map[string]any, value any, ok bool, ca
 	}
 	module, _ := r.ToolModule(tool)
 	auditProvider, customAudit := module.(ToolAuditProvider)
-	databaseTool := r.ToolModuleName(tool) == "database"
 	if r.Config.AuditArgs {
-		switch {
-		case customAudit:
+		if customAudit {
 			record["args"] = auditProvider.AuditArguments(tool, args)
-		case databaseTool:
-			record["args"] = databaseAuditArguments(args)
-		default:
+		} else {
 			record["args"] = security.RedactDeep(args, 0)
 		}
 	}
@@ -231,66 +206,16 @@ func (r *Runtime) audit(tool string, args map[string]any, value any, ok bool, ca
 		if metadata := auditProvider.AuditMetadata(tool, args, value); len(metadata) > 0 {
 			record["module"] = metadata
 		}
-	} else if databaseTool {
-		record["database"] = databaseAuditMetadata(tool, args, value)
 	}
 	if callErr != nil {
-		switch {
-		case customAudit:
+		if customAudit {
 			record["error"] = auditProvider.AuditError(callErr)
-		case databaseTool:
-			record["error"] = database.SanitizeError(callErr)
-		default:
+		} else {
 			record["error"] = callErr.Error()
 		}
 	}
 	raw, _ := json.Marshal(record)
 	_ = r.Store.AppendLine(r.Store.AuditPath, append(raw, '\n'))
-}
-
-func databaseAuditArguments(args map[string]any) map[string]any {
-	result := map[string]any{}
-	for _, key := range []string{"alias", "operation", "schema", "table", "max_affected_rows", "max_rows", "include_indexes", "check_health"} {
-		if value, ok := args[key]; ok {
-			result[key] = value
-		}
-	}
-	if where := objectArg(args, "where"); len(where) > 0 {
-		columns := make([]string, 0, len(where))
-		for column := range where {
-			columns = append(columns, column)
-		}
-		sort.Strings(columns)
-		result["predicate_columns"] = columns
-	}
-	if values := objectArg(args, "values"); len(values) > 0 {
-		columns := make([]string, 0, len(values))
-		for column := range values {
-			columns = append(columns, column)
-		}
-		sort.Strings(columns)
-		result["value_columns"] = columns
-	}
-	return result
-}
-
-func databaseAuditMetadata(tool string, args map[string]any, value any) map[string]any {
-	metadata := map[string]any{"operation": strings.TrimPrefix(tool, "db_")}
-	if alias := stringArg(args, "alias", ""); alias != "" {
-		metadata["alias"] = alias
-	}
-	response, _ := value.(map[string]any)
-	for _, key := range []string{"connection_alias", "environment", "read_only", "query_hash", "elapsed_ms", "row_count", "truncated", "kind", "operation", "schema", "table", "affected_rows", "max_affected_rows"} {
-		if response != nil && response[key] != nil {
-			metadata[key] = response[key]
-		}
-	}
-	if response != nil {
-		if connections, ok := response["connections"].([]database.ConnectionSummary); ok {
-			metadata["connection_count"] = len(connections)
-		}
-	}
-	return metadata
 }
 
 func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {
@@ -337,9 +262,6 @@ func (r *Runtime) consumeToolApproval(tool, action string) error {
 		return nil
 	}
 	if err := r.Approvals.Consume(action); err != nil {
-		if tool == "db_mutate" {
-			return fmt.Errorf("approval required: call db_preview_mutation, then request_approval with action=%q and approve_request: %w", action, err)
-		}
 		return fmt.Errorf("approval required: call request_approval with action=%q, then approve_request: %w", action, err)
 	}
 	return nil
@@ -353,18 +275,6 @@ func genericToolApprovalAction(tool string, args map[string]any) string {
 
 func approvalAction(tool string, args map[string]any) string {
 	switch tool {
-	case "figma_call_tool":
-		name := stringArg(args, "tool", "")
-		readOnly := map[string]bool{
-			"get_code_connect_map": true, "get_code_connect_suggestions": true,
-			"get_design_context": true, "get_figjam": true, "get_metadata": true,
-			"get_screenshot": true, "get_shader_effect": true, "get_shader_fill": true,
-			"get_variable_defs": true, "list_shader_effects": true,
-		}
-		if name != "" && !readOnly[name] {
-			raw, _ := json.Marshal(args["arguments"])
-			return "figma:" + name + ":" + string(raw)
-		}
 	case "delete_path":
 		return "delete_path:" + stringArg(args, "path", "")
 	case "delete_skill":
@@ -372,8 +282,6 @@ func approvalAction(tool string, args map[string]any) string {
 	case "memory_forget":
 		raw, _ := json.Marshal(args)
 		return "memory_forget:" + string(raw)
-	case "db_mutate":
-		return databaseMutationApprovalAction(args)
 	case "run_command", "proc_start":
 		command := stringArg(args, "command", "")
 		if security.Classify(command).NeedsApproval {

@@ -98,32 +98,6 @@ func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
 	}
 }
 
-func TestDatabaseConfigAcceptsRegisteredDriverNamesWithoutHardcoding(t *testing.T) {
-	cfg := Default()
-	cfg.Database.Enabled = true
-	cfg.Database.Connections = map[string]DatabaseConnectionConfig{
-		"db.example": {
-			Driver: "future_driver", Environment: "dev",
-			CredentialRef: CredentialReference{Provider: "env", Name: "CODEBRIDGE_FUTURE_DATABASE_DSN"},
-			Access:        DatabaseAccessConfig{Mode: "read-only"},
-			Limits: DatabaseLimitsConfig{
-				QueryTimeoutMS: 1000, MaxRows: 10, MaxResultBytes: 1024,
-				MaxCellBytes: 128, MaxConcurrentQueries: 1,
-			},
-			Pool: DatabasePoolConfig{MaxOpen: 1, MaxIdle: 1, MaxLifetimeSeconds: 60},
-		},
-	}
-	if err := cfg.Validate(false); err != nil {
-		t.Fatalf("syntactically valid future driver was rejected by config: %v", err)
-	}
-	connection := cfg.Database.Connections["db.example"]
-	connection.Driver = "Future/Driver"
-	cfg.Database.Connections["db.example"] = connection
-	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "driver must match") {
-		t.Fatalf("invalid driver name was not rejected: %v", err)
-	}
-}
-
 func TestValidateRejectsSecretsInsideMemoryOptions(t *testing.T) {
 	cfg := Default()
 	cfg.Memory.Enabled = true
@@ -137,5 +111,44 @@ func TestValidateRejectsSecretsInsideMemoryOptions(t *testing.T) {
 	cfg.Memory.Options = map[string]any{"contextFallback": true, "contextPath": "/agentmemory/context"}
 	if err := cfg.Validate(false); err != nil {
 		t.Fatalf("safe memory options rejected: %v", err)
+	}
+}
+
+func TestLegacyIntegrationFieldsAreDroppedOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("CODEBRIDGE_CONFIG_PATH", path)
+	legacy := `{
+  "workspace": ".",
+  "database": {"enabled": true, "connections": {"db.legacy": {}}},
+  "figmaDesktopMcpUrl": "http://127.0.0.1:3845/mcp",
+  "figmaDesktopTimeoutMs": 30000,
+  "mcpServers": {
+    "postgres_prod": {
+      "command": "uvx",
+      "toolPrefix": "prod_db"
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("legacy config should load for migration: %v", err)
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, removed := range []string{"\"database\"", "figmaDesktopMcpUrl", "figmaDesktopTimeoutMs", "toolPrefix", "prod_db"} {
+		if strings.Contains(string(raw), removed) {
+			t.Fatalf("legacy field %q persisted after save: %s", removed, raw)
+		}
+	}
+	if !strings.Contains(string(raw), `"postgres_prod"`) {
+		t.Fatalf("upstream MCP server was lost during migration: %s", raw)
 	}
 }

@@ -6,7 +6,7 @@ Codebridge uses one binary for both the CLI supervisor and the MCP server. The C
 
 Primary goals:
 
-1. Provide a single MCP gateway for workspaces, CodeGraph, Figma, memory, databases, and configured community MCP servers.
+1. Provide a single MCP gateway for workspaces, CodeGraph, memory, and configured community MCP servers, including database and design integrations.
 2. Maintain a stable built-in tool contract while safely namespacing tool contracts discovered from upstream MCP servers.
 3. Enforce path confinement and policy checks before every mutation.
 4. Keep secrets separate from persistent non-secret configuration.
@@ -41,7 +41,7 @@ Official MCP Go SDK
    ├── Streamable HTTP
    ├── logical ServerSession
    ├── embedded Apps resource
-   └── 93 built-in tools plus discovered upstream tools
+   └── 78 built-in tools plus discovered upstream tools
           │
           ▼
 agent.Runtime.HandleSession
@@ -69,10 +69,8 @@ agent.Runtime.HandleSession
 | `internal/security` | Shell and Git guards, risk classification, approvals, and redaction |
 | `internal/patch` | Backup batches, structured operations, unified diffs, and undo |
 | `internal/processx` | Timeouts, output caps, and managed process trees |
-| `internal/figma` | MCP client bridge to Figma Desktop |
 | `internal/upstreammcp` | Generic long-lived MCP client sessions for command/stdio and Streamable HTTP transports |
 | `internal/memory` | Canonical contracts, project identity, asynchronous recorder, and adapters |
-| `internal/database` | Exact-alias routing, credential resolvers, shared `database/sql` core, dialects, metrics, root-confined SQLite, and structured mutation guards |
 | `internal/state` | Per-workspace notes, tasks, decisions, audit, index, and backups |
 | `internal/assets` | Embedded MCP Apps widget and built-in skills |
 
@@ -81,8 +79,6 @@ Important dependency direction:
 ```text
 mcpserver → agent.Runtime → ToolModule
                               ├── memory.Provider ← provider adapters
-                              ├── database.Manager ← SQL drivers / credential resolvers
-                              ├── figma.Client
                               ├── upstreammcp.Client ← stdio / Streamable HTTP MCP servers
                               └── workspace / process / state services
 ```
@@ -112,17 +108,17 @@ basic
 filesystem
 repo
 workflow
-figma
 memory
-database
 execution
 ```
 
-Each module owns its tool specifications, group-local routing, health result, and lifecycle behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, database error sanitization, and memory observation capture. `CallIdentity` currently carries the logical MCP session ID and can be extended without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy. `Runtime.Shutdown()` closes modules in reverse registration order and returns aggregated close errors; `Runtime.Close()` remains as the compatibility wrapper.
+Database and Figma are intentionally not built-in modules. They use the same configured `mcpServers` path as every other community integration, so Codebridge does not embed SQL drivers, database credentials, or a Figma-specific MCP client.
+
+Each module owns its tool specifications, group-local routing, health result, and lifecycle behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, and memory observation capture. `CallIdentity` currently carries the logical MCP session ID and can be extended without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy. `Runtime.Shutdown()` closes modules in reverse registration order and returns aggregated close errors; `Runtime.Close()` remains as the compatibility wrapper.
 
 `internal/mcpserver` enumerates `runtime.Tools()` rather than a static global catalog. External modules must be registered with `runtime.RegisterModule` before constructing the MCP server. The package-level `agent.Tools()` function remains only as a compatibility catalog for existing callers and tests.
 
-Configured `mcpServers` entries are materialized during `Runtime.NewContext` after the eight built-in modules and before downstream MCP server construction. Each entry creates one `upstreamMCPModule` named `mcp_<server>`. Startup opens a long-lived MCP client session, calls paginated `tools/list`, validates and bounds the returned contract, filters tools, namespaces names as `<prefix>__<normalized_name>`, and registers the assembled `ToolSpec` values. Tool-list changes are therefore applied on Codebridge restart rather than mutating the downstream contract in place.
+Configured `mcpServers` entries are materialized during `Runtime.NewContext` after the six built-in modules and before downstream MCP server construction. Each entry creates one `upstreamMCPModule` named `mcp_<server>`. The entry name is the integration's only public identity: startup opens a long-lived MCP client session, calls paginated `tools/list`, validates and bounds the returned contract, filters tools, namespaces names as `<server>__<normalized_name>`, and registers the assembled `ToolSpec` values. Tool-list changes are therefore applied on Codebridge restart rather than mutating the downstream contract in place.
 
 The generic client supports:
 
@@ -182,12 +178,12 @@ Runtime state uses the application data/state directory:
 ```text
 config.json
   workspace, mode, policy, tunnel metadata,
-  Figma, memory, database, upstream MCP configuration, limits,
+  memory and upstream MCP configuration, limits,
   and environment-variable references rather than secret values
 
 .env
   CONTROL_PLANE_API_KEY
-  optional memory-provider, database, and upstream MCP secrets
+  optional memory-provider and upstream MCP secrets
 ```
 
 `Config.Save` clears `AuthToken` and `ApprovalToken` before serialization. The memory secret is not part of `MemoryConfig`; the configuration stores only the environment variable name in `secretEnv`.
@@ -203,7 +199,6 @@ The supervisor creates `ConfigID` from:
 - workspace and extra roots;
 - mode, policy, port, and whether authentication is enabled;
 - binary hash and widget hash;
-- Figma endpoint;
 - all non-secret memory configuration and a shortened fingerprint of the memory secret;
 - all non-secret upstream MCP configuration and shortened fingerprints of referenced environment/header secrets.
 
@@ -450,7 +445,7 @@ metadata
 
 `metadata` captures a broader set of calls but keeps only fields such as path, `cwd`, staged, recursive, and kind.
 
-Memory tools, database tools, community upstream MCP modules, `ping`, and `proc_output` are excluded from automatic capture to prevent recursion and untrusted payload leakage.
+Memory tools, community upstream MCP modules, `ping`, and `proc_output` are excluded from automatic capture to prevent recursion and untrusted payload leakage.
 
 Before enqueueing:
 
@@ -559,7 +554,7 @@ The workspace ID is derived from the canonical primary workspace path. Memory-pr
 9. Raw Git blocks flags that can write arbitrary output, change the worktree, or execute an external program.
 10. The balanced policy uses exact, expiring, one-time approvals, and upstream annotations are untrusted unless explicitly enabled.
 11. Audit arguments are recursively redacted; upstream modules persist only argument names and bounded metadata.
-12. Automatic memory capture does not send raw source, patches, commands, stdout, raw errors, database payloads, or upstream MCP payloads.
+12. Automatic memory capture does not send raw source, patches, commands, stdout, raw errors, or upstream MCP payloads.
 13. Provider options and upstream persistent configuration cannot contain secret-like keys.
 14. Browser Origins are blocked by default unless they are loopback or explicitly allowed.
 15. A non-loopback MCP listener requires a bearer token.

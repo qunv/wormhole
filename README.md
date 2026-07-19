@@ -1,16 +1,16 @@
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **93 built-in MCP tools plus tools discovered from configured community MCP servers**.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **78 built-in MCP tools plus tools discovered from configured community MCP servers**.
 
 ## Highlights
 
-- Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, and `tunnel`.
+- Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, and `tunnel`.
 - Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
-- 93 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
+- 78 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
-- Optional CodeGraph navigation, Figma Desktop bridge, and generic upstream MCP gateway for `stdio` or Streamable HTTP servers.
+- Optional CodeGraph navigation and a generic upstream MCP gateway for database, design, cloud, search, and other community integrations.
 - Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, and canonical export/import.
 - Builds for Linux, macOS, and Windows.
 
@@ -21,7 +21,7 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 - `rg` is optional; Codebridge falls back to a Go scanner when it is unavailable.
 - `codegraph` is optional; `codegraph_explore` runs only when the project contains `.codegraph/`.
 - A Tunnel ID and Runtime API key when using the ChatGPT Web tunnel.
-- Figma Desktop MCP when using the Figma tool group.
+- Any package manager or executable required by configured `stdio` MCP servers, such as `npx`, `uvx`, or Docker.
 - agentmemory when project memory is enabled.
 
 ## Tool module architecture
@@ -38,7 +38,7 @@ type ToolModule interface {
 }
 ```
 
-The built-in modules are `basic`, `filesystem`, `repo`, `workflow`, `figma`, `memory`, `database`, and `execution`. `Runtime` validates module and tool uniqueness, builds an O(1) tool-to-module index, and keeps policy, audit, and memory capture as shared cross-cutting behavior. Strict policy derives write access from `ToolSpec.ReadOnly`; every external tool with `ReadOnly=false` requires a hashed exact-argument approval under balanced policy unless its module supplies a custom `ToolPolicyProvider`.
+The built-in modules are `basic`, `filesystem`, `repo`, `workflow`, `memory`, and `execution`. `Runtime` validates module and tool uniqueness, builds an O(1) tool-to-module index, and keeps policy, audit, and memory capture as shared cross-cutting behavior. Strict policy derives write access from `ToolSpec.ReadOnly`; every external tool with `ReadOnly=false` requires a hashed exact-argument approval under balanced policy unless its module supplies a custom `ToolPolicyProvider`.
 
 Additional modules such as Redis, MongoDB, Elasticsearch, Kafka, Kubernetes, cloud providers, or upstream MCP bridges can be registered before server construction:
 
@@ -129,9 +129,6 @@ codebridge logs
 codebridge config get
 codebridge config path
 codebridge skills list
-codebridge database list
-codebridge database doctor
-codebridge figma status
 ```
 
 Show all commands and options:
@@ -196,14 +193,14 @@ export AGENT_APPROVAL_TOKEN="..."
 
 ## Community and upstream MCP servers
 
-Codebridge can start or connect to community MCP servers and expose their discovered tools through the same policy, approval, audit, health, and lifecycle pipeline as built-in modules. Each `mcpServers` entry becomes a module named `mcp_<server>`, and each upstream tool is namespaced as `<toolPrefix>__<normalized_tool_name>` to prevent collisions.
+Codebridge can start or connect to community MCP servers and expose their discovered tools through the same policy, approval, audit, health, and lifecycle pipeline as built-in modules. Each `mcpServers` entry becomes a module named `mcp_<server>`, and the entry name is also the public tool prefix: `<server>__<normalized_tool_name>`. This gives every configured server one stable identity and prevents prefix collisions.
 
 A `stdio` server may use any executable available in `PATH`, including `npx`, `uvx`, `pnpm`, `bunx`, `docker`, or a custom binary. Native executables are started directly with structured argv. On Windows only, resolved `.cmd`/`.bat` launchers such as `npx.cmd` are invoked through a restricted `cmd.exe /d /s /v:off /c` adapter; quote, control, `%`, and `!` expansion characters are rejected in batch arguments:
 
 ```json
 {
   "mcpServers": {
-    "postgres": {
+    "postgres_prod": {
       "transport": "stdio",
       "command": "uvx",
       "args": [
@@ -211,9 +208,8 @@ A `stdio` server may use any executable available in `PATH`, including `npx`, `u
         "--access-mode=restricted"
       ],
       "envRefs": {
-        "DATABASE_URI": "POSTGRES_MCP_DATABASE_URI"
+        "DATABASE_URI": "POSTGRES_PROD_MCP_DATABASE_URI"
       },
-      "toolPrefix": "postgres",
       "required": false,
       "policy": {
         "default": "approval",
@@ -234,7 +230,7 @@ A `stdio` server may use any executable available in `PATH`, including `npx`, `u
 The credential value remains outside `config.json`:
 
 ```bash
-POSTGRES_MCP_DATABASE_URI="postgresql://username:password@localhost:5432/dbname"
+POSTGRES_PROD_MCP_DATABASE_URI="postgresql://username:password@localhost:5432/dbname"
 ```
 
 A Streamable HTTP server uses `url`; remote hosts require explicit `allowRemote: true`, and sensitive headers must reference environment variables:
@@ -259,8 +255,35 @@ A Streamable HTTP server uses `url`; remote hosts require explicit `allowRemote:
 }
 ```
 
+Figma Desktop can be connected through the same generic HTTP bridge:
+
+```json
+{
+  "mcpServers": {
+    "figma": {
+      "transport": "streamable-http",
+      "url": "http://127.0.0.1:3845/mcp",
+      "required": false,
+      "policy": {
+        "trustAnnotations": false,
+        "default": "approval",
+        "readOnlyTools": [
+          "get_design_context",
+          "get_screenshot",
+          "get_metadata",
+          "get_variable_defs",
+          "get_code_connect_map",
+          "get_figjam"
+        ]
+      }
+    }
+  }
+}
+```
+
 Important behavior:
 
+- The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`. Legacy `toolPrefix` values are ignored and removed when configuration is saved.
 - Tool discovery runs once during Codebridge startup. Restart Codebridge after an upstream server changes its tool list.
 - `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
 - Community tool annotations are untrusted by default. Unknown tools require approval under `balanced`; `alwaysApproveTools` still requires exact approval under `policy=full`.
@@ -274,132 +297,25 @@ Tool exposure works through module ownership:
 ```json
 {
   "tools": {
-    "allowedGroups": ["basic", "filesystem", "mcp_postgres"],
-    "deniedTools": ["postgres__execute_sql"]
+    "allowedGroups": ["basic", "filesystem", "mcp_postgres_prod"],
+    "deniedTools": ["postgres_prod__execute_sql"]
   }
 }
 ```
 
-## Database MCP
+## Migrating database and Figma integrations
 
-CodeBridge exposes stable, exact-alias database tools:
+Database and Figma are no longer built-in modules. Configure their MCP servers under `mcpServers`, then restart Codebridge so their tools are discovered and registered. Legacy `database` and `figmaDesktop*` fields are ignored when loading old configuration and are removed the next time `config.json` is saved.
 
-```text
-db_list_connections
-db_describe
-db_query
-db_explain
-db_preview_mutation
-db_mutate
-```
-
-`db_query`, `db_explain`, and `db_describe` remain bounded and read-only. Raw write SQL is never accepted. `db_preview_mutation` and `db_mutate` support only structured `update` and `delete` operations on non-production aliases explicitly configured as `read-write`. Execution requires a complete primary-key predicate, `max_affected_rows`, and an exact one-time approval even under `policy=full`.
-
-The shared execution path lives in `internal/database/sqlcore` and owns pooling, transactions, scanning, masking, result limits, metrics, and structured mutation guards. Driver packages provide only dialect behavior. Supported drivers are:
-
-| Driver | Go database driver | Notes |
-|---|---|---|
-| `postgres` | `pgx/v5/stdlib` | Read-only queries and structured non-production mutations |
-| `mysql` | `go-sql-driver/mysql` | Hardened DSN parsing, verified TLS in production, structured non-production mutations |
-| `sqlite` | `modernc.org/sqlite` | Existing files only, root-confined, `mode=ro`, `query_only`, no mutations |
-
-### Database CLI
-
-```bash
-codebridge database add db.app_dev --driver postgres --environment dev
-codebridge database list
-codebridge database test db.app_dev
-codebridge database doctor
-codebridge database remove db.app_dev
-```
-
-The CLI stores only non-secret references in `config.json`. A connection using the default environment provider looks like:
-
-```json
-{
-  "database": {
-    "enabled": true,
-    "connections": {
-      "db.app_dev": {
-        "driver": "postgres",
-        "environment": "dev",
-        "credentialRef": {
-          "provider": "env",
-          "name": "CODEBRIDGE_DB_DB_APP_DEV_DSN"
-        },
-        "access": {
-          "mode": "read-only",
-          "allowedSchemas": ["public"]
-        }
-      }
-    }
-  }
-}
-```
-
-The secret belongs in `.env` or an external credential source:
-
-```bash
-CODEBRIDGE_DB_DB_APP_DEV_DSN="postgres://..."
-CODEBRIDGE_DB_MYSQL_DEV_DSN="user:password@tcp(127.0.0.1:3306)/app?tls=true"
-CODEBRIDGE_SQLITE_PATH="/workspace/data/app.db"
-```
-
-Built-in credential providers are:
+Typical migration:
 
 ```text
-env   environment variable
-file  permission-checked secret file, absolute or relative to the CodeBridge config directory
+built-in db_query                 → postgres__query or the upstream server's discovered name
+built-in figma_get_screenshot     → figma__get_screenshot
+built-in database/figma CLI       → edit mcpServers, then use workspace_info and tools/list
 ```
 
-Additional providers can register through `database/credential.Register` without changing the manager or MCP contract.
-
-SQLite additionally requires `fileRoot`, and the resolved database file must remain inside that canonical root:
-
-```json
-{
-  "driver": "sqlite",
-  "environment": "dev",
-  "fileRoot": "/workspace/data",
-  "credentialRef": {
-    "provider": "env",
-    "name": "CODEBRIDGE_SQLITE_PATH"
-  },
-  "access": {
-    "mode": "read-only",
-    "allowedSchemas": ["main"]
-  }
-}
-```
-
-For MySQL, `allowedSchemas` requires the DSN to select an allowed default database. Production TCP connections require verified TLS. CodeBridge rejects multi-statements, client-side parameter interpolation, unrestricted local files, insecure password modes, plaintext fallback, and TLS verification bypass.
-
-Per-alias summaries include operation counters and safe `database/sql` pool statistics. Audit records retain only alias, environment, query hash, duration, row count, truncation, mutation target, and affected-row metadata. SQL, parameters, rows, mutation values, DSNs, and credentials are excluded from audit and memory capture.
-
-Run the real-engine integration suite locally with Docker:
-
-```bash
-make test-database-integration
-```
-
-The CI matrix covers PostgreSQL 15–17 and MySQL 8.0/8.4. Adding another SQL driver requires implementing `sqlcore.Dialect`, constructing the shared client, and registering it through `database/factory.Register`. See `docs/ADR-DATABASE-MCP.md`.
-
-## Figma Desktop
-
-By default, Codebridge connects to:
-
-```text
-http://127.0.0.1:3845/mcp
-```
-
-Check the bridge:
-
-```bash
-codebridge figma status
-codebridge figma tools
-```
-
-Remote Figma endpoints are blocked by default. Enable `FIGMA_DESKTOP_ALLOW_REMOTE=1` only when you understand the risk.
+The exact upstream tool names depend on the selected community server. Use restrictive upstream access modes and explicit `readOnlyTools`/`alwaysApproveTools` policy lists rather than assuming a server's annotations are trustworthy.
 
 # Project memory
 
@@ -544,7 +460,7 @@ Exports are normalized into the Codebridge schema. Import replays each item thro
 - Codebridge is not an operating-system sandbox; accepted commands still run with the current user's privileges.
 - `safe` mode blocks destructive shell patterns and Git mutations.
 - The `strict` policy permits only read and analysis operations.
-- The `balanced` policy permits edits but requires an exact one-time approval for deletion, installation, network access, mutating Git, mutating Figma, `memory_forget`, and upstream tools not explicitly classified as read-only.
+- The `balanced` policy permits edits but requires an exact one-time approval for deletion, installation, network access, mutating Git, `memory_forget`, and upstream tools not explicitly classified as read-only.
 - The `full` policy enables the complete project workflow while catastrophic system commands remain blocked; upstream `alwaysApproveTools` still require approval.
 - Audit arguments are recursively redacted before they are written to local state. Community MCP modules reduce audit data to argument names and bounded metadata and are excluded from automatic memory capture.
 - A non-loopback MCP host requires a bearer token.
@@ -562,10 +478,8 @@ internal/workspace/   root confinement, owning-root resolution, search, and tree
 internal/security/    command guards, redaction, and approvals
 internal/patch/       backup, diff, preview, validation, and undo
 internal/processx/    bounded process execution and process-tree management
-internal/figma/       Figma Desktop MCP bridge
 internal/upstreammcp/  generic stdio and Streamable HTTP MCP client/session management
 internal/memory/      canonical contracts, recorder, scoping, and adapters
-internal/database/    alias routing, shared database/sql core, and dialect adapters
 internal/state/       per-workspace local state
 internal/assets/      embedded widget and built-in skills
 ```
@@ -588,13 +502,6 @@ External Streamable HTTP smoke test:
 ```bash
 CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8789/mcp \
   go test ./internal/server -run TestExternalStreamableHTTP -v
-```
-
-Optional MySQL integration test:
-
-```bash
-CODEBRIDGE_TEST_MYSQL_DSN='user:password@tcp(127.0.0.1:3306)/app?tls=true' \
-  go test ./internal/database/mysql -run TestMySQLIntegration -v
 ```
 
 Codebridge is released under AGPL-3.0-or-later; see `LICENSE` at the repository root.

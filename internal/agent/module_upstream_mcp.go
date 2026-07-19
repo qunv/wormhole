@@ -198,7 +198,7 @@ func (m *upstreamMCPModule) buildSpecs(cfg config.MCPServerConfig, tools []*mcp.
 		if mode == "deny" {
 			continue
 		}
-		publicName := upstreamPublicToolName(cfg.ToolPrefix, tool.Name)
+		publicName := upstreamPublicToolName(m.serverName, tool.Name)
 		if previous := seenPublic[publicName]; previous != "" {
 			return fmt.Errorf("upstream MCP server %q tools %q and %q normalize to the same public name %q", m.serverName, previous, tool.Name, publicName)
 		}
@@ -319,9 +319,9 @@ func upstreamInputSchema(value any) (map[string]any, int, error) {
 	return schema, len(raw), nil
 }
 
-func upstreamPublicToolName(prefix, upstream string) string {
+func upstreamPublicToolName(serverName, upstream string) string {
 	normalized := normalizeUpstreamName(upstream)
-	name := prefix + "__" + normalized
+	name := serverName + "__" + normalized
 	if len(name) <= 64 {
 		return name
 	}

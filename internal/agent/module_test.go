@@ -47,17 +47,16 @@ func TestRuntimeRegistersFunctionalModules(t *testing.T) {
 	}
 	defer runtime.Close()
 
-	wantModules := []string{"basic", "filesystem", "repo", "workflow", "figma", "memory", "database", "execution"}
+	wantModules := []string{"basic", "filesystem", "repo", "workflow", "memory", "execution"}
 	if got := runtime.ModuleNames(); !reflect.DeepEqual(got, wantModules) {
 		t.Fatalf("module order = %#v, want %#v", got, wantModules)
 	}
-	if got, want := len(runtime.Tools()), 93; got != want {
+	if got, want := len(runtime.Tools()), 78; got != want {
 		t.Fatalf("runtime tool count = %d, want %d", got, want)
 	}
 	for tool, want := range map[string]string{
 		"ping": "basic", "read_file": "filesystem", "git": "execution",
 		"workspace_snapshot": "repo", "task_plan": "workflow", "memory_search": "memory",
-		"figma_status": "figma", "db_query": "database",
 	} {
 		if got := runtime.ToolModuleName(tool); got != want {
 			t.Fatalf("module for %s = %q, want %q", tool, got, want)
@@ -175,18 +174,18 @@ func TestBalancedPolicyRequiresApprovalForExternalWriteTool(t *testing.T) {
 }
 
 func TestToolExposureUsesModuleOwnership(t *testing.T) {
-	runtime := &Runtime{Config: config.Config{Tools: config.ToolExposureConfig{AllowedGroups: []string{"database"}}}}
-	if err := runtime.RegisterModule(testModule("database", "db_test")); err != nil {
+	runtime := &Runtime{Config: config.Config{Tools: config.ToolExposureConfig{AllowedGroups: []string{"kubernetes"}}}}
+	if err := runtime.RegisterModule(testModule("kubernetes", "kubernetes_get")); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.RegisterModule(testModule("basic", "ping_test")); err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.ToolEnabled("db_test") || runtime.ToolEnabled("ping_test") {
-		t.Fatalf("module exposure mismatch: database=%t basic=%t", runtime.ToolEnabled("db_test"), runtime.ToolEnabled("ping_test"))
+	if !runtime.ToolEnabled("kubernetes_get") || runtime.ToolEnabled("ping_test") {
+		t.Fatalf("module exposure mismatch: kubernetes=%t basic=%t", runtime.ToolEnabled("kubernetes_get"), runtime.ToolEnabled("ping_test"))
 	}
-	runtime.Config.Tools.DeniedTools = []string{"db_test"}
-	if runtime.ToolEnabled("db_test") {
+	runtime.Config.Tools.DeniedTools = []string{"kubernetes_get"}
+	if runtime.ToolEnabled("kubernetes_get") {
 		t.Fatal("denied tool remained enabled")
 	}
 }

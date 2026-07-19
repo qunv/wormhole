@@ -49,7 +49,7 @@ func TestCodebridgeGatewayExposesAndForwardsUpstreamTools(t *testing.T) {
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	cfg.MCPServers["echo"] = config.MCPServerConfig{
-		Transport: "streamable-http", URL: upstream.URL, ToolPrefix: "echo",
+		Transport: "streamable-http", URL: upstream.URL,
 		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000, MaxTools: 10,
 		Policy: config.MCPServerPolicyConfig{Default: "approval", ReadOnlyTools: []string{"echo"}},
 	}
@@ -77,7 +77,7 @@ func TestCodebridgeGatewayExposesAndForwardsUpstreamTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(list.Tools), 94; got != want {
+	if got, want := len(list.Tools), 79; got != want {
 		t.Fatalf("tools/list returned %d, want %d", got, want)
 	}
 	var exposed *mcp.Tool
@@ -115,7 +115,7 @@ func TestUpstreamModuleParticipatesInToolExposure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel = t.TempDir(), true
 	cfg.MCPServers["echo"] = config.MCPServerConfig{
-		Transport: "streamable-http", URL: upstream.URL, ToolPrefix: "echo",
+		Transport: "streamable-http", URL: upstream.URL,
 		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000, MaxTools: 10,
 		Policy: config.MCPServerPolicyConfig{Default: "read-only"},
 	}

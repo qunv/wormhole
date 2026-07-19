@@ -172,10 +172,6 @@ func (r *Runtime) workspaceInfo() map[string]any {
 			"enabled": r.Config.Memory.Enabled, "provider": r.Memory.Name(),
 			"project": r.MemoryProject, "capture_mode": r.Config.Memory.CaptureMode,
 		},
-		"database": map[string]any{
-			"enabled": r.Config.Database.Enabled, "aliases": r.Database.Aliases(),
-			"connections": r.Database.List(context.Background(), false),
-		},
 		"tools": map[string]any{
 			"count": len(r.Tools()), "modules": r.ModuleNames(),
 			"allowed_groups": r.Config.Tools.AllowedGroups, "denied_tools": r.Config.Tools.DeniedTools,
@@ -381,11 +377,11 @@ func (r *Runtime) policyStatus() map[string]any {
 	case "strict":
 		status["description"] = "Read and analyze only; mutation tools are blocked."
 		status["allowed"] = []string{"read", "search", "analyze"}
-		status["blocked"] = []string{"writes", "commands", "processes", "git mutations", "generic Figma passthrough"}
+		status["blocked"] = []string{"writes", "commands", "processes", "git mutations", "unapproved upstream mutations"}
 	case "balanced":
 		status["description"] = "Read and edit allowed; exact risky actions need one-time approval."
 		status["allowed"] = []string{"read", "write", "edit", "local checks"}
-		status["needs_approval"] = []string{"delete", "install", "network", "git mutations", "mutating Figma calls"}
+		status["needs_approval"] = []string{"delete", "install", "network", "git mutations", "upstream mutation tools"}
 	default:
 		status["description"] = "Full project access; catastrophic system commands remain blocked."
 		status["allowed"] = []string{"*"}

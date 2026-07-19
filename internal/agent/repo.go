@@ -295,13 +295,6 @@ func (r *Runtime) workspaceDoctor(ctx context.Context, args map[string]any) (any
 	profile, _ := r.projectProfile(root)
 	git, _ := r.gitStatus(ctx, r.Workspace.Relative(root))
 	memoryHealth := r.memoryHealth(ctx, false)
-	databaseConnections := r.Database.List(ctx, true)
-	databaseAvailable := 0
-	for _, connection := range databaseConnections {
-		if connection.Available {
-			databaseAvailable++
-		}
-	}
 	checks := []map[string]any{
 		{"id": "workspace", "status": "pass", "label": "Workspace", "detail": root},
 		{"id": "roots", "status": "pass", "label": "Root confinement", "detail": len(r.Workspace.Roots)},
@@ -309,7 +302,6 @@ func (r *Runtime) workspaceDoctor(ctx context.Context, args map[string]any) (any
 		{"id": "auth", "status": ternary(r.Config.AuthToken != "", "pass", "warn"), "label": "MCP auth", "detail": ternary(r.Config.AuthToken != "", "bearer enabled", "no bearer token")},
 		{"id": "git", "status": ternary(git.(map[string]any)["is_git_repo"] == true, "pass", "warn"), "label": "Git", "detail": git},
 		{"id": "memory", "status": ternary(!r.Config.Memory.Enabled || memoryHealth.Available, "pass", "warn"), "label": "Memory provider", "detail": memoryHealth},
-		{"id": "database", "status": ternary(!r.Config.Database.Enabled || databaseAvailable == len(databaseConnections), "pass", "warn"), "label": "Database connections", "detail": map[string]any{"available": databaseAvailable, "total": len(databaseConnections), "connections": databaseConnections}},
 	}
 	score := 100
 	for _, check := range checks {

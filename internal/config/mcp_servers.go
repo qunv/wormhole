@@ -38,7 +38,6 @@ type MCPServerConfig struct {
 	EnvRefs    map[string]string `json:"envRefs,omitempty"`
 	InheritEnv []string          `json:"inheritEnv,omitempty"`
 
-	ToolPrefix   string   `json:"toolPrefix,omitempty"`
 	AllowedTools []string `json:"allowedTools,omitempty"`
 	DeniedTools  []string `json:"deniedTools,omitempty"`
 
@@ -59,10 +58,7 @@ type MCPServerPolicyConfig struct {
 	AlwaysApproveTools []string `json:"alwaysApproveTools,omitempty"`
 }
 
-var (
-	mcpServerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,23}$`)
-	mcpToolPrefixPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,23}$`)
-)
+var mcpServerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,23}$`)
 
 func (c MCPServerConfig) IsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
@@ -90,10 +86,6 @@ func normalizeMCPServers(c *Config) {
 		server.Command = strings.TrimSpace(server.Command)
 		server.CWD = strings.TrimSpace(server.CWD)
 		server.URL = strings.TrimSpace(server.URL)
-		server.ToolPrefix = strings.ToLower(strings.TrimSpace(server.ToolPrefix))
-		if server.ToolPrefix == "" {
-			server.ToolPrefix = name
-		}
 		if server.StartupTimeoutMS == 0 {
 			server.StartupTimeoutMS = DefaultMCPStartupTimeoutMS
 		}
@@ -153,9 +145,6 @@ func validateMCPServers(c Config) error {
 			}
 		default:
 			return fmt.Errorf("mcpServers.%s.transport must be stdio or streamable-http", name)
-		}
-		if !mcpToolPrefixPattern.MatchString(server.ToolPrefix) {
-			return fmt.Errorf("mcpServers.%s.toolPrefix must match %s", name, mcpToolPrefixPattern.String())
 		}
 		if err := validateMCPServerValues(name, server); err != nil {
 			return err
