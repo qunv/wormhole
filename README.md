@@ -14,9 +14,102 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 - Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, and canonical export/import.
 - Builds for Linux, macOS, and Windows.
 
+## Quick install
+
+The repository is currently private, so install the [GitHub CLI](https://cli.github.com/) and authenticate before downloading the release:
+
+```bash
+gh auth login
+```
+
+### Linux and macOS
+
+The command below detects the operating system and CPU architecture, downloads `v0.1.0-beta`, and installs `codebridge` into `~/.local/bin`:
+
+```bash
+set -e
+
+gh auth status >/dev/null
+
+VERSION="v0.1.0-beta"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+ARCHIVE="codebridge_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+gh release download "$VERSION" \
+  --repo qunv/codebridge \
+  --pattern "$ARCHIVE" \
+  --dir "$TMP_DIR"
+
+tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "$TMP_DIR/codebridge" "$HOME/.local/bin/codebridge"
+
+"$HOME/.local/bin/codebridge" --version
+```
+
+Make sure `~/.local/bin` is on `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Windows PowerShell
+
+```powershell
+$Version = "v0.1.0-beta"
+$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+$Arch = switch ($Architecture) {
+    "X64" { "amd64" }
+    "Arm64" { "arm64" }
+    default { throw "Unsupported architecture: $Architecture" }
+}
+
+$Archive = "codebridge_$($Version.Substring(1))_windows_$Arch.zip"
+$InstallDir = Join-Path $env:LOCALAPPDATA "Codebridge\bin"
+$TempArchive = Join-Path $env:TEMP $Archive
+
+gh auth status
+if ($LASTEXITCODE -ne 0) {
+    throw "Authenticate with GitHub CLI by running: gh auth login"
+}
+
+gh release download $Version `
+    --repo qunv/codebridge `
+    --pattern $Archive `
+    --dir $env:TEMP `
+    --clobber
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not download $Archive"
+}
+
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Expand-Archive -Path $TempArchive -DestinationPath $InstallDir -Force
+Remove-Item $TempArchive
+
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (($UserPath -split ";") -notcontains $InstallDir) {
+    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
+}
+
+& "$InstallDir\codebridge.exe" --version
+```
+
+Open a new terminal after installation so the updated user `PATH` is loaded.
+
+Release files and checksums are available on the [v0.1.0-beta release page](https://github.com/qunv/codebridge/releases/tag/v0.1.0-beta).
+
 ## Requirements
 
-- Go 1.25 or later.
+- Go 1.25 or later when building from source.
 - Git for repository-root detection and project identity.
 - `rg` is optional; Codebridge falls back to a Go scanner when it is unavailable.
 - `codegraph` is optional; `codegraph_explore` runs only when the project contains `.codegraph/`.
@@ -49,7 +142,7 @@ if err := runtime.RegisterModule(customModule); err != nil {
 server := mcpserver.New(runtime)
 ```
 
-## Build and install
+## Build from source
 
 ```bash
 cd codebridge
