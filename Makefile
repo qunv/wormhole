@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 DESTDIR ?=
 INSTALL ?= install
 
-.PHONY: all build install test vet check clean run
+.PHONY: all build install test test-database-integration vet check clean run
 
 all: check build
 
@@ -21,6 +21,9 @@ install: build
 
 test:
 	go test ./...
+
+test-database-integration:
+	./scripts/test-database-integration.sh
 
 vet:
 	go vet ./...

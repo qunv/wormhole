@@ -12,6 +12,7 @@ import (
 	"codebridge/internal/database"
 	mysqldatabase "codebridge/internal/database/mysql"
 	"codebridge/internal/database/postgres"
+	sqlitedatabase "codebridge/internal/database/sqlite"
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 func init() {
 	Register("mysql", mysqldatabase.New)
 	Register("postgres", postgres.New)
+	Register("sqlite", sqlitedatabase.New)
 }
 
 func Register(name string, constructor database.Constructor) {

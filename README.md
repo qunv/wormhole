@@ -1,12 +1,12 @@
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **91 MCP tools** for reading and editing code, running commands, Git operations, planning, review, approvals, and project memory.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **93 MCP tools** for reading and editing code, running commands, Git operations, planning, review, approvals, and project memory.
 
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, and `tunnel`.
 - Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
-- 91 tools registered from a single contract in `agent.Tools()`.
+- 93 tools registered from a single contract in `agent.Tools()`.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
@@ -104,6 +104,8 @@ codebridge logs
 codebridge config get
 codebridge config path
 codebridge skills list
+codebridge database list
+codebridge database doctor
 codebridge figma status
 ```
 
@@ -169,30 +171,50 @@ export AGENT_APPROVAL_TOKEN="..."
 
 ## Database MCP
 
-CodeBridge exposes stable, alias-routed, read-only database tools:
+CodeBridge exposes stable, exact-alias database tools:
 
 ```text
 db_list_connections
 db_describe
 db_query
 db_explain
+db_preview_mutation
+db_mutate
 ```
 
-The shared execution path lives in `internal/database/sqlcore` and uses `database/sql` for pooling, read-only transactions, row scanning, masking, and result limits. Driver packages provide only a dialect adapter and their `database/sql` driver. PostgreSQL uses `pgx/v5/stdlib`; MySQL uses `go-sql-driver/mysql`.
+`db_query`, `db_explain`, and `db_describe` remain bounded and read-only. Raw write SQL is never accepted. `db_preview_mutation` and `db_mutate` support only structured `update` and `delete` operations on non-production aliases explicitly configured as `read-write`. Execution requires a complete primary-key predicate, `max_affected_rows`, and an exact one-time approval even under `policy=full`.
 
-A database connection stores only a credential reference:
+The shared execution path lives in `internal/database/sqlcore` and owns pooling, transactions, scanning, masking, result limits, metrics, and structured mutation guards. Driver packages provide only dialect behavior. Supported drivers are:
+
+| Driver | Go database driver | Notes |
+|---|---|---|
+| `postgres` | `pgx/v5/stdlib` | Read-only queries and structured non-production mutations |
+| `mysql` | `go-sql-driver/mysql` | Hardened DSN parsing, verified TLS in production, structured non-production mutations |
+| `sqlite` | `modernc.org/sqlite` | Existing files only, root-confined, `mode=ro`, `query_only`, no mutations |
+
+### Database CLI
+
+```bash
+codebridge database add db.app_dev --driver postgres --environment dev
+codebridge database list
+codebridge database test db.app_dev
+codebridge database doctor
+codebridge database remove db.app_dev
+```
+
+The CLI stores only non-secret references in `config.json`. A connection using the default environment provider looks like:
 
 ```json
 {
   "database": {
     "enabled": true,
     "connections": {
-      "db.codebridge_dev": {
+      "db.app_dev": {
         "driver": "postgres",
         "environment": "dev",
         "credentialRef": {
           "provider": "env",
-          "name": "CODEBRIDGE_DB_CODEBRIDGE_DEV_DSN"
+          "name": "CODEBRIDGE_DB_DB_APP_DEV_DSN"
         },
         "access": {
           "mode": "read-only",
@@ -204,16 +226,52 @@ A database connection stores only a credential reference:
 }
 ```
 
-The DSN belongs in `.env` or another runtime secret source, never in `config.json`:
+The secret belongs in `.env` or an external credential source:
 
 ```bash
-CODEBRIDGE_DB_CODEBRIDGE_DEV_DSN="postgres://..."
+CODEBRIDGE_DB_DB_APP_DEV_DSN="postgres://..."
 CODEBRIDGE_DB_MYSQL_DEV_DSN="user:password@tcp(127.0.0.1:3306)/app?tls=true"
+CODEBRIDGE_SQLITE_PATH="/workspace/data/app.db"
 ```
 
-For a MySQL alias, set `"driver": "mysql"`. When `allowedSchemas` is configured, the DSN must select one of those databases. Production MySQL TCP connections require verified TLS; Unix sockets are permitted without TLS. CodeBridge rejects MySQL DSNs enabling multi-statements, client-side parameter interpolation, unrestricted local files, cleartext/old passwords, plaintext fallback, or TLS verification bypass.
+Built-in credential providers are:
 
-Adding another SQL driver requires implementing `sqlcore.Dialect`, constructing the common client with `sqlcore.Open` or `sqlcore.NewWithDB`, and registering it through `database/factory.Register`. See `docs/ADR-DATABASE-MCP.md`.
+```text
+env   environment variable
+file  permission-checked secret file, absolute or relative to the CodeBridge config directory
+```
+
+Additional providers can register through `database/credential.Register` without changing the manager or MCP contract.
+
+SQLite additionally requires `fileRoot`, and the resolved database file must remain inside that canonical root:
+
+```json
+{
+  "driver": "sqlite",
+  "environment": "dev",
+  "fileRoot": "/workspace/data",
+  "credentialRef": {
+    "provider": "env",
+    "name": "CODEBRIDGE_SQLITE_PATH"
+  },
+  "access": {
+    "mode": "read-only",
+    "allowedSchemas": ["main"]
+  }
+}
+```
+
+For MySQL, `allowedSchemas` requires the DSN to select an allowed default database. Production TCP connections require verified TLS. CodeBridge rejects multi-statements, client-side parameter interpolation, unrestricted local files, insecure password modes, plaintext fallback, and TLS verification bypass.
+
+Per-alias summaries include operation counters and safe `database/sql` pool statistics. Audit records retain only alias, environment, query hash, duration, row count, truncation, mutation target, and affected-row metadata. SQL, parameters, rows, mutation values, DSNs, and credentials are excluded from audit and memory capture.
+
+Run the real-engine integration suite locally with Docker:
+
+```bash
+make test-database-integration
+```
+
+The CI matrix covers PostgreSQL 15–17 and MySQL 8.0/8.4. Adding another SQL driver requires implementing `sqlcore.Dialect`, constructing the shared client, and registering it through `database/factory.Register`. See `docs/ADR-DATABASE-MCP.md`.
 
 ## Figma Desktop
 
@@ -388,7 +446,7 @@ internal/app/         version and tier metadata
 internal/cli/         command parsing, setup, lifecycle, tunnel, and installation
 internal/server/      HTTP routes, authentication, CORS/origin, and limits
 internal/mcpserver/   MCP SDK adapter, session identity, and widget resource
-internal/agent/       91-tool registry, runtime, policy, and handlers
+internal/agent/       93-tool registry, runtime, policy, and handlers
 internal/workspace/   root confinement, owning-root resolution, search, and tree
 internal/security/    command guards, redaction, and approvals
 internal/patch/       backup, diff, preview, validation, and undo

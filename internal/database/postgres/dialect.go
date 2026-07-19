@@ -33,6 +33,10 @@ func (Dialect) QuoteIdentifier(identifier string) (string, error) {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`, nil
 }
 
+var forbiddenSystemSchemas = map[string]bool{
+	"pg_catalog": true, "information_schema": true, "pg_toast": true,
+}
+
 var forbiddenReadFunctions = map[string]bool{
 	"nextval": true, "setval": true,
 	"pg_advisory_lock": true, "pg_advisory_lock_shared": true,
@@ -51,6 +55,12 @@ func (Dialect) ValidateReadOnlySQL(statement string) error {
 	for _, identifier := range database.SQLFunctionCalls(statement) {
 		if forbiddenReadFunctions[identifier] {
 			return fmt.Errorf("PostgreSQL read-only query uses forbidden function %q", identifier)
+		}
+	}
+	identifiers := database.SQLIdentifiers(statement)
+	for index := 0; index+1 < len(identifiers); index++ {
+		if identifiers[index+1] == "." && forbiddenSystemSchemas[identifiers[index]] {
+			return fmt.Errorf("PostgreSQL read-only query cannot access system schema %q", identifiers[index])
 		}
 	}
 	return nil
@@ -144,6 +154,32 @@ WHERE table_schema NOT IN ('pg_catalog', 'information_schema')`
 		result.Tables = append(result.Tables, *tables[key])
 	}
 	return result, nil
+}
+
+func (d Dialect) PrimaryKeyColumns(ctx context.Context, queryer sqlcore.Queryer, _ config.DatabaseConnectionConfig, schema, table string) ([]string, error) {
+	rows, err := queryer.QueryContext(ctx, `SELECT attribute.attname
+FROM pg_index index_info
+JOIN pg_class table_info ON table_info.oid = index_info.indrelid
+JOIN pg_namespace namespace_info ON namespace_info.oid = table_info.relnamespace
+JOIN LATERAL unnest(index_info.indkey) WITH ORDINALITY AS key_column(attnum, ordinal) ON TRUE
+JOIN pg_attribute attribute ON attribute.attrelid = table_info.oid AND attribute.attnum = key_column.attnum
+WHERE index_info.indisprimary
+  AND namespace_info.nspname = $1
+  AND table_info.relname = $2
+ORDER BY key_column.ordinal`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return nil, err
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
 }
 
 func (Dialect) NormalizeError(err error) error {

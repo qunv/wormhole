@@ -103,6 +103,26 @@ func Tools() []ToolSpec {
 				"params": array(map[string]any{}),
 			}, "alias", "sql"),
 		},
+		{
+			Name: "db_preview_mutation", Title: "Preview database mutation",
+			Description: "Validate a structured non-production update or delete, including primary-key and affected-row safeguards, without changing data. Returns the exact approval action required for execution.",
+			ReadOnly:    true, OpenWorld: true,
+			Schema: object(map[string]any{
+				"alias":     str("Exact configured non-production database alias."),
+				"operation": enum("update", "delete"), "schema": str("Exact schema name."), "table": str("Exact table name."),
+				"values": object(nil), "where": object(nil), "max_affected_rows": integer(),
+			}, "alias", "operation", "schema", "table", "where", "max_affected_rows"),
+		},
+		{
+			Name: "db_mutate", Title: "Execute database mutation",
+			Description: "Execute one exact approval-gated structured update or delete on a non-production read-write alias. Raw SQL, DDL, procedures, and unbounded predicates are not accepted.",
+			ReadOnly:    false, OpenWorld: true, Destructive: true,
+			Schema: object(map[string]any{
+				"alias":     str("Exact configured non-production database alias."),
+				"operation": enum("update", "delete"), "schema": str("Exact schema name."), "table": str("Exact table name."),
+				"values": object(nil), "where": object(nil), "max_affected_rows": integer(),
+			}, "alias", "operation", "schema", "table", "where", "max_affected_rows"),
+		},
 
 		ro("figma_status", "Figma Desktop status", "Check the official Figma Desktop MCP bridge.", empty),
 		ro("figma_list_tools", "List Figma tools", "List live upstream Figma MCP tools and schemas.", empty),

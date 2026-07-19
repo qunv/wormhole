@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -143,11 +144,11 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 	}
 	ctx = context.WithValue(ctx, memorySessionContextKey{}, sessionID)
 	if err := r.enforcePolicy(name, args); err != nil {
-		r.audit(name, args, false, err)
+		r.audit(name, args, nil, false, err)
 		return nil, err
 	}
 	value, err := r.dispatch(ctx, name, args)
-	r.audit(name, args, err == nil, err)
+	r.audit(name, args, value, err == nil, err)
 	r.captureMemoryObservation(sessionID, name, args, value, err)
 	return value, err
 }
@@ -159,7 +160,7 @@ func memorySessionID(ctx context.Context) string {
 	return value
 }
 
-func (r *Runtime) audit(tool string, args map[string]any, ok bool, callErr error) {
+func (r *Runtime) audit(tool string, args map[string]any, value any, ok bool, callErr error) {
 	if !r.Config.Audit {
 		return
 	}
@@ -168,13 +169,72 @@ func (r *Runtime) audit(tool string, args map[string]any, ok bool, callErr error
 		"workspace": r.Workspace.Primary,
 	}
 	if r.Config.AuditArgs {
-		record["args"] = security.RedactDeep(args, 0)
+		if databaseTools[tool] {
+			record["args"] = databaseAuditArguments(args)
+		} else {
+			record["args"] = security.RedactDeep(args, 0)
+		}
+	}
+	if metadata := databaseAuditMetadata(tool, args, value); metadata != nil {
+		record["database"] = metadata
 	}
 	if callErr != nil {
-		record["error"] = callErr.Error()
+		if databaseTools[tool] {
+			record["error"] = database.SanitizeError(callErr)
+		} else {
+			record["error"] = callErr.Error()
+		}
 	}
 	raw, _ := json.Marshal(record)
 	_ = r.Store.AppendLine(r.Store.AuditPath, append(raw, '\n'))
+}
+
+func databaseAuditArguments(args map[string]any) map[string]any {
+	result := map[string]any{}
+	for _, key := range []string{"alias", "operation", "schema", "table", "max_affected_rows", "max_rows", "include_indexes", "check_health"} {
+		if value, ok := args[key]; ok {
+			result[key] = value
+		}
+	}
+	if where := objectArg(args, "where"); len(where) > 0 {
+		columns := make([]string, 0, len(where))
+		for column := range where {
+			columns = append(columns, column)
+		}
+		sort.Strings(columns)
+		result["predicate_columns"] = columns
+	}
+	if values := objectArg(args, "values"); len(values) > 0 {
+		columns := make([]string, 0, len(values))
+		for column := range values {
+			columns = append(columns, column)
+		}
+		sort.Strings(columns)
+		result["value_columns"] = columns
+	}
+	return result
+}
+
+func databaseAuditMetadata(tool string, args map[string]any, value any) map[string]any {
+	if !databaseTools[tool] {
+		return nil
+	}
+	metadata := map[string]any{"operation": strings.TrimPrefix(tool, "db_")}
+	if alias := stringArg(args, "alias", ""); alias != "" {
+		metadata["alias"] = alias
+	}
+	response, _ := value.(map[string]any)
+	for _, key := range []string{"connection_alias", "environment", "read_only", "query_hash", "elapsed_ms", "row_count", "truncated", "kind", "operation", "schema", "table", "affected_rows", "max_affected_rows"} {
+		if response != nil && response[key] != nil {
+			metadata[key] = response[key]
+		}
+	}
+	if response != nil {
+		if connections, ok := response["connections"].([]database.ConnectionSummary); ok {
+			metadata["connection_count"] = len(connections)
+		}
+	}
+	return metadata
 }
 
 func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {
@@ -182,13 +242,23 @@ func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {
 		"policy_status": true, "explain_risk": true, "request_approval": true,
 		"request_approval_batch": true, "approve_request": true, "deny_request": true,
 	}
-	if policyTools[tool] || r.Config.Policy == "full" {
+	if policyTools[tool] {
 		return nil
 	}
 	if r.Config.Policy == "strict" && mutationTools[tool] {
 		return fmt.Errorf("tool %q is blocked by policy=strict", tool)
 	}
-	if r.Config.Policy != "balanced" {
+	if tool == "db_mutate" {
+		action := approvalAction(tool, args)
+		if action == "" {
+			return nil
+		}
+		if err := r.Approvals.Consume(action); err != nil {
+			return fmt.Errorf("approval required: call db_preview_mutation, then request_approval with action=%q and approve_request: %w", action, err)
+		}
+		return nil
+	}
+	if r.Config.Policy == "full" || r.Config.Policy != "balanced" {
 		return nil
 	}
 	action := approvalAction(tool, args)
@@ -209,7 +279,7 @@ var mutationTools = map[string]bool{
 	"undo_last_patch": true, "quality_gate": true, "run_tests": true, "run_build": true,
 	"run_lint": true, "run_changed_tests": true, "task_plan": true, "task_state": true,
 	"decision_log": true, "memory_remember": true, "memory_commit": true, "memory_forget": true,
-	"memory_import": true,
+	"memory_import": true, "db_mutate": true,
 }
 
 func approvalAction(tool string, args map[string]any) string {
@@ -233,6 +303,8 @@ func approvalAction(tool string, args map[string]any) string {
 	case "memory_forget":
 		raw, _ := json.Marshal(args)
 		return "memory_forget:" + string(raw)
+	case "db_mutate":
+		return databaseMutationApprovalAction(args)
 	case "run_command", "proc_start":
 		command := stringArg(args, "command", "")
 		if security.Classify(command).NeedsApproval {
@@ -343,6 +415,11 @@ func arrayArg(args map[string]any, key string) []any {
 	return value
 }
 
+func objectArg(args map[string]any, key string) map[string]any {
+	value, _ := args[key].(map[string]any)
+	return value
+}
+
 func stringsArg(args map[string]any, key string) []string {
 	var out []string
 	for _, value := range arrayArg(args, key) {
@@ -412,7 +489,7 @@ var (
 		"security_scan", "todo_scan", "change_summary")
 	workflowTools = names("task_plan", "task_state", "decision_log")
 	memoryTools   = names("memory_status", "memory_context", "memory_search", "memory_remember", "memory_commit", "memory_forget", "memory_export", "memory_import")
-	databaseTools = names("db_list_connections", "db_describe", "db_query", "db_explain")
+	databaseTools = names("db_list_connections", "db_describe", "db_query", "db_explain", "db_preview_mutation", "db_mutate")
 )
 
 func ToolGroup(name string) string {

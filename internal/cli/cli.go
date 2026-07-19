@@ -123,6 +123,8 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return err
 	case "figma":
 		return a.figma(ctx, cfg, opts)
+	case "database", "db":
+		return a.databaseCommand(ctx, cfg, opts)
 	case "tunnel":
 		return a.tunnelCommand(ctx, cfg, opts)
 	case "keys":
@@ -167,6 +169,7 @@ Usage:
   codebridge doctor [--json]    Check local readiness
   codebridge workspace [path]   Show or set the default workspace
   codebridge figma [status|tools]
+  codebridge database add|list|test|remove|doctor
   codebridge tunnel [status|install]
   codebridge keys                Print Tunnel/API-key setup URLs
   codebridge profile            Write the tunnel-client YAML profile

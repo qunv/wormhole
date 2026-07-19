@@ -1,0 +1,110 @@
+name: Database integration
+
+on:
+  pull_request:
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "internal/database/**"
+      - ".github/workflows/database-integration.yml"
+  push:
+    branches: [main]
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "internal/database/**"
+      - ".github/workflows/database-integration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    name: PostgreSQL ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["15", "16", "17"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.version }}
+        env:
+          POSTGRES_USER: codebridge_writer
+          POSTGRES_PASSWORD: codebridge_writer
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codebridge_writer -d app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Initialize read-only fixture
+        run: |
+          docker exec -i "${{ job.services.postgres.id }}" psql -v ON_ERROR_STOP=1 -U codebridge_writer -d app <<'SQL'
+          CREATE SCHEMA app;
+          CREATE TABLE app.users (id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');
+          CREATE TABLE app.secrets (id BIGSERIAL PRIMARY KEY, value TEXT NOT NULL);
+          INSERT INTO app.users(email) VALUES ('one@example.com'), ('two@example.com');
+          CREATE USER codebridge WITH PASSWORD 'codebridge';
+          GRANT CONNECT ON DATABASE app TO codebridge;
+          GRANT USAGE ON SCHEMA app TO codebridge;
+          GRANT SELECT ON ALL TABLES IN SCHEMA app TO codebridge;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO codebridge;
+          SQL
+      - name: Run PostgreSQL integration tests
+        env:
+          CODEBRIDGE_TEST_POSTGRES_DSN: postgres://codebridge:codebridge@127.0.0.1:5432/app?sslmode=disable
+          CODEBRIDGE_TEST_POSTGRES_WRITE_DSN: postgres://codebridge_writer:codebridge_writer@127.0.0.1:5432/app?sslmode=disable
+        run: go test ./internal/database/postgres -run 'TestPostgres(Integration|MutationIntegration)' -count=1 -v
+
+  mysql:
+    name: MySQL ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["8.0", "8.4"]
+    services:
+      mysql:
+        image: mysql:${{ matrix.version }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: app
+          MYSQL_USER: codebridge_writer
+          MYSQL_PASSWORD: codebridge_writer
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Initialize read-only fixture
+        run: |
+          docker exec -i "${{ job.services.mysql.id }}" mysql -uroot -proot app <<'SQL'
+          CREATE TABLE users (id BIGINT AUTO_INCREMENT PRIMARY KEY, email VARCHAR(255) NOT NULL, status VARCHAR(32) NOT NULL DEFAULT 'active', INDEX idx_email(email));
+          CREATE TABLE secrets (id BIGINT AUTO_INCREMENT PRIMARY KEY, value TEXT NOT NULL);
+          INSERT INTO users(email) VALUES ('one@example.com'), ('two@example.com');
+          CREATE USER IF NOT EXISTS 'codebridge'@'%' IDENTIFIED BY 'codebridge';
+          GRANT SELECT ON app.* TO 'codebridge'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+      - name: Run MySQL integration tests
+        env:
+          CODEBRIDGE_TEST_MYSQL_DSN: codebridge:codebridge@tcp(127.0.0.1:3306)/app?tls=false
+          CODEBRIDGE_TEST_MYSQL_WRITE_DSN: codebridge_writer:codebridge_writer@tcp(127.0.0.1:3306)/app?tls=false
+        run: go test ./internal/database/mysql -run 'TestMySQL(Integration|MutationIntegration)' -count=1 -v

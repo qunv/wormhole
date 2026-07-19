@@ -46,6 +46,13 @@ var forbiddenUserSchemas = map[string]bool{
 }
 
 func (Dialect) ValidateReadOnlySQL(statement string) error {
+	code, err := database.SQLCode(statement)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(code, "@") || strings.Contains(code, ":=") {
+		return fmt.Errorf("MySQL user variables and assignment expressions are not allowed")
+	}
 	for _, identifier := range database.SQLFunctionCalls(statement) {
 		if forbiddenReadFunctions[identifier] {
 			return fmt.Errorf("MySQL read-only query uses forbidden function %q", identifier)
@@ -137,6 +144,28 @@ WHERE TABLE_SCHEMA NOT IN ('mysql', 'information_schema', 'performance_schema', 
 		result.Tables = append(result.Tables, *tables[key])
 	}
 	return result, nil
+}
+
+func (Dialect) PrimaryKeyColumns(ctx context.Context, queryer sqlcore.Queryer, _ config.DatabaseConnectionConfig, schema, table string) ([]string, error) {
+	rows, err := queryer.QueryContext(ctx, `SELECT COLUMN_NAME
+FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+WHERE TABLE_SCHEMA = ?
+  AND TABLE_NAME = ?
+  AND CONSTRAINT_NAME = 'PRIMARY'
+ORDER BY ORDINAL_POSITION`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return nil, err
+		}
+		columns = append(columns, column)
+	}
+	return columns, rows.Err()
 }
 
 func (Dialect) NormalizeError(err error) error {

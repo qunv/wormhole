@@ -6,12 +6,13 @@ package database
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"codebridge/internal/config"
+	"codebridge/internal/database/credential"
 )
 
 type Manager struct {
@@ -31,12 +32,9 @@ func NewManager(cfg config.DatabaseConfig, constructors map[string]Constructor) 
 	sort.Strings(aliases)
 	for _, alias := range aliases {
 		connectionConfig := cfg.Connections[alias]
-		credential := ""
-		if connectionConfig.CredentialRef.Provider == "env" {
-			credential = os.Getenv(connectionConfig.CredentialRef.Name)
-		}
-		if credential == "" {
-			err := fmt.Errorf("credential is not configured")
+		credentialValue, resolveErr := credential.Resolve(context.Background(), connectionConfig.CredentialRef)
+		if resolveErr != nil {
+			err := fmt.Errorf("credential provider %q is unavailable", connectionConfig.CredentialRef.Provider)
 			if connectionConfig.Required {
 				manager.Close()
 				return nil, fmt.Errorf("required database connection %q is unavailable: %w", alias, err)
@@ -49,7 +47,7 @@ func NewManager(cfg config.DatabaseConfig, constructors map[string]Constructor) 
 			manager.Close()
 			return nil, fmt.Errorf("unsupported database driver %q", connectionConfig.Driver)
 		}
-		connection, err := constructor(alias, connectionConfig, credential)
+		connection, err := constructor(alias, connectionConfig, credentialValue)
 		if err != nil {
 			if connectionConfig.Required {
 				manager.Close()
@@ -94,7 +92,9 @@ func (m *Manager) List(ctx context.Context, checkHealth bool) []ConnectionSummar
 	aliases := m.Aliases()
 	results := make([]ConnectionSummary, 0, len(aliases))
 	for _, alias := range aliases {
-		handle, _ := m.resolve(alias)
+		m.mu.RLock()
+		handle := m.handles[alias]
+		m.mu.RUnlock()
 		summary := summaryFor(handle)
 		if checkHealth && handle.Connection != nil {
 			healthCtx, cancel := timeoutContext(ctx, handle.Config.Limits.QueryTimeoutMS)
@@ -108,87 +108,172 @@ func (m *Manager) List(ctx context.Context, checkHealth bool) []ConnectionSummar
 	return results
 }
 
-func (m *Manager) Query(ctx context.Context, alias string, request QueryRequest) (QueryResult, ConnectionSummary, error) {
+func (m *Manager) Query(ctx context.Context, alias string, request QueryRequest) (result QueryResult, summary ConnectionSummary, err error) {
 	handle, err := m.resolve(alias)
 	if err != nil {
 		return QueryResult{}, ConnectionSummary{}, err
 	}
+	handle.queries.Add(1)
+	started := time.Now()
+	defer func() { handle.record(time.Since(started), result.Truncated, err) }()
+	summary = summaryFor(handle)
+
 	query, queryHash, err := ValidateReadOnlySQL(request.SQL)
 	if err != nil {
-		return QueryResult{}, summaryFor(handle), err
+		return QueryResult{}, summary, err
 	}
-	if err := CheckQueryAccess(query, handle.Config.Access); err != nil {
-		return QueryResult{}, summaryFor(handle), err
+	if err = CheckQueryAccess(query, handle.Config.Access); err != nil {
+		return QueryResult{}, summary, err
 	}
-	if err := handle.Connection.ValidateReadOnlySQL(query); err != nil {
-		return QueryResult{}, summaryFor(handle), fmt.Errorf("database driver rejected query: %s", SanitizeError(err))
+	if err = handle.Connection.ValidateReadOnlySQL(query); err != nil {
+		return QueryResult{}, summary, fmt.Errorf("database driver rejected query: %s", SanitizeError(err))
 	}
 	request.SQL = query
 	request.MaxRows = clampRows(request.MaxRows, handle.Config.Limits.MaxRows)
-	if err := handle.acquire(ctx); err != nil {
-		return QueryResult{}, summaryFor(handle), err
+	if err = handle.acquire(ctx); err != nil {
+		return QueryResult{}, summary, err
 	}
 	defer handle.release()
 	queryCtx, cancel := timeoutContext(ctx, handle.Config.Limits.QueryTimeoutMS)
 	defer cancel()
-	result, err := handle.Connection.Query(queryCtx, request)
+	result, err = handle.Connection.Query(queryCtx, request)
 	result.QueryHash = queryHash
 	if err != nil {
-		return result, summaryFor(handle), fmt.Errorf("database query failed: %s", SanitizeError(err))
+		return result, summary, fmt.Errorf("database query failed: %s", SanitizeError(err))
 	}
-	return result, summaryFor(handle), nil
+	return result, summary, nil
 }
 
-func (m *Manager) Explain(ctx context.Context, alias string, request QueryRequest) (QueryResult, ConnectionSummary, error) {
+func (m *Manager) Explain(ctx context.Context, alias string, request QueryRequest) (result QueryResult, summary ConnectionSummary, err error) {
 	handle, err := m.resolve(alias)
 	if err != nil {
 		return QueryResult{}, ConnectionSummary{}, err
 	}
+	handle.explains.Add(1)
+	started := time.Now()
+	defer func() { handle.record(time.Since(started), result.Truncated, err) }()
+	summary = summaryFor(handle)
+
 	query, queryHash, err := ValidateReadOnlySQL(request.SQL)
 	if err != nil {
-		return QueryResult{}, summaryFor(handle), err
+		return QueryResult{}, summary, err
 	}
-	if err := CheckQueryAccess(query, handle.Config.Access); err != nil {
-		return QueryResult{}, summaryFor(handle), err
+	if err = CheckQueryAccess(query, handle.Config.Access); err != nil {
+		return QueryResult{}, summary, err
 	}
-	if err := handle.Connection.ValidateReadOnlySQL(query); err != nil {
-		return QueryResult{}, summaryFor(handle), fmt.Errorf("database driver rejected query: %s", SanitizeError(err))
+	if err = handle.Connection.ValidateReadOnlySQL(query); err != nil {
+		return QueryResult{}, summary, fmt.Errorf("database driver rejected query: %s", SanitizeError(err))
 	}
 	request.SQL = query
 	request.MaxRows = 1
-	if err := handle.acquire(ctx); err != nil {
-		return QueryResult{}, summaryFor(handle), err
+	if err = handle.acquire(ctx); err != nil {
+		return QueryResult{}, summary, err
 	}
 	defer handle.release()
 	queryCtx, cancel := timeoutContext(ctx, handle.Config.Limits.QueryTimeoutMS)
 	defer cancel()
-	result, err := handle.Connection.Explain(queryCtx, request)
+	result, err = handle.Connection.Explain(queryCtx, request)
 	result.QueryHash = queryHash
 	if err != nil {
-		return result, summaryFor(handle), fmt.Errorf("database explain failed: %s", SanitizeError(err))
+		return result, summary, fmt.Errorf("database explain failed: %s", SanitizeError(err))
 	}
-	return result, summaryFor(handle), nil
+	return result, summary, nil
 }
 
-func (m *Manager) Describe(ctx context.Context, alias string, request DescribeRequest) (DescribeResult, ConnectionSummary, error) {
+func (m *Manager) Describe(ctx context.Context, alias string, request DescribeRequest) (result DescribeResult, summary ConnectionSummary, err error) {
 	handle, err := m.resolve(alias)
 	if err != nil {
 		return DescribeResult{}, ConnectionSummary{}, err
 	}
-	if err := CheckDescribeAccess(request, handle.Config.Access); err != nil {
-		return DescribeResult{}, summaryFor(handle), err
+	handle.describes.Add(1)
+	started := time.Now()
+	defer func() { handle.record(time.Since(started), result.Truncated, err) }()
+	summary = summaryFor(handle)
+
+	if err = CheckDescribeAccess(request, handle.Config.Access); err != nil {
+		return DescribeResult{}, summary, err
 	}
-	if err := handle.acquire(ctx); err != nil {
-		return DescribeResult{}, summaryFor(handle), err
+	if err = handle.acquire(ctx); err != nil {
+		return DescribeResult{}, summary, err
 	}
 	defer handle.release()
 	queryCtx, cancel := timeoutContext(ctx, handle.Config.Limits.QueryTimeoutMS)
 	defer cancel()
-	result, err := handle.Connection.Describe(queryCtx, request)
+	result, err = handle.Connection.Describe(queryCtx, request)
 	if err != nil {
-		return result, summaryFor(handle), fmt.Errorf("database describe failed: %s", SanitizeError(err))
+		return result, summary, fmt.Errorf("database describe failed: %s", SanitizeError(err))
 	}
-	return result, summaryFor(handle), nil
+	return result, summary, nil
+}
+
+func (m *Manager) PreviewMutation(ctx context.Context, alias string, request MutationRequest) (preview MutationPreview, summary ConnectionSummary, err error) {
+	handle, err := m.resolveMutation(alias, request)
+	if err != nil {
+		return MutationPreview{}, ConnectionSummary{}, err
+	}
+	handle.mutationPreviews.Add(1)
+	started := time.Now()
+	defer func() { handle.record(time.Since(started), false, err) }()
+	summary = summaryFor(handle)
+	connection := handle.Connection.(MutationConnection)
+	if err = handle.acquire(ctx); err != nil {
+		return MutationPreview{}, summary, err
+	}
+	defer handle.release()
+	mutationCtx, cancel := timeoutContext(ctx, handle.Config.Limits.QueryTimeoutMS)
+	defer cancel()
+	preview, err = connection.PreviewMutation(mutationCtx, request)
+	if err != nil {
+		return preview, summary, fmt.Errorf("database mutation preview failed: %s", SanitizeError(err))
+	}
+	return preview, summary, nil
+}
+
+func (m *Manager) Mutate(ctx context.Context, alias string, request MutationRequest) (result MutationResult, summary ConnectionSummary, err error) {
+	handle, err := m.resolveMutation(alias, request)
+	if err != nil {
+		return MutationResult{}, ConnectionSummary{}, err
+	}
+	handle.mutations.Add(1)
+	started := time.Now()
+	defer func() { handle.record(time.Since(started), false, err) }()
+	summary = summaryFor(handle)
+	connection := handle.Connection.(MutationConnection)
+	if err = handle.acquire(ctx); err != nil {
+		return MutationResult{}, summary, err
+	}
+	defer handle.release()
+	mutationCtx, cancel := timeoutContext(ctx, handle.Config.Limits.QueryTimeoutMS)
+	defer cancel()
+	result, err = connection.Mutate(mutationCtx, request)
+	if err != nil {
+		return result, summary, fmt.Errorf("database mutation failed: %s", SanitizeError(err))
+	}
+	if result.AffectedRows > 0 {
+		handle.affectedRows.Add(uint64(result.AffectedRows))
+	}
+	return result, summary, nil
+}
+
+func (m *Manager) resolveMutation(alias string, request MutationRequest) (*Handle, error) {
+	handle, err := m.resolve(alias)
+	if err != nil {
+		return nil, err
+	}
+	if handle.Config.Environment == "prod" || handle.Config.Environment == "production" {
+		return nil, fmt.Errorf("structured mutations are not allowed for production database alias %q", alias)
+	}
+	if handle.Config.Access.Mode != "read-write" {
+		return nil, fmt.Errorf("database alias %q is not configured for read-write access", alias)
+	}
+	if err := CheckDescribeAccess(DescribeRequest{Schema: request.Schema, Table: request.Table}, handle.Config.Access); err != nil {
+		return nil, err
+	}
+	connection, ok := handle.Connection.(MutationConnection)
+	if !ok || !connection.SupportsMutation() {
+		return nil, fmt.Errorf("database driver %q does not support structured mutations", handle.Config.Driver)
+	}
+	return handle, nil
 }
 
 func (m *Manager) resolve(alias string) (*Handle, error) {
@@ -217,11 +302,15 @@ func (m *Manager) Close() {
 
 func summaryFor(handle *Handle) ConnectionSummary {
 	capabilities := []string{"describe", "query", "explain"}
+	if connection, ok := handle.Connection.(MutationConnection); ok && connection.SupportsMutation() &&
+		handle.Config.Access.Mode == "read-write" && handle.Config.Environment != "prod" && handle.Config.Environment != "production" {
+		capabilities = append(capabilities, "mutation_preview", "mutate")
+	}
 	return ConnectionSummary{
 		Alias: handle.Alias, Driver: handle.Config.Driver, Environment: handle.Config.Environment,
 		Access: handle.Config.Access.Mode, Capabilities: capabilities,
 		Available: handle.Connection != nil && handle.InitError == nil,
-		Error:     ternaryError(handle.InitError),
+		Error:     ternaryError(handle.InitError), Metrics: handle.metrics(),
 	}
 }
 

@@ -98,6 +98,7 @@ type DatabaseConnectionConfig struct {
 	Driver        string               `json:"driver"`
 	Environment   string               `json:"environment"`
 	CredentialRef CredentialReference  `json:"credentialRef"`
+	FileRoot      string               `json:"fileRoot,omitempty"`
 	Required      bool                 `json:"required,omitempty"`
 	Access        DatabaseAccessConfig `json:"access"`
 	Limits        DatabaseLimitsConfig `json:"limits"`
@@ -116,9 +117,10 @@ type ToolExposureConfig struct {
 }
 
 var (
-	databaseAliasPattern  = regexp.MustCompile(`^[a-z][a-z0-9._-]{1,63}$`)
-	databaseDriverPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	envNamePattern        = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	databaseAliasPattern      = regexp.MustCompile(`^[a-z][a-z0-9._-]{1,63}$`)
+	databaseDriverPattern     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	credentialProviderPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	envNamePattern            = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func validateMemoryOptions(value any, path string) error {
@@ -366,11 +368,20 @@ func (c Config) Validate(requireWorkspace bool) error {
 		if connection.Environment == "" {
 			return fmt.Errorf("database connection %q environment is required", alias)
 		}
-		if connection.CredentialRef.Provider != "env" {
-			return fmt.Errorf("database connection %q credentialRef.provider must be env", alias)
+		if connection.Driver == "sqlite" && strings.TrimSpace(connection.FileRoot) == "" {
+			return fmt.Errorf("database connection %q fileRoot is required for sqlite", alias)
 		}
-		if !envNamePattern.MatchString(connection.CredentialRef.Name) {
-			return fmt.Errorf("database connection %q credentialRef.name must be an environment variable name", alias)
+		if connection.Driver != "sqlite" && strings.TrimSpace(connection.FileRoot) != "" {
+			return fmt.Errorf("database connection %q fileRoot is only supported for sqlite", alias)
+		}
+		if !credentialProviderPattern.MatchString(connection.CredentialRef.Provider) {
+			return fmt.Errorf("database connection %q credentialRef.provider must match %s", alias, credentialProviderPattern.String())
+		}
+		if strings.TrimSpace(connection.CredentialRef.Name) == "" {
+			return fmt.Errorf("database connection %q credentialRef.name is required", alias)
+		}
+		if connection.CredentialRef.Provider == "env" && !envNamePattern.MatchString(connection.CredentialRef.Name) {
+			return fmt.Errorf("database connection %q credentialRef.name must be an environment variable name for provider env", alias)
 		}
 		if connection.Access.Mode != "read-only" && connection.Access.Mode != "read-write" {
 			return fmt.Errorf("database connection %q access.mode must be read-only or read-write", alias)
@@ -454,11 +465,22 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 	}
 	databaseSecretFingerprints := map[string]string{}
 	for alias, connection := range c.Database.Connections {
-		if connection.CredentialRef.Provider != "env" || connection.CredentialRef.Name == "" {
+		if connection.CredentialRef.Name == "" {
 			continue
 		}
-		if secret := os.Getenv(connection.CredentialRef.Name); secret != "" {
-			sum := sha256.Sum256([]byte(secret))
+		var secret []byte
+		switch connection.CredentialRef.Provider {
+		case "env":
+			secret = []byte(os.Getenv(connection.CredentialRef.Name))
+		case "file":
+			path := connection.CredentialRef.Name
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(AppConfigDir(), path)
+			}
+			secret, _ = os.ReadFile(path)
+		}
+		if len(secret) > 0 {
+			sum := sha256.Sum256(secret)
 			databaseSecretFingerprints[alias] = hex.EncodeToString(sum[:8])
 		}
 	}
@@ -656,6 +678,12 @@ func normalize(c *Config) {
 		}
 		connection.CredentialRef.Provider = strings.ToLower(strings.TrimSpace(connection.CredentialRef.Provider))
 		connection.CredentialRef.Name = strings.TrimSpace(connection.CredentialRef.Name)
+		connection.FileRoot = strings.TrimSpace(connection.FileRoot)
+		if connection.FileRoot != "" {
+			if absolute, err := filepath.Abs(connection.FileRoot); err == nil {
+				connection.FileRoot = filepath.Clean(absolute)
+			}
+		}
 		connection.Access.Mode = strings.ToLower(strings.TrimSpace(connection.Access.Mode))
 		if connection.Access.Mode == "" {
 			connection.Access.Mode = "read-only"

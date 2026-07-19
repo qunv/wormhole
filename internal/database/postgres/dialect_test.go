@@ -35,6 +35,15 @@ func TestDialectRejectsPostgresSideEffects(t *testing.T) {
 	if err := dialect.ValidateReadOnlySQL("SELECT pg_advisory_lock FROM metrics"); err != nil {
 		t.Fatalf("column sharing a function name was rejected: %v", err)
 	}
+	for _, statement := range []string{
+		"SELECT * FROM pg_catalog.pg_authid",
+		"SELECT * FROM \"pg_catalog\".\"pg_authid\"",
+		"SELECT * FROM information_schema.tables",
+	} {
+		if err := dialect.ValidateReadOnlySQL(statement); err == nil {
+			t.Fatalf("system schema query was accepted: %s", statement)
+		}
+	}
 }
 
 func TestDialectNormalizesPostgresErrors(t *testing.T) {

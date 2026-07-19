@@ -7,7 +7,7 @@ func TestRegistryContainsSupportedSQLDrivers(t *testing.T) {
 	for _, name := range Names() {
 		registered[name] = true
 	}
-	for _, name := range []string{"mysql", "postgres"} {
+	for _, name := range []string{"mysql", "postgres", "sqlite"} {
 		if !registered[name] {
 			t.Fatalf("%s database constructor is not registered", name)
 		}

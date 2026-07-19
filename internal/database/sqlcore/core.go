@@ -78,6 +78,16 @@ func NewWithDB(db *sql.DB, cfg config.DatabaseConnectionConfig, dialect Dialect)
 	return &Client{db: db, config: cfg, dialect: dialect}, nil
 }
 
+func (c *Client) PoolMetrics() database.PoolMetrics {
+	stats := c.db.Stats()
+	return database.PoolMetrics{
+		MaxOpen: stats.MaxOpenConnections, Open: stats.OpenConnections,
+		InUse: stats.InUse, Idle: stats.Idle, WaitCount: stats.WaitCount,
+		WaitMS: stats.WaitDuration.Milliseconds(), MaxIdleClosed: stats.MaxIdleClosed,
+		MaxIdleTimeClosed: stats.MaxIdleTimeClosed, MaxLifetimeClosed: stats.MaxLifetimeClosed,
+	}
+}
+
 func (c *Client) Health(ctx context.Context) database.HealthResult {
 	if err := c.db.PingContext(ctx); err != nil {
 		return database.HealthResult{Available: false, Error: database.SanitizeError(c.normalizeError(err))}

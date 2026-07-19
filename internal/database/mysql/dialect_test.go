@@ -35,6 +35,8 @@ func TestDialectSQLPrimitivesAndSafety(t *testing.T) {
 		"SELECT SLEEP(30)",
 		"SELECT * FROM mysql.user",
 		"SELECT * FROM performance_schema.threads",
+		"SELECT @session_value",
+		"SELECT @session_value := 1",
 	} {
 		if err := dialect.ValidateReadOnlySQL(statement); err == nil {
 			t.Fatalf("unsafe query was accepted: %s", statement)

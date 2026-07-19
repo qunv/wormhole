@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	dsnPattern      = regexp.MustCompile(`(?i)((?:postgres(?:ql)?|mysql)://)[^\s]+`)
-	mysqlDSNPattern = regexp.MustCompile(`(?i)([^\s:@/]+:)[^\s]*(@(?:tcp|tcp4|tcp6|unix)\([^)]*\)/[^\s]*)`)
-	passwordPattern = regexp.MustCompile(`(?i)(password\s*[=:]\s*)[^\s,;]+`)
+	dsnPattern       = regexp.MustCompile(`(?i)((?:postgres(?:ql)?|mysql)://)[^\s]+`)
+	mysqlDSNPattern  = regexp.MustCompile(`(?i)([^\s:@/]+:)[^\s]*(@(?:tcp|tcp4|tcp6|unix)\([^)]*\)/[^\s]*)`)
+	sqliteURIPattern = regexp.MustCompile(`(?i)(file:)[^\s]+`)
+	passwordPattern  = regexp.MustCompile(`(?i)(password\s*[=:]\s*)[^\s,;]+`)
 )
 
 func SanitizeError(err error) string {
@@ -21,6 +22,7 @@ func SanitizeError(err error) string {
 	}
 	value := dsnPattern.ReplaceAllString(err.Error(), `${1}[redacted]`)
 	value = mysqlDSNPattern.ReplaceAllString(value, `${1}[redacted]${2}`)
+	value = sqliteURIPattern.ReplaceAllString(value, `${1}[redacted]`)
 	value = passwordPattern.ReplaceAllString(value, `${1}[redacted]`)
 	value = strings.TrimSpace(value)
 	if len(value) > 500 {

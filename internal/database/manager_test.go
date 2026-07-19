@@ -11,6 +11,7 @@ import (
 
 type managerTestConnection struct {
 	validated string
+	truncated bool
 }
 
 func (*managerTestConnection) Health(context.Context) HealthResult {
@@ -23,14 +24,35 @@ func (c *managerTestConnection) ValidateReadOnlySQL(statement string) error {
 	}
 	return nil
 }
-func (*managerTestConnection) Query(context.Context, QueryRequest) (QueryResult, error) {
-	return QueryResult{Rows: [][]any{{"ok"}}, RowCount: 1}, nil
+func (c *managerTestConnection) Query(context.Context, QueryRequest) (QueryResult, error) {
+	return QueryResult{Rows: [][]any{{"ok"}}, RowCount: 1, Truncated: c.truncated}, nil
+}
+func (*managerTestConnection) PoolMetrics() PoolMetrics {
+	return PoolMetrics{MaxOpen: 4, Open: 2, InUse: 1, Idle: 1}
 }
 func (*managerTestConnection) Explain(context.Context, QueryRequest) (QueryResult, error) {
 	return QueryResult{Rows: [][]any{{"plan"}}, RowCount: 1}, nil
 }
 func (*managerTestConnection) Describe(context.Context, DescribeRequest) (DescribeResult, error) {
 	return DescribeResult{}, nil
+}
+func (*managerTestConnection) SupportsMutation() bool { return true }
+func (*managerTestConnection) PreviewMutation(_ context.Context, request MutationRequest) (MutationPreview, error) {
+	return MutationPreview{
+		Operation: request.Operation, Schema: request.Schema, Table: request.Table,
+		PredicateColumns: []string{"id"}, PrimaryKeyColumns: []string{"id"},
+		MaxAffectedRows: request.MaxAffectedRows,
+	}, nil
+}
+func (*managerTestConnection) Mutate(_ context.Context, request MutationRequest) (MutationResult, error) {
+	return MutationResult{
+		MutationPreview: MutationPreview{
+			Operation: request.Operation, Schema: request.Schema, Table: request.Table,
+			PredicateColumns: []string{"id"}, PrimaryKeyColumns: []string{"id"},
+			MaxAffectedRows: request.MaxAffectedRows,
+		},
+		AffectedRows: 1,
+	}, nil
 }
 func (*managerTestConnection) Close() error { return nil }
 
@@ -79,5 +101,20 @@ func TestManagerUsesExactAliasAndDriverValidation(t *testing.T) {
 
 	if _, _, err := manager.Query(context.Background(), "db.dev", QueryRequest{SQL: "SELECT driver_blocked"}); err == nil || !strings.Contains(err.Error(), "driver rejected query") {
 		t.Fatalf("driver-specific guard was not enforced: %v", err)
+	}
+	connection.truncated = true
+	if _, _, err := manager.Query(context.Background(), "db.dev", QueryRequest{SQL: "SELECT 2"}); err != nil {
+		t.Fatal(err)
+	}
+	listed := manager.List(context.Background(), false)
+	if len(listed) != 1 {
+		t.Fatalf("unexpected connection summaries: %#v", listed)
+	}
+	metrics := listed[0].Metrics
+	if metrics.QueryTotal != 3 || metrics.FailedTotal != 1 || metrics.TruncatedTotal != 1 {
+		t.Fatalf("unexpected operation metrics: %#v", metrics)
+	}
+	if metrics.Pool.MaxOpen != 4 || metrics.Pool.InUse != 1 {
+		t.Fatalf("unexpected pool metrics: %#v", metrics.Pool)
 	}
 }

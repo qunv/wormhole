@@ -11,6 +11,7 @@ func TestSanitizeErrorRedactsDatabaseCredentials(t *testing.T) {
 		"connect postgres://user:secret@db.example/app failed",
 		"connect mysql://user:secret@db.example/app failed",
 		"dial user:secret@tcp(db.example:3306)/app failed",
+		"open file:///workspace/private/app.db?mode=ro failed",
 	} {
 		got := SanitizeError(errors.New(message))
 		if strings.Contains(got, "secret") {
