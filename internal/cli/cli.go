@@ -143,11 +143,17 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	executable, _ := os.Executable()
-	runtime, err := agent.NewContext(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
+	reporter := func(stage, message string) {
+		fmt.Fprintf(a.Stdout, "[startup] %-9s %s\n", stage, message)
+	}
+	reporter("boot", fmt.Sprintf("Codebridge %s pid=%d", a.Version, os.Getpid()))
+	runtime, err := agent.NewContextWithReporter(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()), reporter)
 	if err != nil {
+		reporter("failed", err.Error())
 		return err
 	}
 	defer runtime.Close()
+	reporter("server", fmt.Sprintf("opening http://%s:%d", cfg.Host, cfg.Port))
 	return server.New(runtime).ListenAndServe(ctx)
 }
 

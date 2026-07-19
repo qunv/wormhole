@@ -60,11 +60,20 @@ type Runtime struct {
 	memoryHealthAt    time.Time
 }
 
+// StartupReporter receives human-readable startup phase updates. Reporters
+// should return quickly because startup waits for each callback to complete.
+type StartupReporter func(stage, message string)
+
 func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 	return NewContext(context.Background(), cfg, version, tier, configID)
 }
 
 func NewContext(ctx context.Context, cfg config.Config, version, tier, configID string) (*Runtime, error) {
+	return NewContextWithReporter(ctx, cfg, version, tier, configID, nil)
+}
+
+func NewContextWithReporter(ctx context.Context, cfg config.Config, version, tier, configID string, reporter StartupReporter) (*Runtime, error) {
+	reportStartup(reporter, "workspace", fmt.Sprintf("preparing %s", cfg.Workspace))
 	profile := loadProfileFile(cfg.Workspace)
 	var ignored []string
 	if values, ok := profile["ignoredDirs"].([]any); ok {
@@ -78,20 +87,28 @@ func NewContext(ctx context.Context, cfg config.Config, version, tier, configID 
 	if err != nil {
 		return nil, err
 	}
+	reportStartup(reporter, "workspace", fmt.Sprintf("ready: %s", manager.Primary))
 	store, err := state.New(manager.Primary)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Memory.Enabled {
+		reportStartup(reporter, "memory", fmt.Sprintf("initializing provider=%s required=%t", cfg.Memory.Provider, cfg.Memory.Required))
 	}
 	memoryProvider, err := memoryfactory.New(cfg.Memory)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Memory.Enabled && cfg.Memory.Required {
+		reportStartup(reporter, "memory", fmt.Sprintf("checking %s", cfg.Memory.Endpoint))
 		health := memoryProvider.Health(ctx)
 		if !health.Available {
 			_ = memoryProvider.Close()
 			return nil, fmt.Errorf("required memory provider %q is unavailable: %s", memoryProvider.Name(), health.Error)
 		}
+		reportStartup(reporter, "memory", fmt.Sprintf("connected: %s", health.Endpoint))
+	} else if cfg.Memory.Enabled {
+		reportStartup(reporter, "memory", "initialized; availability will be checked on demand")
 	}
 	memoryProject := memory.ResolveProject(manager.Primary, cfg.Memory.ProjectStrategy)
 	memorySessionID := fmt.Sprintf("codebridge-process-%d-%d", os.Getpid(), time.Now().UnixNano())
@@ -129,11 +146,18 @@ func NewContext(ctx context.Context, cfg config.Config, version, tier, configID 
 			return nil, err
 		}
 	}
-	if err := runtime.registerConfiguredUpstreamMCP(ctx); err != nil {
+	if err := runtime.registerConfiguredUpstreamMCP(ctx, reporter); err != nil {
 		_ = runtime.Shutdown()
 		return nil, err
 	}
+	reportStartup(reporter, "runtime", fmt.Sprintf("ready with %d tools", len(runtime.Tools())))
 	return runtime, nil
+}
+
+func reportStartup(reporter StartupReporter, stage, message string) {
+	if reporter != nil && strings.TrimSpace(message) != "" {
+		reporter(stage, message)
+	}
 }
 
 func (r *Runtime) Shutdown() error {

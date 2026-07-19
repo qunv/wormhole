@@ -13,6 +13,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"codebridge/internal/config"
@@ -29,24 +30,41 @@ const (
 	maxUpstreamTotalSchemaBytes     = 4 << 20
 )
 
-func (r *Runtime) registerConfiguredUpstreamMCP(ctx context.Context) error {
+func (r *Runtime) registerConfiguredUpstreamMCP(ctx context.Context, reporter StartupReporter) error {
 	for _, serverName := range config.SortedMCPServerNames(r.Config.MCPServers) {
 		serverConfig := r.Config.MCPServers[serverName]
 		if !serverConfig.IsEnabled() {
 			continue
 		}
+		startedAt := time.Now()
+		reportStartup(reporter, "mcp", fmt.Sprintf(
+			"connecting %s transport=%s required=%t timeout=%s",
+			serverName,
+			serverConfig.EffectiveTransport(),
+			serverConfig.Required,
+			time.Duration(serverConfig.StartupTimeoutMS)*time.Millisecond,
+		))
 		module, err := newUpstreamMCPModule(ctx, r, serverName, serverConfig)
 		if err != nil {
 			if serverConfig.Required {
+				reportStartup(reporter, "mcp", fmt.Sprintf("%s failed after %s: %s", serverName, time.Since(startedAt).Round(time.Millisecond), err))
 				return err
 			}
-			r.addStartupWarning(fmt.Sprintf("optional upstream MCP server %q was skipped: %s", serverName, err))
+			warning := fmt.Sprintf("optional upstream MCP server %q was skipped: %s", serverName, err)
+			r.addStartupWarning(warning)
+			reportStartup(reporter, "warning", warning)
 			continue
 		}
 		if err := r.RegisterModule(module); err != nil {
 			_ = module.Close()
 			return fmt.Errorf("register upstream MCP server %q: %w", serverName, err)
 		}
+		reportStartup(reporter, "mcp", fmt.Sprintf(
+			"connected %s tools=%d in %s",
+			serverName,
+			len(module.Specs()),
+			time.Since(startedAt).Round(time.Millisecond),
+		))
 	}
 	return nil
 }

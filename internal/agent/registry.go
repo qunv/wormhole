@@ -44,7 +44,7 @@ func commandSchema() map[string]any {
 	}, "command")
 }
 
-const WidgetURI = "ui://widget/lca-compact-input-v2.html"
+const WidgetURI = "ui://widget/cb-compact-input-v2.html"
 
 func object(properties map[string]any, required ...string) map[string]any {
 	if properties == nil {

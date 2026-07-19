@@ -36,6 +36,12 @@ type processState struct {
 	Workspace string    `json:"workspace"`
 }
 
+type startupLogFollower struct {
+	path    string
+	offset  int64
+	pending string
+}
+
 func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	if err := cfg.Validate(true); err != nil {
 		return err
@@ -85,15 +91,26 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 		}
 	}
 	var serverCmd *exec.Cmd
+	var serverExit <-chan error
 	if health == nil {
+		logOffset := fileSize(config.LogPath())
+		fmt.Fprintf(a.Stdout, "[server] starting Codebridge for %s\n", cfg.Workspace)
 		serverCmd, err = a.spawnServer(executable, cfg, opts.Background)
 		if err != nil {
 			return err
 		}
-		health = waitForHealth(cfg.Port, 10*time.Second)
-		if health == nil {
+		exit := make(chan error, 1)
+		go func() { exit <- serverCmd.Wait() }()
+		serverExit = exit
+		waitTimeout := startupWaitTimeout(cfg)
+		fmt.Fprintf(a.Stdout, "[server] PID %d; waiting for readiness (timeout %s)\n", serverCmd.Process.Pid, waitTimeout.Round(time.Second))
+		var waitErr error
+		health, waitErr = waitForHealthProgress(ctx, cfg.Port, waitTimeout, serverExit, opts.Background, &startupLogFollower{
+			path: config.LogPath(), offset: logOffset,
+		}, a.Stdout)
+		if waitErr != nil {
 			_ = stopPID(serverCmd.Process.Pid)
-			return fmt.Errorf("MCP server did not respond at http://127.0.0.1:%d/internal/healthz; see %s", cfg.Port, config.LogPath())
+			return fmt.Errorf("MCP server startup failed: %w; see %s", waitErr, config.LogPath())
 		}
 		state.ServerPID = numberValue(healthValue(health, "pid"))
 		if state.ServerPID == 0 {
@@ -141,7 +158,7 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 		go func() { wait <- tunnelCmd.Wait() }()
 	}
 	if serverCmd != nil {
-		go func() { wait <- serverCmd.Wait() }()
+		go func() { wait <- <-serverExit }()
 	}
 	if serverCmd == nil && tunnelCmd == nil {
 		<-ctx.Done()
@@ -308,7 +325,28 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	checks = append(checks, check{"git", gitErr == nil, ternary(gitErr == nil, "available", "not found")})
 	_, rgErr := exec.LookPath("rg")
 	checks = append(checks, check{"ripgrep", rgErr == nil, ternary(rgErr == nil, "available", "optional; Go fallback will be used")})
-	checks = append(checks, check{"server", readHealth(cfg.Port) != nil, fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)})
+	serverHealth := readHealth(cfg.Port)
+	checks = append(checks, check{"server", serverHealth != nil, fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)})
+	if serverHealth != nil {
+		deepHealth := readDeepHealth(cfg.Port)
+		modules, _ := deepHealth["modules"].(map[string]any)
+		for _, name := range config.SortedMCPServerNames(cfg.MCPServers) {
+			serverConfig := cfg.MCPServers[name]
+			if !serverConfig.IsEnabled() {
+				continue
+			}
+			status, _ := modules["mcp_"+name].(map[string]any)
+			available, _ := status["available"].(bool)
+			detail := "not registered; inspect startup warnings and codebridge logs"
+			if status != nil {
+				detail = fmt.Sprintf("transport=%v tools=%v reconnects=%v", status["transport"], status["tool_count"], status["reconnect_count"])
+				if errorText := strings.TrimSpace(fmt.Sprint(status["error"])); errorText != "" && errorText != "<nil>" {
+					detail += " error=" + errorText
+				}
+			}
+			checks = append(checks, check{"mcp:" + name, available, detail})
+		}
+	}
 	if !cfg.NoTunnel {
 		_, tunnelErr := os.Stat(cfg.TunnelBin)
 		checks = append(checks, check{"tunnel-client", tunnelErr == nil, cfg.TunnelBin})
@@ -341,6 +379,107 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 		}
 	}
 	return nil
+}
+
+func startupWaitTimeout(cfg config.Config) time.Duration {
+	timeout := 10 * time.Second
+	if cfg.Memory.Enabled && cfg.Memory.Required {
+		timeout += time.Duration(cfg.Memory.TimeoutMS) * time.Millisecond
+	}
+	for _, server := range cfg.MCPServers {
+		if server.IsEnabled() {
+			timeout += time.Duration(server.StartupTimeoutMS) * time.Millisecond
+		}
+	}
+	return timeout
+}
+
+func waitForHealthProgress(ctx context.Context, port int, timeout time.Duration, processExit <-chan error, followLog bool, follower *startupLogFollower, output io.Writer) (map[string]any, error) {
+	startedAt := time.Now()
+	deadline := startedAt.Add(timeout)
+	nextProgress := startedAt.Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			if followLog && follower != nil {
+				follower.flush(output, true)
+			}
+			return nil, fmt.Errorf("startup canceled: %w", ctx.Err())
+		case err := <-processExit:
+			if followLog && follower != nil {
+				follower.flush(output, true)
+			}
+			if err == nil {
+				return nil, errors.New("server process exited before health check became ready")
+			}
+			return nil, fmt.Errorf("server process exited before health check became ready: %w", err)
+		default:
+		}
+		if followLog && follower != nil {
+			follower.flush(output, false)
+		}
+		if value := readHealth(port); value != nil {
+			if followLog && follower != nil {
+				follower.flush(output, true)
+			}
+			return value, nil
+		}
+		if !time.Now().Before(nextProgress) {
+			elapsed := time.Since(startedAt).Round(time.Second)
+			fmt.Fprintf(output, "[server] still starting after %s; checking dependencies and MCP connections\n", elapsed)
+			nextProgress = time.Now().Add(2 * time.Second)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if followLog && follower != nil {
+		follower.flush(output, true)
+	}
+	return nil, fmt.Errorf("health endpoint did not become ready within %s", timeout.Round(time.Second))
+}
+
+func (f *startupLogFollower) flush(output io.Writer, final bool) {
+	if f == nil || f.path == "" || output == nil {
+		return
+	}
+	file, err := os.Open(f.path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	if _, err := file.Seek(f.offset, io.SeekStart); err != nil {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, 256<<10))
+	if err != nil || len(raw) == 0 {
+		if final && strings.TrimSpace(f.pending) != "" && strings.Contains(f.pending, "[startup]") {
+			fmt.Fprintln(output, f.pending)
+			f.pending = ""
+		}
+		return
+	}
+	f.offset += int64(len(raw))
+	text := f.pending + string(raw)
+	lines := strings.Split(text, "\n")
+	f.pending = lines[len(lines)-1]
+	for _, line := range lines[:len(lines)-1] {
+		if strings.Contains(line, "[startup]") {
+			fmt.Fprintln(output, line)
+		}
+	}
+	if final && strings.TrimSpace(f.pending) != "" {
+		if strings.Contains(f.pending, "[startup]") {
+			fmt.Fprintln(output, f.pending)
+		}
+		f.pending = ""
+	}
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 func (a App) logs() error {
@@ -657,8 +796,16 @@ func readHealth(port int) map[string]any {
 	return nil
 }
 
+func readDeepHealth(port int) map[string]any {
+	return readHealthPathWithTimeout(port, "/internal/healthz?deep=1", 12*time.Second)
+}
+
 func readHealthPath(port int, path string) map[string]any {
-	client := http.Client{Timeout: 1200 * time.Millisecond}
+	return readHealthPathWithTimeout(port, path, 1200*time.Millisecond)
+}
+
+func readHealthPathWithTimeout(port int, path string, timeout time.Duration) map[string]any {
+	client := http.Client{Timeout: timeout}
 	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
 	if err != nil {
 		return nil

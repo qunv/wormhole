@@ -37,7 +37,7 @@ func basicToolSpecs() []ToolSpec {
 		roSpec("slash_commands", "Slash commands", "Autocomplete workflow, mode, and skill shortcuts.", object(map[string]any{"query": str("Slash query."), "include": array(str("")), "limit": integer()})),
 		roSpec("compose_prompt", "Compose prompt", "Resolve sidebar-style @ context and / workflows into a prompt.", object(map[string]any{"input": str("User input."), "path": str("Workspace root."), "mode": str("Workflow override."), "selected_context": array(str("")), "include_context_pack": boolean()}, "input")),
 		{
-			Name: "lca_input", Title: "Codebridge input", Description: "Render the compact MCP Apps input widget.",
+			Name: "cb_input", Title: "Codebridge input", Description: "Render the compact MCP Apps input widget.",
 			ReadOnly: true, Schema: object(map[string]any{"initial_input": str("Optional prefilled text.")}),
 			Meta: map[string]any{
 				"ui":                    map[string]any{"resourceUri": WidgetURI, "visibility": []string{"model", "app"}},

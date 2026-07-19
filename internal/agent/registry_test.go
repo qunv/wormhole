@@ -37,7 +37,7 @@ func TestToolRegistryContract(t *testing.T) {
 	}
 	for _, required := range []string{
 		"workspace_snapshot", "read_many", "apply_patch", "run_commands", "review_diff",
-		"request_approval_batch", "codegraph_explore", "lca_input",
+		"request_approval_batch", "codegraph_explore", "cb_input",
 		"memory_export", "memory_import",
 	} {
 		if seen[required] == "" {

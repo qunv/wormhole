@@ -12,7 +12,7 @@ import (
 var files embed.FS
 
 func Widget() []byte {
-	raw, _ := files.ReadFile("data/lca-compact-input-v2.html")
+	raw, _ := files.ReadFile("data/cb-compact-input-v2.html")
 	return raw
 }
 

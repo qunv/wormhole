@@ -34,12 +34,19 @@ func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request)
 		h.sendJSON(writer, http.StatusForbidden, map[string]any{"error": "loopback_only"})
 		return
 	}
-	h.sendJSON(writer, http.StatusOK, map[string]any{
+	value := map[string]any{
 		"status": "ok", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
 		"pid": os.Getpid(), "mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
-		"auth":      ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
-		"config_id": h.Runtime.ConfigID,
-	})
+		"auth":             ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
+		"config_id":        h.Runtime.ConfigID,
+		"startup_warnings": h.Runtime.StartupWarnings(),
+	}
+	if request.URL.Query().Get("deep") == "1" {
+		ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
+		defer cancel()
+		value["modules"] = h.Runtime.ModuleHealth(ctx)
+	}
+	h.sendJSON(writer, http.StatusOK, value)
 }
 
 func New(runtime *agent.Runtime) *HTTP {

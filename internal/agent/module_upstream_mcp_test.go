@@ -169,12 +169,18 @@ func TestOptionalAndRequiredUpstreamStartupBehavior(t *testing.T) {
 		Policy: config.MCPServerPolicyConfig{Default: "approval"},
 	}
 	base.MCPServers["missing"] = missing
-	runtime, err := New(base, "test", "pro", "test-config")
+	var startupEvents []string
+	runtime, err := NewContextWithReporter(context.Background(), base, "test", "pro", "test-config", func(stage, message string) {
+		startupEvents = append(startupEvents, stage+":"+message)
+	})
 	if err != nil {
 		t.Fatalf("optional upstream prevented startup: %v", err)
 	}
 	if warnings := runtime.StartupWarnings(); len(warnings) != 1 || !strings.Contains(warnings[0], "was skipped") {
 		t.Fatalf("optional startup warning = %#v", warnings)
+	}
+	if joined := strings.Join(startupEvents, "\n"); !strings.Contains(joined, "mcp:connecting missing") || !strings.Contains(joined, "warning:optional upstream MCP server") {
+		t.Fatalf("startup reporter did not expose upstream progress: %s", joined)
 	}
 	runtime.Close()
 

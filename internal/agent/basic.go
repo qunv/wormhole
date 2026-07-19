@@ -98,7 +98,7 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 		return r.slashCommands(args), nil
 	case "compose_prompt":
 		return r.composePrompt(args)
-	case "lca_input":
+	case "cb_input":
 		return map[string]any{
 			"initial_input": stringArg(args, "initial_input", ""), "workspace": r.Workspace.Primary,
 			"shortcuts": workflowCommands(),

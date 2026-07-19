@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -189,6 +190,61 @@ func TestPortAvailableDetectsListener(t *testing.T) {
 	}
 	if !portAvailable("127.0.0.1", port) {
 		t.Fatalf("port %s should be available after close", strconv.Itoa(port))
+	}
+}
+
+func TestStartupWaitTimeoutIncludesConfiguredDependencies(t *testing.T) {
+	cfg := config.Default()
+	cfg.Memory.Enabled = true
+	cfg.Memory.Required = true
+	cfg.Memory.TimeoutMS = 2_000
+	cfg.MCPServers["one"] = config.MCPServerConfig{StartupTimeoutMS: 3_000}
+	cfg.MCPServers["two"] = config.MCPServerConfig{StartupTimeoutMS: 4_000}
+	disabled := false
+	cfg.MCPServers["disabled"] = config.MCPServerConfig{Enabled: &disabled, StartupTimeoutMS: 30_000}
+
+	if got, want := startupWaitTimeout(cfg), 19*time.Second; got != want {
+		t.Fatalf("startupWaitTimeout() = %s, want %s", got, want)
+	}
+}
+
+func TestStartupLogFollowerStreamsOnlyStartupLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "launcher.log")
+	if err := os.WriteFile(path, []byte("old line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	follower := &startupLogFollower{path: path, offset: fileSize(path)}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.WriteString("noise\n[startup] mcp       connecting postgres\n[startup] mcp       connected postgres")
+	_ = file.Close()
+
+	var output bytes.Buffer
+	follower.flush(&output, true)
+	got := output.String()
+	if strings.Contains(got, "noise") || strings.Contains(got, "old line") {
+		t.Fatalf("follower leaked non-startup log lines: %q", got)
+	}
+	for _, want := range []string{"connecting postgres", "connected postgres"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("follower output missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestWaitForHealthProgressDetectsProcessExit(t *testing.T) {
+	exit := make(chan error, 1)
+	exit <- os.ErrProcessDone
+	startedAt := time.Now()
+	var output bytes.Buffer
+	_, err := waitForHealthProgress(context.Background(), 1, 5*time.Second, exit, false, nil, &output)
+	if err == nil || !strings.Contains(err.Error(), "process exited") {
+		t.Fatalf("unexpected startup wait error: %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("process exit detection took too long: %s", elapsed)
 	}
 }
 

@@ -352,6 +352,8 @@ Important behavior:
 - The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`.
 - Tool discovery runs once during Codebridge startup. Restart Codebridge after an upstream server changes its tool list.
 - `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
+- `codebridge start` streams `[startup]` phase logs while workspace, memory, and upstream MCP dependencies initialize. The launcher readiness timeout includes every enabled server's `startupTimeoutMs`, so a slow dependency is not killed by the previous fixed 10-second supervisor timeout.
+- `codebridge doctor` requests a deep local health check and reports each configured upstream as `mcp:<name>`, including transport, discovered tool count, reconnect count, and the latest sanitized connection error.
 - Community tool annotations are untrusted by default. Unknown tools require approval under `balanced`; `alwaysApproveTools` still requires exact approval under `policy=full`.
 - `strict` blocks every upstream tool not explicitly classified as read-only.
 - Parent process secrets are not inherited. Only a small platform environment plus explicit `inheritEnv`, `env`, and `envRefs` values are passed to `stdio` processes.
