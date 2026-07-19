@@ -16,50 +16,22 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 
 ## Quick install
 
-The repository is currently private, so install the [GitHub CLI](https://cli.github.com/) and authenticate before downloading the release:
-
-```bash
-gh auth login
-```
-
 ### Linux and macOS
 
-The command below detects the operating system and CPU architecture, downloads `v0.1.0-beta`, and installs `codebridge` into `~/.local/bin`:
+Install the current beta release with one command:
 
 ```bash
-set -e
-
-gh auth status >/dev/null
-
-VERSION="v0.1.0-beta"
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-
-case "$(uname -m)" in
-  x86_64|amd64) ARCH="amd64" ;;
-  arm64|aarch64) ARCH="arm64" ;;
-  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-ARCHIVE="codebridge_${VERSION#v}_${OS}_${ARCH}.tar.gz"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-gh release download "$VERSION" \
-  --repo qunv/codebridge \
-  --pattern "$ARCHIVE" \
-  --dir "$TMP_DIR"
-
-tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
-mkdir -p "$HOME/.local/bin"
-install -m 755 "$TMP_DIR/codebridge" "$HOME/.local/bin/codebridge"
-
-"$HOME/.local/bin/codebridge" --version
+curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh | sh
 ```
 
-Make sure `~/.local/bin` is on `PATH`:
+The installer detects Linux/macOS and `amd64`/`arm64`, verifies the release checksum, and installs into `~/.local/bin`.
+
+Install a specific release or directory:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh -o install.sh
+sh install.sh --version v0.1.0-beta --install-dir "$HOME/.local/bin"
+rm install.sh
 ```
 
 ### Windows PowerShell
@@ -74,26 +46,27 @@ $Arch = switch ($Architecture) {
 }
 
 $Archive = "codebridge_$($Version.Substring(1))_windows_$Arch.zip"
+$BaseUrl = "https://github.com/qunv/codebridge/releases/download/$Version"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Codebridge\bin"
 $TempArchive = Join-Path $env:TEMP $Archive
+$TempChecksums = Join-Path $env:TEMP "codebridge-checksums.txt"
 
-gh auth status
-if ($LASTEXITCODE -ne 0) {
-    throw "Authenticate with GitHub CLI by running: gh auth login"
+Invoke-WebRequest -Uri "$BaseUrl/$Archive" -OutFile $TempArchive
+Invoke-WebRequest -Uri "$BaseUrl/checksums.txt" -OutFile $TempChecksums
+
+$Expected = (Get-Content $TempChecksums | Where-Object { $_ -match "\s+$([regex]::Escape($Archive))$" } | ForEach-Object { ($_ -split '\s+')[0] })
+if (-not $Expected) {
+    throw "Checksum entry not found for $Archive"
 }
 
-gh release download $Version `
-    --repo qunv/codebridge `
-    --pattern $Archive `
-    --dir $env:TEMP `
-    --clobber
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not download $Archive"
+$Actual = (Get-FileHash -Algorithm SHA256 $TempArchive).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected.ToLowerInvariant()) {
+    throw "Checksum verification failed for $Archive"
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Expand-Archive -Path $TempArchive -DestinationPath $InstallDir -Force
-Remove-Item $TempArchive
+Remove-Item $TempArchive, $TempChecksums
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (($UserPath -split ";") -notcontains $InstallDir) {
