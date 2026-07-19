@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"codebridge/internal/config"
 	"codebridge/internal/security"
 )
 
@@ -178,6 +179,10 @@ func (r *Runtime) workspaceInfo() map[string]any {
 		"tools": map[string]any{
 			"count": len(r.Tools()), "modules": r.ModuleNames(),
 			"allowed_groups": r.Config.Tools.AllowedGroups, "denied_tools": r.Config.Tools.DeniedTools,
+		},
+		"upstream_mcp": map[string]any{
+			"configured": len(r.Config.MCPServers), "servers": config.SortedMCPServerNames(r.Config.MCPServers),
+			"startup_warnings": r.StartupWarnings(),
 		},
 		"limits": map[string]any{
 			"max_read_chars": r.Config.MaxReadChars, "max_batch_read_chars": r.Config.MaxBatchReadChars,

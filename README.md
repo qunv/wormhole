@@ -1,16 +1,16 @@
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **93 MCP tools** for reading and editing code, running commands, Git operations, planning, review, approvals, and project memory.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, bridges the Figma Desktop MCP server, integrates with CodeGraph, and exposes **93 built-in MCP tools plus tools discovered from configured community MCP servers**.
 
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, `figma`, and `tunnel`.
 - Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
-- 93 tools assembled from eight functional `ToolModule` implementations through `runtime.Tools()`.
+- 93 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
-- Optional CodeGraph navigation and Figma Desktop MCP bridge.
+- Optional CodeGraph navigation, Figma Desktop bridge, and generic upstream MCP gateway for `stdio` or Streamable HTTP servers.
 - Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, and canonical export/import.
 - Builds for Linux, macOS, and Windows.
 
@@ -192,6 +192,92 @@ Runtime-only secrets can be supplied through environment variables:
 export CONTROL_PLANE_API_KEY="..."
 export MCP_AUTH_TOKEN="..."
 export AGENT_APPROVAL_TOKEN="..."
+```
+
+## Community and upstream MCP servers
+
+Codebridge can start or connect to community MCP servers and expose their discovered tools through the same policy, approval, audit, health, and lifecycle pipeline as built-in modules. Each `mcpServers` entry becomes a module named `mcp_<server>`, and each upstream tool is namespaced as `<toolPrefix>__<normalized_tool_name>` to prevent collisions.
+
+A `stdio` server may use any executable available in `PATH`, including `npx`, `uvx`, `pnpm`, `bunx`, `docker`, or a custom binary. Native executables are started directly with structured argv. On Windows only, resolved `.cmd`/`.bat` launchers such as `npx.cmd` are invoked through a restricted `cmd.exe /d /s /v:off /c` adapter; quote, control, `%`, and `!` expansion characters are rejected in batch arguments:
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "envRefs": {
+        "DATABASE_URI": "POSTGRES_MCP_DATABASE_URI"
+      },
+      "toolPrefix": "postgres",
+      "required": false,
+      "policy": {
+        "default": "approval",
+        "readOnlyTools": [
+          "list_schemas",
+          "list_tables",
+          "describe_table"
+        ],
+        "alwaysApproveTools": [
+          "execute_sql"
+        ]
+      }
+    }
+  }
+}
+```
+
+The credential value remains outside `config.json`:
+
+```bash
+POSTGRES_MCP_DATABASE_URI="postgresql://username:password@localhost:5432/dbname"
+```
+
+A Streamable HTTP server uses `url`; remote hosts require explicit `allowRemote: true`, and sensitive headers must reference environment variables:
+
+```json
+{
+  "mcpServers": {
+    "remote_search": {
+      "transport": "streamable-http",
+      "url": "https://mcp.example.com/mcp",
+      "allowRemote": true,
+      "headerRefs": {
+        "Authorization": "REMOTE_MCP_AUTHORIZATION"
+      },
+      "policy": {
+        "default": "approval",
+        "trustAnnotations": false,
+        "readOnlyTools": ["search"]
+      }
+    }
+  }
+}
+```
+
+Important behavior:
+
+- Tool discovery runs once during Codebridge startup. Restart Codebridge after an upstream server changes its tool list.
+- `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
+- Community tool annotations are untrusted by default. Unknown tools require approval under `balanced`; `alwaysApproveTools` still requires exact approval under `policy=full`.
+- `strict` blocks every upstream tool not explicitly classified as read-only.
+- Parent process secrets are not inherited. Only a small platform environment plus explicit `inheritEnv`, `env`, and `envRefs` values are passed to `stdio` processes.
+- Raw upstream arguments and results are not persisted in audit or automatic memory capture. Audit stores only argument names and bounded call metadata.
+- A community MCP command is arbitrary local code and is not an operating-system sandbox. Pin package or image versions and review the server before enabling it.
+
+Tool exposure works through module ownership:
+
+```json
+{
+  "tools": {
+    "allowedGroups": ["basic", "filesystem", "mcp_postgres"],
+    "deniedTools": ["postgres__execute_sql"]
+  }
+}
 ```
 
 ## Database MCP
@@ -458,9 +544,9 @@ Exports are normalized into the Codebridge schema. Import replays each item thro
 - Codebridge is not an operating-system sandbox; accepted commands still run with the current user's privileges.
 - `safe` mode blocks destructive shell patterns and Git mutations.
 - The `strict` policy permits only read and analysis operations.
-- The `balanced` policy permits edits but requires an exact one-time approval for deletion, installation, network access, mutating Git, mutating Figma, and `memory_forget`.
-- The `full` policy enables the complete project workflow while catastrophic system commands remain blocked.
-- Audit arguments are recursively redacted before they are written to local state.
+- The `balanced` policy permits edits but requires an exact one-time approval for deletion, installation, network access, mutating Git, mutating Figma, `memory_forget`, and upstream tools not explicitly classified as read-only.
+- The `full` policy enables the complete project workflow while catastrophic system commands remain blocked; upstream `alwaysApproveTools` still require approval.
+- Audit arguments are recursively redacted before they are written to local state. Community MCP modules reduce audit data to argument names and bounded metadata and are excluded from automatic memory capture.
 - A non-loopback MCP host requires a bearer token.
 
 # Repository structure
@@ -477,6 +563,7 @@ internal/security/    command guards, redaction, and approvals
 internal/patch/       backup, diff, preview, validation, and undo
 internal/processx/    bounded process execution and process-tree management
 internal/figma/       Figma Desktop MCP bridge
+internal/upstreammcp/  generic stdio and Streamable HTTP MCP client/session management
 internal/memory/      canonical contracts, recorder, scoping, and adapters
 internal/database/    alias routing, shared database/sql core, and dialect adapters
 internal/state/       per-workspace local state

@@ -171,9 +171,10 @@ type Config struct {
 	FigmaDesktopTimeoutMS   int    `json:"figmaDesktopTimeoutMs,omitempty"`
 	FigmaDesktopAllowRemote bool   `json:"figmaDesktopAllowRemote,omitempty"`
 
-	Memory   MemoryConfig       `json:"memory,omitempty"`
-	Database DatabaseConfig     `json:"database,omitempty"`
-	Tools    ToolExposureConfig `json:"tools,omitempty"`
+	Memory     MemoryConfig               `json:"memory,omitempty"`
+	Database   DatabaseConfig             `json:"database,omitempty"`
+	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	Tools      ToolExposureConfig         `json:"tools,omitempty"`
 
 	MaxReadChars      int `json:"maxReadChars,omitempty"`
 	ReadDefault       int `json:"readDefault,omitempty"`
@@ -210,6 +211,7 @@ func Default() Config {
 			RetryBackoffMS: 100, HealthCacheMS: 5_000,
 		},
 		Database:          DatabaseConfig{Enabled: false, Connections: map[string]DatabaseConnectionConfig{}},
+		MCPServers:        map[string]MCPServerConfig{},
 		MaxReadChars:      200_000,
 		ReadDefault:       30_000,
 		MaxBatchReadChars: 500_000,
@@ -419,6 +421,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 			return err
 		}
 	}
+	if err := validateMCPServers(c); err != nil {
+		return err
+	}
 	for _, group := range c.Tools.AllowedGroups {
 		if !toolModulePattern.MatchString(group) {
 			return fmt.Errorf("tools.allowedGroups value %q must be a valid module name", group)
@@ -481,6 +486,7 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 			databaseSecretFingerprints[alias] = hex.EncodeToString(sum[:8])
 		}
 	}
+	mcpServerSecretFingerprints := MCPServerSecretFingerprints(c.MCPServers)
 	material, _ := json.Marshal(map[string]any{
 		"workspace":       filepath.Clean(c.Workspace),
 		"extraRoots":      c.ExtraRoots,
@@ -496,6 +502,9 @@ func (c Config) ConfigID(binaryPath string, widget []byte) string {
 		},
 		"database": map[string]any{
 			"config": c.Database, "secretFingerprints": databaseSecretFingerprints,
+		},
+		"mcpServers": map[string]any{
+			"config": c.MCPServers, "secretFingerprints": mcpServerSecretFingerprints,
 		},
 		"tools": c.Tools,
 	})
@@ -711,6 +720,7 @@ func normalize(c *Config) {
 		}
 		c.Database.Connections[alias] = connection
 	}
+	normalizeMCPServers(c)
 	for index, group := range c.Tools.AllowedGroups {
 		c.Tools.AllowedGroups[index] = strings.ToLower(strings.TrimSpace(group))
 	}

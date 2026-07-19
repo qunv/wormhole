@@ -212,9 +212,14 @@ var selectedMemoryCaptureTools = names(
 )
 
 func (r *Runtime) captureMemoryObservation(sessionID, name string, args map[string]any, value any, callErr error) {
-	module := r.ToolModuleName(name)
-	if r.MemoryRecorder == nil || module == "memory" || module == "database" || name == "ping" || name == "proc_output" {
+	moduleName := r.ToolModuleName(name)
+	if r.MemoryRecorder == nil || moduleName == "memory" || moduleName == "database" || name == "ping" || name == "proc_output" {
 		return
+	}
+	if module, ok := r.ToolModule(name); ok {
+		if provider, ok := module.(ToolObservationPolicyProvider); ok && !provider.CaptureObservation(name) {
+			return
+		}
 	}
 	mode := r.Config.Memory.CaptureMode
 	if mode == "off" || (mode == "selected" && !selectedMemoryCaptureTools[name]) {

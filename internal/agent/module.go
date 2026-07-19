@@ -38,6 +38,21 @@ type ToolPolicyProvider interface {
 	ToolPolicy(string, map[string]any) ToolCallPolicy
 }
 
+// ToolAuditProvider lets a module reduce audit data to metadata appropriate for
+// its trust boundary. Community MCP modules use this to avoid persisting raw
+// arguments or upstream payloads whose schemas Codebridge does not control.
+type ToolAuditProvider interface {
+	AuditArguments(string, map[string]any) any
+	AuditMetadata(string, map[string]any, any) map[string]any
+	AuditError(error) string
+}
+
+// ToolObservationPolicyProvider can opt a module out of automatic long-term
+// memory capture while preserving local audit metadata.
+type ToolObservationPolicyProvider interface {
+	CaptureObservation(string) bool
+}
+
 type builtInModulePolicy struct{}
 
 func (builtInModulePolicy) ToolPolicy(tool string, args map[string]any) ToolCallPolicy {
@@ -132,10 +147,15 @@ func (r *Runtime) Module(name string) (ToolModule, bool) {
 }
 
 func (r *Runtime) ToolModuleName(tool string) string {
-	r.moduleMu.RLock()
-	module := r.toolModules[tool]
-	r.moduleMu.RUnlock()
+	module, _ := r.ToolModule(tool)
 	return moduleName(module)
+}
+
+func (r *Runtime) ToolModule(tool string) (ToolModule, bool) {
+	r.moduleMu.RLock()
+	module, ok := r.toolModules[tool]
+	r.moduleMu.RUnlock()
+	return module, ok
 }
 
 func (r *Runtime) ModuleHealth(ctx context.Context) map[string]any {

@@ -149,7 +149,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	executable, _ := os.Executable()
-	runtime, err := agent.New(cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
+	runtime, err := agent.NewContext(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
 	if err != nil {
 		return err
 	}
@@ -521,7 +521,7 @@ func (a App) figma(ctx context.Context, cfg config.Config, opts options) error {
 
 func (a App) skillsCommand(ctx context.Context, cfg config.Config, opts options) error {
 	executable, _ := os.Executable()
-	runtime, err := agent.New(cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
+	runtime, err := agent.NewContext(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
 	if err != nil {
 		return err
 	}

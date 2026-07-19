@@ -6,8 +6,8 @@ Codebridge uses one binary for both the CLI supervisor and the MCP server. The C
 
 Primary goals:
 
-1. Provide a single MCP gateway for workspaces, CodeGraph, Figma, and memory.
-2. Maintain a stable tool contract that is independent of any specific backend.
+1. Provide a single MCP gateway for workspaces, CodeGraph, Figma, memory, databases, and configured community MCP servers.
+2. Maintain a stable built-in tool contract while safely namespacing tool contracts discovered from upstream MCP servers.
 3. Enforce path confinement and policy checks before every mutation.
 4. Keep secrets separate from persistent non-secret configuration.
 5. Make memory fail open by default so it does not slow down the coding workflow.
@@ -41,7 +41,7 @@ Official MCP Go SDK
    ├── Streamable HTTP
    ├── logical ServerSession
    ├── embedded Apps resource
-   └── 93 registered tools
+   └── 93 built-in tools plus discovered upstream tools
           │
           ▼
 agent.Runtime.HandleSession
@@ -70,6 +70,7 @@ agent.Runtime.HandleSession
 | `internal/patch` | Backup batches, structured operations, unified diffs, and undo |
 | `internal/processx` | Timeouts, output caps, and managed process trees |
 | `internal/figma` | MCP client bridge to Figma Desktop |
+| `internal/upstreammcp` | Generic long-lived MCP client sessions for command/stdio and Streamable HTTP transports |
 | `internal/memory` | Canonical contracts, project identity, asynchronous recorder, and adapters |
 | `internal/database` | Exact-alias routing, credential resolvers, shared `database/sql` core, dialects, metrics, root-confined SQLite, and structured mutation guards |
 | `internal/state` | Per-workspace notes, tasks, decisions, audit, index, and backups |
@@ -82,6 +83,7 @@ mcpserver → agent.Runtime → ToolModule
                               ├── memory.Provider ← provider adapters
                               ├── database.Manager ← SQL drivers / credential resolvers
                               ├── figma.Client
+                              ├── upstreammcp.Client ← stdio / Streamable HTTP MCP servers
                               └── workspace / process / state services
 ```
 
@@ -120,6 +122,33 @@ Each module owns its tool specifications, group-local routing, health result, an
 
 `internal/mcpserver` enumerates `runtime.Tools()` rather than a static global catalog. External modules must be registered with `runtime.RegisterModule` before constructing the MCP server. The package-level `agent.Tools()` function remains only as a compatibility catalog for existing callers and tests.
 
+Configured `mcpServers` entries are materialized during `Runtime.NewContext` after the eight built-in modules and before downstream MCP server construction. Each entry creates one `upstreamMCPModule` named `mcp_<server>`. Startup opens a long-lived MCP client session, calls paginated `tools/list`, validates and bounds the returned contract, filters tools, namespaces names as `<prefix>__<normalized_name>`, and registers the assembled `ToolSpec` values. Tool-list changes are therefore applied on Codebridge restart rather than mutating the downstream contract in place.
+
+The generic client supports:
+
+```text
+stdio              mcp.CommandTransport around executable/argv; Windows batch launchers use a restricted cmd.exe adapter
+streamable-http    mcp.StreamableClientTransport with explicit headers
+```
+
+A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. Sessions are reused across calls and closed by module shutdown. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
+
+Optional module interfaces keep untrusted upstream data outside shared persistence boundaries:
+
+```go
+type ToolAuditProvider interface {
+    AuditArguments(string, map[string]any) any
+    AuditMetadata(string, map[string]any, any) map[string]any
+    AuditError(error) string
+}
+
+type ToolObservationPolicyProvider interface {
+    CaptureObservation(string) bool
+}
+```
+
+Community MCP modules store only argument names and bounded result metadata in local audit and opt out of automatic long-term memory capture.
+
 ## 4. Configuration lifecycle
 
 Configuration is assembled in this order:
@@ -153,16 +182,19 @@ Runtime state uses the application data/state directory:
 ```text
 config.json
   workspace, mode, policy, tunnel metadata,
-  Figma configuration, memory configuration, limits
+  Figma, memory, database, upstream MCP configuration, limits,
+  and environment-variable references rather than secret values
 
 .env
   CONTROL_PLANE_API_KEY
-  optional memory-provider secret
+  optional memory-provider, database, and upstream MCP secrets
 ```
 
 `Config.Save` clears `AuthToken` and `ApprovalToken` before serialization. The memory secret is not part of `MemoryConfig`; the configuration stores only the environment variable name in `secretEnv`.
 
 Memory-provider options are validated recursively. Keys containing `secret`, `password`, `token`, `apikey`, `authorization`, or `credential` are rejected to prevent credentials from being stored in JSON.
+
+Upstream MCP configuration follows the same separation. Sensitive environment variables use `envRefs`, and sensitive HTTP headers use `headerRefs`; both map a child-facing name to a source environment-variable name. Direct secret-like keys, sensitive `inheritEnv` entries, credential-bearing URLs, control bytes, transport-incompatible fields, conflicting policy lists, and case-insensitive header collisions are rejected during configuration validation.
 
 ### Configuration identity and process reuse
 
@@ -172,10 +204,10 @@ The supervisor creates `ConfigID` from:
 - mode, policy, port, and whether authentication is enabled;
 - binary hash and widget hash;
 - Figma endpoint;
-- all non-secret memory configuration;
-- a shortened fingerprint of the memory secret.
+- all non-secret memory configuration and a shortened fingerprint of the memory secret;
+- all non-secret upstream MCP configuration and shortened fingerprints of referenced environment/header secrets.
 
-When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server. Changing the memory agent ID, retry configuration, provider options, or secret changes `ConfigID` and causes a new server to be created.
+When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server. Changing memory or upstream server configuration, package arguments, tool policy, environment references, or referenced secret values changes `ConfigID` and causes a new server to be created.
 
 ## 5. HTTP and MCP layers
 
@@ -216,11 +248,11 @@ When policy rejects a request, the runtime still records an audit failure but do
 
 ### Policies
 
-- `strict`: blocks mutation tools.
-- `balanced`: allows edits but requires exact one-time approval for risky actions.
-- `full`: does not require ordinary approvals, although command guards still block catastrophic operations.
+- `strict`: blocks every tool whose assembled `ToolSpec.ReadOnly` is false, including upstream tools not explicitly classified as read-only.
+- `balanced`: allows edits but requires exact one-time approval for risky actions and upstream tools classified as `approval` or `always-approval`.
+- `full`: does not require ordinary approvals, although command guards still block catastrophic operations and upstream `always-approval` tools remain gated.
 
-An approval action includes the exact target or exact arguments. `memory_forget` serializes its arguments into the approval action, so an approval cannot be reused for a different memory.
+An approval action includes the exact target or a hash of the complete tool-plus-arguments payload. `memory_forget` serializes its arguments into the approval action, while generic and upstream write tools use a bounded SHA-256 action so approval cannot be reused for different arguments and raw payloads are not exposed in the action string.
 
 ## 7. Workspace identity and confinement
 
@@ -418,7 +450,7 @@ metadata
 
 `metadata` captures a broader set of calls but keeps only fields such as path, `cwd`, staged, recursive, and kind.
 
-Memory tools, `ping`, and `proc_output` are excluded from automatic capture to prevent recursion and output leakage.
+Memory tools, database tools, community upstream MCP modules, `ping`, and `proc_output` are excluded from automatic capture to prevent recursion and untrusted payload leakage.
 
 Before enqueueing:
 
@@ -519,15 +551,19 @@ The workspace ID is derived from the canonical primary workspace path. Memory-pr
 1. Every file path is resolved inside configured roots.
 2. The longest existing ancestor is canonicalized before the containment check.
 3. A configured root cannot be deleted or renamed through dedicated tools or patch operations.
-4. Command `cwd` is root-confined, but command execution is not an operating-system sandbox.
-5. Raw Git blocks flags that can write arbitrary output, change the worktree, or execute an external program.
-6. The balanced policy uses exact, expiring, one-time approvals.
-7. Audit arguments are recursively redacted.
-8. Automatic memory capture does not send raw source, patches, commands, stdout, or raw errors.
-9. Provider options cannot contain secret-like keys.
-10. Browser Origins are blocked by default unless they are loopback or explicitly allowed.
-11. A non-loopback MCP listener requires a bearer token.
-12. HTTP responses from memory providers are size-limited before decoding.
+4. Command `cwd`, including upstream stdio `cwd`, is root-confined, but command execution and community MCP servers are not operating-system sandboxes.
+5. Native upstream commands are executed directly as executable plus argv. On Windows only, `.cmd`/`.bat` launchers use a restricted `cmd.exe` adapter that rejects quote, control, `%`, and `!` expansion characters.
+6. Stdio children do not inherit the complete Codebridge environment. Sensitive values require explicit `envRefs`; sensitive HTTP headers require `headerRefs`.
+7. Remote upstream HTTP endpoints are blocked unless `allowRemote=true`.
+8. Upstream tool names, counts, metadata, and schemas are bounded; normalization collisions and duplicate tools fail startup.
+9. Raw Git blocks flags that can write arbitrary output, change the worktree, or execute an external program.
+10. The balanced policy uses exact, expiring, one-time approvals, and upstream annotations are untrusted unless explicitly enabled.
+11. Audit arguments are recursively redacted; upstream modules persist only argument names and bounded metadata.
+12. Automatic memory capture does not send raw source, patches, commands, stdout, raw errors, database payloads, or upstream MCP payloads.
+13. Provider options and upstream persistent configuration cannot contain secret-like keys.
+14. Browser Origins are blocked by default unless they are loopback or explicitly allowed.
+15. A non-loopback MCP listener requires a bearer token.
+16. HTTP responses from memory providers and upstream tool contracts are size-limited before processing.
 
 ## 11. Testing strategy
 
@@ -545,13 +581,16 @@ Contract tests lock down:
 - project normalization and owning-root behavior;
 - recorder delivery, retry, drain, and dropped counters;
 - required and optional provider startup behavior;
-- export filtering and canonical import.
+- export filtering and canonical import;
+- generic stdio and Streamable HTTP upstream MCP discovery and calls;
+- environment isolation, header forwarding, remote opt-in, and idempotent shutdown;
+- upstream namespace collisions, schema validation, policy mapping, audit minimization, memory exclusion, and downstream gateway round trips.
 
 Recommended verification:
 
 ```bash
 go test ./...
-go test -race ./internal/memory/... ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver
+go test -race ./internal/memory/... ./internal/upstreammcp ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver
 go vet ./...
 go build ./...
 GOOS=windows GOARCH=amd64 go build ./...

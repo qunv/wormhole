@@ -48,15 +48,16 @@ type Runtime struct {
 	Tier                    string
 	ConfigID                string
 
-	modules       map[string]ToolModule
-	toolModules   map[string]ToolModule
-	toolSpecs     []ToolSpec
-	toolSpecIndex map[string]ToolSpec
-	moduleOrder   []string
-	moduleMu      sync.RWMutex
-	modulesClosed bool
-	closeOnce     sync.Once
-	closeErr      error
+	modules         map[string]ToolModule
+	toolModules     map[string]ToolModule
+	toolSpecs       []ToolSpec
+	toolSpecIndex   map[string]ToolSpec
+	moduleOrder     []string
+	moduleMu        sync.RWMutex
+	modulesClosed   bool
+	closeOnce       sync.Once
+	closeErr        error
+	startupWarnings []string
 
 	profileMu         sync.RWMutex
 	profile           map[string]any
@@ -66,6 +67,10 @@ type Runtime struct {
 }
 
 func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
+	return NewContext(context.Background(), cfg, version, tier, configID)
+}
+
+func NewContext(ctx context.Context, cfg config.Config, version, tier, configID string) (*Runtime, error) {
 	profile := loadProfileFile(cfg.Workspace)
 	var ignored []string
 	if values, ok := profile["ignoredDirs"].([]any); ok {
@@ -88,7 +93,7 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 		return nil, err
 	}
 	if cfg.Memory.Enabled && cfg.Memory.Required {
-		health := memoryProvider.Health(context.Background())
+		health := memoryProvider.Health(ctx)
 		if !health.Available {
 			_ = memoryProvider.Close()
 			return nil, fmt.Errorf("required memory provider %q is unavailable: %s", memoryProvider.Name(), health.Error)
@@ -145,6 +150,10 @@ func New(cfg config.Config, version, tier, configID string) (*Runtime, error) {
 			return nil, err
 		}
 	}
+	if err := runtime.registerConfiguredUpstreamMCP(ctx); err != nil {
+		_ = runtime.Shutdown()
+		return nil, err
+	}
 	return runtime, nil
 }
 
@@ -156,6 +165,16 @@ func (r *Runtime) Shutdown() error {
 }
 
 func (r *Runtime) Close() { _ = r.Shutdown() }
+
+func (r *Runtime) addStartupWarning(message string) {
+	if strings.TrimSpace(message) != "" {
+		r.startupWarnings = append(r.startupWarnings, message)
+	}
+}
+
+func (r *Runtime) StartupWarnings() []string {
+	return append([]string(nil), r.startupWarnings...)
+}
 
 func (r *Runtime) Handle(ctx context.Context, name string, args map[string]any) (any, error) {
 	return r.HandleSession(ctx, "", name, args)
@@ -195,21 +214,33 @@ func (r *Runtime) audit(tool string, args map[string]any, value any, ok bool, ca
 		"ts": time.Now().UTC().Format(time.RFC3339Nano), "tool": tool, "ok": ok,
 		"workspace": r.Workspace.Primary,
 	}
+	module, _ := r.ToolModule(tool)
+	auditProvider, customAudit := module.(ToolAuditProvider)
 	databaseTool := r.ToolModuleName(tool) == "database"
 	if r.Config.AuditArgs {
-		if databaseTool {
+		switch {
+		case customAudit:
+			record["args"] = auditProvider.AuditArguments(tool, args)
+		case databaseTool:
 			record["args"] = databaseAuditArguments(args)
-		} else {
+		default:
 			record["args"] = security.RedactDeep(args, 0)
 		}
 	}
-	if databaseTool {
+	if customAudit {
+		if metadata := auditProvider.AuditMetadata(tool, args, value); len(metadata) > 0 {
+			record["module"] = metadata
+		}
+	} else if databaseTool {
 		record["database"] = databaseAuditMetadata(tool, args, value)
 	}
 	if callErr != nil {
-		if databaseTool {
+		switch {
+		case customAudit:
+			record["error"] = auditProvider.AuditError(callErr)
+		case databaseTool:
 			record["error"] = database.SanitizeError(callErr)
-		} else {
+		default:
 			record["error"] = callErr.Error()
 		}
 	}
