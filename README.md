@@ -1,12 +1,12 @@
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **78 built-in MCP tools plus tools discovered from configured community MCP servers**.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **74 built-in MCP tools plus tools discovered from configured community MCP servers**.
 
 ## Highlights
 
-- Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, `skills`, and `tunnel`.
+- Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, and `tunnel`.
 - Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
-- 78 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
+- 74 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
@@ -194,7 +194,6 @@ codebridge stop
 codebridge logs
 codebridge config get
 codebridge config path
-codebridge skills list
 ```
 
 Show all commands and options:
@@ -541,7 +540,7 @@ internal/processx/    bounded process execution and process-tree management
 internal/upstreammcp/  generic stdio and Streamable HTTP MCP client/session management
 internal/memory/      canonical contracts, recorder, scoping, and adapters
 internal/state/       per-workspace local state
-internal/assets/      embedded widget and built-in skills
+internal/assets/      embedded MCP Apps widget
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed design.

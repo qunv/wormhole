@@ -61,7 +61,7 @@ func TestMCPRegistersRuntimeModulesAndPropagatesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(list.Tools), 79; got != want {
+	if got, want := len(list.Tools), 75; got != want {
 		t.Fatalf("tools/list returned %d, want %d", got, want)
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "custom_identity", Arguments: map[string]any{}})

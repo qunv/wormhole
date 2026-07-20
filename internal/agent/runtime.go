@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/assets"
 	"codebridge/internal/config"
 	"codebridge/internal/memory"
 	memoryfactory "codebridge/internal/memory/factory"
@@ -301,8 +300,6 @@ func approvalAction(tool string, args map[string]any) string {
 	switch tool {
 	case "delete_path":
 		return "delete_path:" + stringArg(args, "path", "")
-	case "delete_skill":
-		return "delete_skill:" + stringArg(args, "name", "")
 	case "memory_forget":
 		raw, _ := json.Marshal(args)
 		return "memory_forget:" + string(raw)
@@ -454,11 +451,6 @@ func names(values ...string) map[string]bool {
 		out[value] = true
 	}
 	return out
-}
-
-func builtInSkills() map[string]string {
-	values, _ := assets.Skills()
-	return values
 }
 
 var errNotFound = errors.New("not found")

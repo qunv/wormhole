@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -84,14 +83,6 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 			return nil, err
 		}
 		return value, nil
-	case "list_skills":
-		return r.listSkills()
-	case "read_skill":
-		return r.readSkill(stringArg(args, "name", ""))
-	case "create_skill":
-		return r.createSkill(stringArg(args, "name", ""), stringArg(args, "description", ""), stringArg(args, "body", ""))
-	case "delete_skill":
-		return r.deleteSkill(stringArg(args, "name", ""))
 	case "workspace_search":
 		return r.workspaceSearch(args)
 	case "slash_commands":
@@ -191,73 +182,6 @@ func (r *Runtime) workspaceInfo() map[string]any {
 	}
 }
 
-var skillName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-
-func (r *Runtime) skillsDir() string { return filepath.Join(r.Workspace.Primary, ".agent", "skills") }
-
-func (r *Runtime) listSkills() (any, error) {
-	type skill struct {
-		Name   string `json:"name"`
-		Source string `json:"source"`
-	}
-	var out []skill
-	for name := range builtInSkills() {
-		out = append(out, skill{Name: name, Source: "embedded"})
-	}
-	entries, _ := os.ReadDir(r.skillsDir())
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
-			out = append(out, skill{Name: strings.TrimSuffix(entry.Name(), ".md"), Source: "workspace"})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return map[string]any{"count": len(out), "skills": out}, nil
-}
-
-func (r *Runtime) readSkill(name string) (any, error) {
-	if !skillName.MatchString(name) {
-		return nil, errors.New("invalid skill name")
-	}
-	if raw, err := os.ReadFile(filepath.Join(r.skillsDir(), name+".md")); err == nil {
-		return map[string]any{"name": name, "source": "workspace", "body": string(raw)}, nil
-	}
-	if body, ok := builtInSkills()[name]; ok {
-		return map[string]any{"name": name, "source": "embedded", "body": body}, nil
-	}
-	return nil, fmt.Errorf("skill not found: %s", name)
-}
-
-func (r *Runtime) createSkill(name, description, body string) (any, error) {
-	if !skillName.MatchString(name) {
-		return nil, errors.New("skill name must use lowercase letters, digits, hyphen, or underscore")
-	}
-	if body == "" {
-		return nil, errors.New("body is required")
-	}
-	if description != "" && !strings.Contains(body, description) {
-		body = "# " + name + "\n\n" + description + "\n\n" + body
-	}
-	if err := os.MkdirAll(r.skillsDir(), 0o755); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(r.skillsDir(), name+".md")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return nil, err
-	}
-	return map[string]any{"ok": true, "name": name, "path": r.Workspace.Relative(path)}, nil
-}
-
-func (r *Runtime) deleteSkill(name string) (any, error) {
-	if !skillName.MatchString(name) {
-		return nil, errors.New("invalid skill name")
-	}
-	path := filepath.Join(r.skillsDir(), name+".md")
-	if err := os.Remove(path); err != nil {
-		return nil, err
-	}
-	return map[string]any{"ok": true, "name": name}, nil
-}
-
 func (r *Runtime) workspaceSearch(args map[string]any) (any, error) {
 	query := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(stringArg(args, "query", ""))), "@")
 	root := stringArg(args, "path", ".")
@@ -280,13 +204,6 @@ func (r *Runtime) workspaceSearch(args map[string]any) (any, error) {
 			break
 		}
 	}
-	if len(results) < limit {
-		for name := range builtInSkills() {
-			if query == "" || strings.Contains(name, query) {
-				results = append(results, map[string]any{"kind": "skill", "label": name, "value": "skill:" + name})
-			}
-		}
-	}
 	return map[string]any{"query": query, "count": len(results), "results": results}, nil
 }
 
@@ -307,14 +224,6 @@ func (r *Runtime) slashCommands(args map[string]any) any {
 	for _, item := range workflowCommands() {
 		if query == "" || strings.Contains(item["name"], query) {
 			results = append(results, item)
-		}
-	}
-	for name := range builtInSkills() {
-		if query == "" || strings.Contains(name, query) {
-			results = append(results, map[string]string{
-				"name": "skill:" + name, "command": "/skill:" + name,
-				"label": name, "description": "Load skill " + name, "type": "skill",
-			})
 		}
 	}
 	if len(results) > limit {

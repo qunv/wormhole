@@ -29,7 +29,7 @@ func TestToolRegistryContract(t *testing.T) {
 			}
 		}
 	}
-	if got, want := len(seen), 78; got != want {
+	if got, want := len(seen), 74; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	if got := len(Tools()); got != len(seen) {
@@ -45,6 +45,7 @@ func TestToolRegistryContract(t *testing.T) {
 		}
 	}
 	for _, removed := range []string{
+		"list_skills", "read_skill", "create_skill", "delete_skill",
 		"db_list_connections", "db_describe", "db_query", "db_explain", "db_preview_mutation", "db_mutate",
 		"figma_status", "figma_list_tools", "figma_call_tool", "figma_get_design_context", "figma_get_screenshot",
 	} {

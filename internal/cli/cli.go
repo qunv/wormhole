@@ -129,8 +129,6 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return a.configCommand(cfg, opts)
 	case "key":
 		return a.keyCommand(opts)
-	case "skills":
-		return a.skillsCommand(ctx, cfg, opts)
 	case "install-cli", "cli":
 		return a.installCLI()
 	default:
@@ -174,7 +172,6 @@ Usage:
   codebridge logs               Print launcher log
   codebridge config get|set|path
   codebridge key set|delete     Manage the runtime key in the local env file
-  codebridge skills [list|read]
   codebridge install-cli        Install this binary in the user bin directory
   codebridge serve              Run the MCP server in the foreground
 
@@ -487,34 +484,6 @@ func (a App) keyCommand(opts options) error {
 	default:
 		return errors.New("usage: codebridge key set [value]|delete")
 	}
-	return nil
-}
-
-func (a App) skillsCommand(ctx context.Context, cfg config.Config, opts options) error {
-	executable, _ := os.Executable()
-	runtime, err := agent.NewContext(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()))
-	if err != nil {
-		return err
-	}
-	defer runtime.Close()
-	sub := "list"
-	if len(opts.Rest) > 0 {
-		sub = opts.Rest[0]
-	}
-	args := map[string]any{}
-	name := "list_skills"
-	if sub == "read" {
-		if len(opts.Rest) < 2 {
-			return errors.New("usage: codebridge skills read <name>")
-		}
-		name, args = "read_skill", map[string]any{"name": opts.Rest[1]}
-	}
-	value, err := runtime.Handle(ctx, name, args)
-	if err != nil {
-		return err
-	}
-	raw, _ := json.MarshalIndent(value, "", "  ")
-	fmt.Fprintln(a.Stdout, string(raw))
 	return nil
 }
 

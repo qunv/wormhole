@@ -41,7 +41,7 @@ Official MCP Go SDK
    ├── Streamable HTTP
    ├── logical ServerSession
    ├── embedded Apps resource
-   └── 78 built-in tools plus discovered upstream tools
+   └── 74 built-in tools plus discovered upstream tools
           │
           ▼
 agent.Runtime.HandleSession
@@ -72,7 +72,7 @@ agent.Runtime.HandleSession
 | `internal/upstreammcp` | Generic long-lived MCP client sessions for command/stdio and Streamable HTTP transports |
 | `internal/memory` | Canonical contracts, project identity, asynchronous recorder, and adapters |
 | `internal/state` | Per-workspace notes, tasks, decisions, audit, index, and backups |
-| `internal/assets` | Embedded MCP Apps widget and built-in skills |
+| `internal/assets` | Embedded MCP Apps widget |
 
 Important dependency direction:
 
