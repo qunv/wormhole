@@ -220,6 +220,27 @@ codebridge restart
 4. Choose `No auth`; the Runtime API key stays on the local machine and is not entered in the connector.
 5. Call `workspace_info` or `workspace_snapshot` to verify the connection.
 
+### ChatGPT Skills and Codebridge
+
+ChatGPT Skills are reusable workflows owned and managed by the ChatGPT client. Create, install, upload, and share them through ChatGPT rather than through the Codebridge MCP server. See [Skills in ChatGPT](https://help.openai.com/en/articles/20001066-skills-in-chatgpt).
+
+Codebridge intentionally provides capabilities rather than a second skill registry:
+
+- ChatGPT Skills define reusable instructions, examples, resources, and task workflows.
+- Codebridge exposes workspace, filesystem, repository, execution, policy, memory, and upstream MCP tools.
+- A skill may instruct ChatGPT to call Codebridge tools, but every call still passes through Codebridge policy, approval, path-confinement, audit, and memory rules.
+- Codebridge does not read, create, update, delete, or persist ChatGPT Skills.
+
+The legacy Codebridge skill interfaces have been removed:
+
+```text
+MCP: list_skills, read_skill, create_skill, delete_skill
+CLI: codebridge skills [list|read]
+Files: embedded *.skill assets
+```
+
+After upgrading from a build that exposed those interfaces, rebuild or install the new binary, run `codebridge restart`, and reconnect or refresh the ChatGPT connector so it requests the current `tools/list` contract.
+
 ## Configuration and secrets
 
 Codebridge loads configuration in this order:

@@ -227,6 +227,38 @@ Each module's `Specs()` output is the source of truth for its tools, and `runtim
 
 `internal/mcpserver` converts a tool result into both JSON text and `structuredContent` when the output is an object. Errors are returned as `CallToolResult{IsError:true}` rather than becoming protocol failures.
 
+### 5.1 Client-owned skills boundary
+
+Skills and MCP tools solve different problems:
+
+```text
+ChatGPT Skill
+  reusable workflow, instructions, examples, and supporting resources
+        │
+        ▼
+ChatGPT orchestration
+        │ calls MCP tools
+        ▼
+Codebridge
+  capability execution, policy, approvals, confinement, audit, and memory
+```
+
+Codebridge deliberately does not implement a skill registry. Skills are owned by the client using the MCP server, while Codebridge publishes executable capabilities through `tools/list`. The server therefore does not store skill documents under the workspace, embed skill assets, or expose skill CRUD operations.
+
+The removed compatibility surface is:
+
+```text
+list_skills
+read_skill
+create_skill
+delete_skill
+codebridge skills [list|read]
+```
+
+This boundary avoids two competing sources of reusable instructions and keeps the MCP contract focused on capabilities. A ChatGPT Skill may select and sequence Codebridge tools, but it cannot bypass `ToolSpec` policy classification, exact approvals, root confinement, command guards, audit redaction, or memory capture rules.
+
+The built-in contract contains 74 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Codebridge upgrade that changes `tools/list`.
+
 ## 6. Runtime pipeline and policy
 
 Every tool request follows this pipeline:
