@@ -163,7 +163,7 @@ func (a App) registerWorkspace(defaultConfig config.Config, rawID, rawRoot strin
 func (a App) ensureAutoWorkspace(defaultConfig config.Config, root string, opts options) (workspaceregistry.Registration, bool, bool, error) {
 	root = detectWorkspace(root)
 	if sameWorkspacePath(root, defaultConfig.Workspace) {
-		return workspaceregistry.Registration{ID: "default", Workspace: root, Enabled: true}, false, false, nil
+		return workspaceregistry.Registration{ID: workspaceregistry.IDFromPath(root), Workspace: root, Enabled: true}, false, false, nil
 	}
 	registry, err := workspaceregistry.Load()
 	if err != nil {
@@ -185,11 +185,9 @@ func (a App) ensureAutoWorkspace(defaultConfig config.Config, root string, opts 
 }
 
 func autoWorkspaceID(registry workspaceregistry.Registry, root string) string {
-	base := workspaceregistry.SlugID(filepath.Base(root))
-	if base != "default" {
-		if _, exists := registry.Workspaces[base]; !exists {
-			return base
-		}
+	base := workspaceregistry.IDFromPath(root)
+	if _, exists := registry.Workspaces[base]; !exists && base != "default" {
+		return base
 	}
 	sum := sha256.Sum256([]byte(canonicalWorkspacePath(root)))
 	for _, hashLength := range []int{8, 12, 16, 24} {
@@ -279,6 +277,7 @@ func (a App) workspaceList(defaultConfig config.Config, opts options) error {
 	if opts.JSON {
 		raw, _ := json.MarshalIndent(map[string]any{
 			"daemon": map[string]any{
+				"id":        workspaceregistry.IDFromPath(defaultConfig.Workspace),
 				"workspace": defaultConfig.Workspace, "port": defaultConfig.Port,
 				"online": health != nil, "endpoint": "/mcp",
 			},
@@ -287,7 +286,7 @@ func (a App) workspaceList(defaultConfig config.Config, opts options) error {
 		fmt.Fprintln(a.Stdout, string(raw))
 		return nil
 	}
-	fmt.Fprintf(a.Stdout, "default\t%s\tport=%d\t%s\n", ternary(health != nil, "online", "offline"), defaultConfig.Port, defaultConfig.Workspace)
+	fmt.Fprintf(a.Stdout, "%s\t%s\tport=%d\t%s\n", workspaceregistry.IDFromPath(defaultConfig.Workspace), ternary(health != nil, "online", "offline"), defaultConfig.Port, defaultConfig.Workspace)
 	for _, item := range items {
 		status := "disabled"
 		enabled, online := item["enabled"] == true, item["online"] == true
@@ -374,7 +373,7 @@ func (a App) workspaceLifecycle(ctx context.Context, defaultConfig config.Config
 }
 
 func (a App) printAutoWorkspace(entry workspaceregistry.Registration, created, enabled bool, port int) {
-	if entry.ID == "default" {
+	if entry.ConfigPath == "" {
 		return
 	}
 	switch {

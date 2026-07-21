@@ -1,6 +1,9 @@
 package workspaceregistry
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestSlugID(t *testing.T) {
 	cases := map[string]string{
@@ -14,5 +17,12 @@ func TestSlugID(t *testing.T) {
 		if got := SlugID(input); got != want {
 			t.Fatalf("SlugID(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestIDFromPathUsesFolderName(t *testing.T) {
+	path := filepath.Join("home", "user", "CodeBridge Repo")
+	if got := IDFromPath(path); got != "codebridge-repo" {
+		t.Fatalf("IDFromPath(%q) = %q", path, got)
 	}
 }

@@ -797,8 +797,7 @@ func writeTunnelProfile(cfg config.Config) (string, error) {
 		lines = append(lines, "  extra_headers:", fmt.Sprintf(`    - "OpenAI-Organization: %s"`, yamlEscape(cfg.Organization)))
 	}
 	lines = append(lines, "log:", "  level: info", "  format: json", "mcp:", "  server_urls:",
-		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d/mcp"`, cfg.Port),
-		"    - channel: session", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint))
+		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint))
 	registry, err := workspaceregistry.Load()
 	if err != nil {
 		return "", err

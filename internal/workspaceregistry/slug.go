@@ -3,7 +3,10 @@
 
 package workspaceregistry
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // SlugID converts a repository or folder name into a stable workspace ID.
 // Generated IDs contain lowercase ASCII letters, digits, and hyphens only.
@@ -34,4 +37,11 @@ func SlugID(value string) string {
 		return "workspace"
 	}
 	return result
+}
+
+// IDFromPath derives a workspace ID from the repository root or current
+// directory name. Callers should pass an already-detected repository root when
+// one is available.
+func IDFromPath(path string) string {
+	return SlugID(filepath.Base(filepath.Clean(strings.TrimSpace(path))))
 }

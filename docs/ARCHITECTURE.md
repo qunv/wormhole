@@ -236,21 +236,21 @@ shared daemon
     → Runtime[id]
 ```
 
-`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, version-1 migration, and the registry/config fingerprint used by the supervisor. The ID `default` is reserved, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named configs are loaded without ambient environment overrides, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the default config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint.
+`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, version-1 migration, and the registry/config fingerprint used by the supervisor. The ID `default` remains reserved for named registrations, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named configs are loaded without ambient environment overrides, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the primary config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint.
 
-Each runtime owns a separate workspace manager, state store, approval manager, patch engine, managed-process registry, profile, memory project, workspace-prefixed session identity, policy, request limits, and workspace-local handlers. The default runtime uses the application state directory; named runtimes use `instances/<id>` as their state root. This keeps notes, tasks, audit, approvals, backups, patch history, and managed processes isolated even when two registrations point at repositories with similar contents.
+Each runtime owns a separate workspace manager, state store, approval manager, patch engine, managed-process registry, profile, memory project, workspace-prefixed session identity, policy, request limits, and workspace-local handlers. The primary runtime uses the application state directory; named runtimes use `instances/<id>` as their state root. This keeps notes, tasks, audit, approvals, backups, patch history, and managed processes isolated even when two registrations point at repositories with similar contents.
 
 The daemon owns one `SharedServices` instance. Compatible memory configurations reuse a provider and recorder; incompatible backend, secret, or delivery settings produce separate pooled entries. Compatible upstream connection configurations reuse a client/session, while policy and tool-filter differences retain separate contracts. `workspace_info`, `memory_status`, and `/internal/healthz` publish bounded `shared_resources` counts and acquire/reuse counters without exposing resource keys or secrets.
 
-The MCP adapter prefixes named session IDs with `workspace:<id>:` and places the same workspace ID in `CallIdentity`. Audit records include both `workspace_id` and `session_id`. Exact approval actions are prefixed with the workspace ID before they are stored or consumed, preventing an approval created for one endpoint from authorizing another.
+The MCP adapter prefixes workspace session IDs with `workspace:<id>:` and places the same workspace ID in `CallIdentity`. Audit records include both `workspace_id` and `session_id`. Exact approval actions are prefixed with the workspace ID before they are stored or consumed, preventing an approval created for one endpoint from authorizing another.
 
 `SessionRouter` adds conversation-level routing without mutating any runtime. `workspace_select` creates a cryptographically random in-memory binding for one enabled runtime. Every routed coding-tool schema requires the returned `workspace_binding`; the router removes it before policy, audit, and handler dispatch, then supplies a runtime session identity derived from a SHA-256 prefix of the token. The raw token is never written to audit, memory, health, or local state. Bindings expire after 24 hours of inactivity, are invalidated by `workspace_clear`, and disappear on daemon restart. Because the binding is explicit on every coding call, two ChatGPT tabs remain isolated even when the client reconnects or reuses one MCP transport.
 
-`workspace start` and `workspace stop` toggle the registry entry and reconcile the shared daemon. A bare `codebridge`, `run`, or `here` invocation inside a Git repository first ensures that the Git root is registered when it differs from the configured default workspace; `restart` performs the same check before stopping the daemon. Automatic IDs are lowercase ASCII slugs derived from the Git root folder, use `-` for unsupported character runs, and receive a stable canonical-path hash suffix on collision. Existing registrations are matched by canonical path and re-enabled instead of duplicated. Non-Git bare invocations and explicit `--workspace` retain the legacy default-workspace behavior.
+`workspace start` and `workspace stop` toggle a named registry entry and reconcile the shared daemon. The primary runtime ID is a lowercase ASCII slug derived from the Git root folder, or from the current folder outside Git. A bare `codebridge`, `run`, or `here` invocation registers the Git root only when it differs from the configured primary workspace; `restart` performs the same check before stopping the daemon. Named-workspace IDs receive a stable canonical-path hash suffix on collision. Existing registrations are matched by canonical path and re-enabled instead of duplicated.
 
 The supervisor ConfigID includes the registry, every enabled named config, and the secret fingerprints referenced by each runtime, so endpoint, tool, provider, or credential changes cannot silently reuse a stale process. Startup readiness time includes required memory and upstream MCP timeouts from all enabled runtimes.
 
-One tunnel profile publishes channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for each enabled fixed endpoint. Runtime and upstream secrets remain in the shared `.env` and are resolved through environment references rather than copied into workspace configuration files.
+One tunnel profile publishes channel `main` for `/mcp/session` and channel `workspace-<id>` for each enabled fixed endpoint. Runtime and upstream secrets remain in the shared `.env` and are resolved through environment references rather than copied into workspace configuration files.
 
 ## 5. HTTP and MCP layers
 
@@ -258,7 +258,7 @@ Codebridge exposes:
 
 ```text
 /mcp/session                 per-chat workspace-routing MCP endpoint
-/mcp                         default workspace MCP endpoint
+/mcp                         primary workspace compatibility endpoint
 /mcp/workspaces/<id>         fixed named workspace MCP endpoint
 /healthz                     public health endpoint
 /internal/healthz            loopback supervisor health with PID, ConfigID, workspace, pool, and router summaries

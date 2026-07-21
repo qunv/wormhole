@@ -5,7 +5,7 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, and `tunnel`.
-- One stateless Streamable HTTP daemon with `/mcp/session` for per-chat workspace selection, `/mcp` for the default workspace, and `/mcp/workspaces/<id>` for fixed compatibility endpoints.
+- One stateless Streamable HTTP daemon with `/mcp/session` for per-chat workspace selection, `/mcp` for the primary workspace, and `/mcp/workspaces/<id>` for fixed compatibility endpoints.
 - 74 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
@@ -175,10 +175,10 @@ Run in the foreground for debugging:
 codebridge serve --workspace /path/to/repo --no-tunnel
 ```
 
-Default endpoints:
+Endpoints:
 
 - Session workspace MCP: `http://127.0.0.1:8789/mcp/session`
-- Default workspace MCP: `http://127.0.0.1:8789/mcp`
+- Primary workspace MCP: `http://127.0.0.1:8789/mcp`
 - Health: `http://127.0.0.1:8789/healthz`
 - Supervisor health: `http://127.0.0.1:8789/internal/healthz`
 
@@ -210,7 +210,7 @@ Codebridge runs one local daemon with a session router plus fixed compatibility 
 
 ```text
 http://127.0.0.1:8789/mcp/session                 per-chat workspace selection
-http://127.0.0.1:8789/mcp                         fixed default workspace
+http://127.0.0.1:8789/mcp                         fixed primary workspace
 http://127.0.0.1:8789/mcp/workspaces/loyalty-api  fixed loyalty-api workspace
 http://127.0.0.1:8789/mcp/workspaces/admin-web    fixed admin-web workspace
 ```
@@ -239,7 +239,7 @@ All routed coding-tool schemas require `workspace_binding`. Codebridge removes t
 
 Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. After an expiry or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding.
 
-Running `codebridge` inside a Git repository automatically ensures that repository has a named workspace endpoint when it is not the configured default workspace. `codebridge restart` performs the same registration check before restarting the daemon. The generated ID uses the Git root folder name, lowercases it, replaces unsupported character runs with `-`, collapses repeated separators, and limits the result to 32 characters. If another repository already owns that ID, Codebridge appends a stable path hash. An existing registration for the same root is reused and automatically enabled.
+Running `codebridge` derives the primary workspace ID from the Git repository root folder, or from the current folder outside Git. A different repository is automatically registered as a named workspace; `codebridge restart` performs the same check before restarting the daemon. Generated IDs are lowercase ASCII slugs, replace unsupported character runs with `-`, collapse repeated separators, and are limited to 32 characters. Named-workspace collisions receive a stable path hash. An existing registration for the same root is reused and automatically enabled.
 
 Examples:
 
@@ -250,7 +250,7 @@ service-api          → service-api
 service-api collision → service-api-4f29c8a1
 ```
 
-The configured default workspace remains `/mcp`; automatic registration does not repoint it. A bare invocation outside Git preserves the legacy behavior and repoints the default workspace to the current directory. An explicit `--workspace` also keeps the explicit default-workspace behavior.
+The primary workspace remains available at the compatibility endpoint `/mcp`, but its router ID is the repository or folder slug rather than `default`. A bare invocation outside Git uses the current directory; an explicit `--workspace` uses the selected repository or directory.
 
 Register and manage workspaces manually with:
 

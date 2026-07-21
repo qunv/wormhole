@@ -104,7 +104,7 @@ func TestEnsureAutoWorkspaceAddsStableHashOnNameCollision(t *testing.T) {
 	}
 }
 
-func TestEnsureAutoWorkspaceLeavesDefaultUnregistered(t *testing.T) {
+func TestEnsureAutoWorkspaceUsesPrimaryFolderNameWithoutRegistration(t *testing.T) {
 	configureWorkspaceTestPaths(t)
 	root := filepath.Join(t.TempDir(), "default-repo")
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -118,22 +118,22 @@ func TestEnsureAutoWorkspaceLeavesDefaultUnregistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.ID != "default" || created || enabled {
-		t.Fatalf("default workspace was treated as named: %#v created=%t enabled=%t", entry, created, enabled)
+	if entry.ID != "default-repo" || created || enabled {
+		t.Fatalf("primary workspace was treated as named: %#v created=%t enabled=%t", entry, created, enabled)
 	}
 	registry, err := workspaceregistry.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(registry.Workspaces) != 0 {
-		t.Fatalf("default workspace leaked into registry: %#v", registry.Workspaces)
+		t.Fatalf("primary workspace leaked into registry: %#v", registry.Workspaces)
 	}
 }
 
 func TestPrintAutoWorkspaceShowsEndpoint(t *testing.T) {
 	var output bytes.Buffer
 	app := App{Stdout: &output}
-	entry := workspaceregistry.Registration{ID: "orders-api", Workspace: "orders", Enabled: true}
+	entry := workspaceregistry.Registration{ID: "orders-api", Workspace: "orders", ConfigPath: "config.json", Enabled: true}
 	app.printAutoWorkspace(entry, true, true, 8789)
 	text := output.String()
 	if !strings.Contains(text, "auto-registered orders-api") || !strings.Contains(text, "/mcp/workspaces/orders-api") {

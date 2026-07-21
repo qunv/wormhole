@@ -19,6 +19,7 @@ import (
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
 	"codebridge/internal/server"
+	"codebridge/internal/workspaceregistry"
 )
 
 type App struct {
@@ -103,8 +104,7 @@ func (a App) Run(ctx context.Context, argv []string) error {
 			opts.Save = true
 			return a.start(ctx, cfg, opts)
 		}
-		// Preserve the legacy behavior for non-Git directories: a bare
-		// invocation explicitly repoints the default workspace.
+		// For non-Git directories, a bare invocation uses the current folder.
 		cfg.Workspace = detectWorkspace(cwd)
 		opts.Save = true
 		return a.start(ctx, cfg, opts)
@@ -177,8 +177,9 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 	}
 	reporter("boot", fmt.Sprintf("Codebridge %s pid=%d", a.Version, os.Getpid()))
 	shared := agent.NewSharedServices(a.Version)
-	defaultRuntime, err := agent.NewWorkspaceContextWithSharedServices(
-		ctx, "default", "", cfg, a.Version, a.Tier, configID, shared, reporter,
+	primaryID := workspaceregistry.IDFromPath(cfg.Workspace)
+	primaryRuntime, err := agent.NewWorkspaceContextWithSharedServices(
+		ctx, primaryID, "", cfg, a.Version, a.Tier, configID, shared, reporter,
 	)
 	if err != nil {
 		_ = shared.Close()
@@ -188,7 +189,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 
 	namedConfigs, err := loadNamedWorkspaceConfigs(cfg)
 	if err != nil {
-		defaultRuntime.Close()
+		primaryRuntime.Close()
 		_ = shared.Close()
 		reporter("failed", err.Error())
 		return err
@@ -196,6 +197,17 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 	namedRuntimes := make(map[string]*agent.Runtime, len(namedConfigs))
 	for _, item := range namedConfigs {
 		id := item.Registration.ID
+		if id == primaryID {
+			if sameWorkspacePath(item.Config.Workspace, cfg.Workspace) {
+				continue
+			}
+			for _, runtime := range namedRuntimes {
+				runtime.Close()
+			}
+			primaryRuntime.Close()
+			_ = shared.Close()
+			return fmt.Errorf("workspace id %q conflicts with the primary workspace %s", id, cfg.Workspace)
+		}
 		workspaceReporter := func(stage, message string) {
 			reporter(stage, "workspace="+id+" "+message)
 		}
@@ -208,7 +220,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 			for _, runtime := range namedRuntimes {
 				runtime.Close()
 			}
-			defaultRuntime.Close()
+			primaryRuntime.Close()
 			_ = shared.Close()
 			reporter("failed", fmt.Sprintf("workspace=%s %v", id, runtimeErr))
 			return runtimeErr
@@ -219,11 +231,11 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		for _, runtime := range namedRuntimes {
 			runtime.Close()
 		}
-		defaultRuntime.Close()
+		primaryRuntime.Close()
 		_ = shared.Close()
 	}()
 	reporter("server", fmt.Sprintf("opening http://%s:%d with %d workspace endpoint(s)", cfg.Host, cfg.Port, 1+len(namedRuntimes)))
-	return server.NewMulti(defaultRuntime, namedRuntimes).ListenAndServe(ctx)
+	return server.NewMulti(primaryRuntime, namedRuntimes).ListenAndServe(ctx)
 }
 
 func (a App) usage() {
@@ -236,7 +248,7 @@ Usage:
   codebridge stop|restart       Manage background processes
   codebridge status [--json]    Show health and PID state
   codebridge doctor [--json]    Check local readiness
-  codebridge workspace [path]   Show or set the default workspace
+  codebridge workspace [path]   Show or set the primary workspace
   codebridge workspace add <id> <path> [--extra-root <path>] [--force]
   codebridge workspace list [--json]
   codebridge workspace start|stop|status <id>

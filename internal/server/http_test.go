@@ -227,7 +227,7 @@ func TestNamedEndpointUsesItsRuntimeRequestLimits(t *testing.T) {
 }
 
 func TestInternalHealthListsWorkspaceEndpoints(t *testing.T) {
-	defaultRuntime := newWorkspaceRuntime(t, "default", t.TempDir(), t.TempDir())
+	defaultRuntime := newWorkspaceRuntime(t, "codebridge", t.TempDir(), t.TempDir())
 	apiRuntime := newWorkspaceRuntime(t, "api", t.TempDir(), t.TempDir())
 	handler := NewMulti(defaultRuntime, map[string]*agent.Runtime{"api": apiRuntime}).Server.Handler
 
@@ -248,7 +248,7 @@ func TestInternalHealthListsWorkspaceEndpoints(t *testing.T) {
 	}
 	raw, _ := json.Marshal(items)
 	text := string(raw)
-	for _, want := range []string{`"id":"default"`, `"endpoint":"/mcp"`, `"id":"api"`, `"endpoint":"/mcp/workspaces/api"`} {
+	for _, want := range []string{`"id":"codebridge"`, `"endpoint":"/mcp"`, `"id":"api"`, `"endpoint":"/mcp/workspaces/api"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("health summaries missing %s: %s", want, text)
 		}

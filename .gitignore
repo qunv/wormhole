@@ -1,6 +1,7 @@
 /codebridge
 /codebridge.exe
 /dist/
+/data/
 /coverage.out
 /.env
 /.env.local

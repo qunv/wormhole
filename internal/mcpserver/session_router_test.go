@@ -15,6 +15,28 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestSessionRouterUsesPrimaryRuntimeWorkspaceID(t *testing.T) {
+	primary := newSessionTestRuntime(t, "codebridge", t.TempDir())
+	api := newSessionTestRuntime(t, "api", t.TempDir())
+	router := NewSessionRouter(primary, map[string]*agent.Runtime{"api": api})
+
+	ids := router.workspaceIDs()
+	if len(ids) != 2 || ids[0] != "codebridge" || ids[1] != "api" {
+		t.Fatalf("workspace IDs = %#v", ids)
+	}
+	binding, runtime, err := router.selectWorkspace("chat", "codebridge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.WorkspaceID != "codebridge" || runtime != primary {
+		t.Fatalf("primary selection = %#v runtime=%p, want %p", binding, runtime, primary)
+	}
+	items := router.workspaceList("chat", binding.Token)
+	if items[0]["id"] != "codebridge" || items[0]["selected"] != true {
+		t.Fatalf("primary workspace list item = %#v", items[0])
+	}
+}
+
 func TestSessionGatewayRoutesTwoChatsToDifferentWorkspaces(t *testing.T) {
 	defaultRuntime := newSessionTestRuntime(t, "default", t.TempDir())
 	aRoot := t.TempDir()

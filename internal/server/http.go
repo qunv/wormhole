@@ -65,12 +65,13 @@ func New(runtime *agent.Runtime) *HTTP {
 }
 
 // NewMulti creates one HTTP daemon with a compatibility endpoint for the
-// default workspace and one fixed endpoint for every named workspace runtime.
+// primary workspace and one fixed endpoint for every named workspace runtime.
 func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 	instance := &HTTP{Runtime: runtime, Runtimes: map[string]*agent.Runtime{}}
+	primaryID := strings.ToLower(strings.TrimSpace(runtime.WorkspaceID))
 	for id, child := range named {
 		id = strings.ToLower(strings.TrimSpace(id))
-		if id == "" || id == "default" || child == nil {
+		if id == "" || id == primaryID || child == nil {
 			continue
 		}
 		instance.Runtimes[id] = child
@@ -86,7 +87,7 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 		mcpserver.SessionEndpoint,
 		instance.guardMCPValues(runtime.Config.AuthToken, instance.SessionRouter.BodyLimit(), sessionStreamableHandler(instance.SessionRouter)),
 	)
-	mux.Handle("/mcp", instance.guardMCP(runtime, streamableHandler(runtime, "default")))
+	mux.Handle("/mcp", instance.guardMCP(runtime, streamableHandler(runtime, primaryID)))
 	for _, id := range instance.namedWorkspaceIDs() {
 		endpoint := "/mcp/workspaces/" + id
 		child := instance.Runtimes[id]
@@ -272,7 +273,7 @@ func (h *HTTP) namedWorkspaceIDs() []string {
 
 func (h *HTTP) workspaceSummaries() []map[string]any {
 	items := []map[string]any{{
-		"id": "default", "endpoint": "/mcp", "root": h.Runtime.Workspace.Primary,
+		"id": h.Runtime.WorkspaceID, "endpoint": "/mcp", "root": h.Runtime.Workspace.Primary,
 		"memory_project": h.Runtime.MemoryProject, "tool_count": len(h.Runtime.Tools()),
 	}}
 	for _, id := range h.namedWorkspaceIDs() {

@@ -51,9 +51,10 @@ type workspaceBinding struct {
 // immutable workspace runtimes. Runtimes are created by the daemon and remain
 // workspace-local; only dispatch selection is shared here.
 type SessionRouter struct {
-	version string
-	ttl     time.Duration
-	now     func() time.Time
+	version   string
+	primaryID string
+	ttl       time.Duration
+	now       func() time.Time
 
 	runtimes map[string]*agent.Runtime
 	specs    []agent.ToolSpec
@@ -63,16 +64,20 @@ type SessionRouter struct {
 	bindings map[string]workspaceBinding
 }
 
-func NewSessionRouter(defaultRuntime *agent.Runtime, named map[string]*agent.Runtime) *SessionRouter {
+func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Runtime) *SessionRouter {
 	runtimes := map[string]*agent.Runtime{}
 	version := ""
-	if defaultRuntime != nil {
-		runtimes["default"] = defaultRuntime
-		version = defaultRuntime.Version
+	primaryID := ""
+	if primaryRuntime != nil {
+		primaryID = workspaceregistry.NormalizeID(primaryRuntime.WorkspaceID)
+		if primaryID != "" {
+			runtimes[primaryID] = primaryRuntime
+		}
+		version = primaryRuntime.Version
 	}
 	for rawID, runtime := range named {
 		id := workspaceregistry.NormalizeID(rawID)
-		if id == "" || id == "default" || runtime == nil {
+		if id == "" || id == primaryID || runtime == nil {
 			continue
 		}
 		runtimes[id] = runtime
@@ -81,7 +86,7 @@ func NewSessionRouter(defaultRuntime *agent.Runtime, named map[string]*agent.Run
 		}
 	}
 	router := &SessionRouter{
-		version: version, ttl: defaultBindingTTL, now: time.Now,
+		version: version, primaryID: primaryID, ttl: defaultBindingTTL, now: time.Now,
 		runtimes: runtimes, sessions: map[string]string{}, bindings: map[string]workspaceBinding{},
 	}
 	router.specs = router.collectToolSpecs()
@@ -420,10 +425,10 @@ func (r *SessionRouter) workspaceIDs() []string {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(left, right int) bool {
-		if ids[left] == "default" {
+		if ids[left] == r.primaryID {
 			return true
 		}
-		if ids[right] == "default" {
+		if ids[right] == r.primaryID {
 			return false
 		}
 		return ids[left] < ids[right]

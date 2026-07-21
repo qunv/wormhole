@@ -263,10 +263,13 @@ func TestTunnelProfileIncludesEnabledWorkspaceChannels(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"channel: main", "channel: session", "/mcp/session", "channel: workspace-api", "/mcp/workspaces/api"} {
+	for _, want := range []string{"channel: main", "/mcp/session", "channel: workspace-api", "/mcp/workspaces/api"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("profile missing %q: %s", want, text)
 		}
+	}
+	if strings.Contains(text, "channel: session") {
+		t.Fatalf("profile unexpectedly contains duplicate session channel: %s", text)
 	}
 	if strings.Contains(text, "workspace-web") {
 		t.Fatalf("disabled workspace leaked into profile: %s", text)
