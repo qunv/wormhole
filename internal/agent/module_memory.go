@@ -12,31 +12,23 @@ type memoryModule struct {
 
 func newMemoryModule(runtime *Runtime) ToolModule { return &memoryModule{runtime: runtime} }
 func (*memoryModule) Name() string                { return "memory" }
-func (*memoryModule) Specs() []ToolSpec           { return memoryToolSpecs() }
+func (*memoryModule) Specs() []ToolSpec           { return sharedModuleSpecs("memory", memoryToolSpecs) }
 func (m *memoryModule) Handle(ctx context.Context, _ CallIdentity, tool string, args map[string]any) (any, error) {
 	return m.runtime.handleMemory(ctx, tool, args)
 }
 func (m *memoryModule) Health(ctx context.Context) any {
 	health := m.runtime.memoryHealth(ctx, false)
 	return map[string]any{
-		"module": "memory", "tools": len(memoryToolSpecs()),
+		"module": "memory", "tools": len(m.Specs()),
 		"enabled":   m.runtime.Config.Memory.Enabled,
 		"available": !m.runtime.Config.Memory.Enabled || health.Available,
 		"provider":  m.runtime.Memory.Name(), "health": health,
 	}
 }
-func (m *memoryModule) Close() error {
-	if m.runtime.MemoryRecorder != nil {
-		m.runtime.MemoryRecorder.Close()
-		m.runtime.MemoryRecorder = nil
-	}
-	if m.runtime.Memory != nil {
-		err := m.runtime.Memory.Close()
-		m.runtime.Memory = nil
-		return err
-	}
-	return nil
-}
+
+// SharedServices owns recorder and provider shutdown. Closing a workspace
+// module must not drain or disconnect resources still used by another runtime.
+func (*memoryModule) Close() error { return nil }
 
 func memoryToolSpecs() []ToolSpec {
 	empty := object(nil)

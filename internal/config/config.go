@@ -201,22 +201,40 @@ func PIDPath() string    { return filepath.Join(AppDataDir(), "processes.json") 
 func LogPath() string    { return filepath.Join(AppDataDir(), "launcher.log") }
 
 func Load() (Config, error) {
+	cfg, err := loadFile(ConfigPath(), true)
+	return cfg, err
+}
+
+// LoadFile loads one non-secret configuration file without applying ambient
+// environment overrides. It is used by the multi-workspace daemon so a process
+// level AGENT_WORKSPACE or PORT cannot repoint a registered workspace runtime.
+func LoadFile(path string) (Config, error) {
+	return loadFile(path, false)
+}
+
+func loadFile(path string, useEnvironment bool) (Config, error) {
 	cfg := Default()
-	raw, err := os.ReadFile(ConfigPath())
+	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return cfg, err
 	}
 	if err == nil {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return cfg, fmt.Errorf("parse config: %w", err)
+			return cfg, fmt.Errorf("parse config %s: %w", path, err)
 		}
 	}
-	applyEnvironment(&cfg)
+	if useEnvironment {
+		applyEnvironment(&cfg)
+	}
 	normalize(&cfg)
 	return cfg, cfg.Validate(false)
 }
 
 func Save(cfg Config) error {
+	return SaveFile(ConfigPath(), cfg)
+}
+
+func SaveFile(path string, cfg Config) error {
 	normalize(&cfg)
 	if err := cfg.Validate(false); err != nil {
 		return err
@@ -227,7 +245,7 @@ func Save(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(ConfigPath(), append(raw, '\n'), 0o600)
+	return atomicWrite(path, append(raw, '\n'), 0o600)
 }
 
 func (c Config) Validate(requireWorkspace bool) error {

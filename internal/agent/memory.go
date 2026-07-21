@@ -302,12 +302,14 @@ func memoryCaptureResult(value any) map[string]any {
 
 func (r *Runtime) memoryStatus(ctx context.Context) map[string]any {
 	health := r.memoryHealth(ctx, false)
+	recorder := r.MemoryRecorder.Stats()
+	recorder["scope"] = "daemon"
 	return map[string]any{
 		"enabled": r.Config.Memory.Enabled, "required": r.Config.Memory.Required,
 		"provider": r.Memory.Name(), "project": r.MemoryProject,
 		"agent_id": r.Config.Memory.AgentID, "capture_mode": r.Config.Memory.CaptureMode,
 		"project_strategy": r.Config.Memory.ProjectStrategy, "health": health,
-		"recorder": r.MemoryRecorder.Stats(),
+		"recorder": recorder, "shared_resources": r.SharedResourceStats(),
 	}
 }
 

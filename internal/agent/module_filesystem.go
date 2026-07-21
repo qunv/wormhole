@@ -12,12 +12,14 @@ type filesystemModule struct {
 
 func newFilesystemModule(runtime *Runtime) ToolModule { return &filesystemModule{runtime: runtime} }
 func (*filesystemModule) Name() string                { return "filesystem" }
-func (*filesystemModule) Specs() []ToolSpec           { return filesystemToolSpecs() }
+func (*filesystemModule) Specs() []ToolSpec {
+	return sharedModuleSpecs("filesystem", filesystemToolSpecs)
+}
 func (m *filesystemModule) Handle(ctx context.Context, _ CallIdentity, tool string, args map[string]any) (any, error) {
 	return m.runtime.handleFS(ctx, tool, args)
 }
-func (*filesystemModule) Health(context.Context) any {
-	return healthyModule("filesystem", len(filesystemToolSpecs()))
+func (m *filesystemModule) Health(context.Context) any {
+	return healthyModule("filesystem", len(m.Specs()))
 }
 func (*filesystemModule) Close() error { return nil }
 

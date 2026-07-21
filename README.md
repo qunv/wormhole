@@ -5,13 +5,14 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, and `tunnel`.
-- Stateless Streamable HTTP MCP at `/mcp`, public health at `/healthz`, and supervisor health at `/internal/healthz`.
+- One stateless Streamable HTTP daemon with `/mcp/session` for per-chat workspace selection, `/mcp` for the default workspace, and `/mcp/workspaces/<id>` for fixed compatibility endpoints.
 - 74 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
 - Optional CodeGraph navigation and a generic upstream MCP gateway for database, design, cloud, search, and other community integrations.
-- Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, and canonical export/import.
+- Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, canonical export/import, and daemon-wide provider/recorder pooling.
+- Compatible workspace runtimes reuse upstream MCP clients and immutable tool contracts without sharing workspace state or policy.
 - Builds for Linux, macOS, and Windows.
 
 ## Quick install
@@ -156,7 +157,7 @@ cd /path/to/repo
 codebridge
 ```
 
-The default command detects the Git root, saves it as the workspace, and starts Codebridge in the background.
+The default command detects the Git root, auto-registers it as a named workspace when it differs from the configured default, and starts or reconciles Codebridge in the background.
 
 Run only the local MCP server without a tunnel:
 
@@ -176,7 +177,8 @@ codebridge serve --workspace /path/to/repo --no-tunnel
 
 Default endpoints:
 
-- MCP: `http://127.0.0.1:8789/mcp`
+- Session workspace MCP: `http://127.0.0.1:8789/mcp/session`
+- Default workspace MCP: `http://127.0.0.1:8789/mcp`
 - Health: `http://127.0.0.1:8789/healthz`
 - Supervisor health: `http://127.0.0.1:8789/internal/healthz`
 
@@ -202,6 +204,97 @@ Show all commands and options:
 codebridge help
 ```
 
+## Multiple workspace endpoints
+
+Codebridge runs one local daemon with a session router plus fixed compatibility endpoints:
+
+```text
+http://127.0.0.1:8789/mcp/session                 per-chat workspace selection
+http://127.0.0.1:8789/mcp                         fixed default workspace
+http://127.0.0.1:8789/mcp/workspaces/loyalty-api  fixed loyalty-api workspace
+http://127.0.0.1:8789/mcp/workspaces/admin-web    fixed admin-web workspace
+```
+
+### One ChatGPT app, one workspace per chat
+
+Point one ChatGPT custom MCP app or tunnel channel at `/mcp/session`. In every new chat, select the repository with a natural command:
+
+```text
+Chat A: workspace loyalty-api
+Chat B: workspace admin-web
+```
+
+The session endpoint publishes four routing tools:
+
+| Tool | Purpose |
+|---|---|
+| `workspace_select` | Bind the current chat to an enabled workspace |
+| `workspace_current` | Verify the binding and selected root |
+| `workspace_list` | List workspace IDs available to the router |
+| `workspace_clear` | Detach the chat from its workspace |
+
+When the user writes `workspace <id>`, the MCP instructions tell ChatGPT to call `workspace_select`. Codebridge returns a cryptographically random opaque `workspace_binding`; ChatGPT keeps that value in the conversation context and supplies it automatically on every later Codebridge tool call. The user does not copy, paste, or manage the token.
+
+All routed coding-tool schemas require `workspace_binding`. Codebridge removes the field before runtime dispatch, so it is never passed to a tool handler or written into audit arguments. The runtime memory/audit session uses a short hash of the binding instead of the raw token. This keeps two chats isolated even if ChatGPT reconnects or reuses an MCP transport.
+
+Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. After an expiry or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding.
+
+Running `codebridge` inside a Git repository automatically ensures that repository has a named workspace endpoint when it is not the configured default workspace. `codebridge restart` performs the same registration check before restarting the daemon. The generated ID uses the Git root folder name, lowercases it, replaces unsupported character runs with `-`, collapses repeated separators, and limits the result to 32 characters. If another repository already owns that ID, Codebridge appends a stable path hash. An existing registration for the same root is reused and automatically enabled.
+
+Examples:
+
+```text
+Loyalty API.Service  → loyalty-api-service
+repo_name            → repo-name
+service-api          → service-api
+service-api collision → service-api-4f29c8a1
+```
+
+The configured default workspace remains `/mcp`; automatic registration does not repoint it. A bare invocation outside Git preserves the legacy behavior and repoints the default workspace to the current directory. An explicit `--workspace` also keeps the explicit default-workspace behavior.
+
+Register and manage workspaces manually with:
+
+```bash
+codebridge workspace add loyalty-api /path/to/loyalty-api
+codebridge workspace add admin-web /path/to/admin-web \
+  --extra-root /path/to/shared-contracts
+
+codebridge workspace list
+codebridge workspace status loyalty-api
+codebridge workspace stop loyalty-api
+codebridge workspace start loyalty-api
+codebridge workspace remove admin-web
+```
+
+`workspace add` creates an enabled registry entry and a non-secret workspace config. Restart Codebridge, or run `workspace start <id>`, to reconcile the shared daemon. `workspace stop <id>` disables the endpoint and restarts the daemon when it is online. `workspace remove <id> --force` also removes the named config file; local state is retained unless deleted manually.
+
+Every endpoint owns a separate runtime with its own:
+
+- workspace manager and root confinement;
+- notes, tasks, checkpoints, audit, approvals, backups, and patch history;
+- managed process registry and profile;
+- memory project and workspace-prefixed MCP session identity;
+- policy, tool exposure, request limits, and workspace-local handlers.
+
+`SharedServices` owns daemon-lifetime resources. Compatible runtimes reuse one memory provider and asynchronous recorder. Upstream HTTP clients reuse one MCP session when the server name, transport configuration, resolved secrets, and timeouts match. Stdio clients are also keyed by their resolved `cwd`, so two repositories cannot accidentally share a workspace-relative child process. Tool filtering or approval-policy differences create separate immutable contracts while still reusing the compatible upstream client.
+
+Built-in tool schemas are constructed once per process. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, upstream-client, contract, acquire, and reuse counts.
+
+The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for every enabled fixed endpoint.
+
+Linux defaults are:
+
+```text
+~/.config/codebridge/workspaces.json
+~/.config/codebridge/workspaces/<id>/config.json
+~/.local/state/codebridge/instances/<id>/audit.log
+~/.local/state/codebridge/instances/<id>/workspaces/<path-hash>/...
+```
+
+The shared `.env` remains the source for the Runtime API key and referenced memory or upstream MCP secrets, so credentials are not copied into workspace configs. Workspace IDs must match `[a-z0-9][a-z0-9_-]{0,31}`; `default` is reserved. Registry validation also rejects shared config paths or data directories between two IDs.
+
+Registry version 1 from the multi-process implementation is read automatically and migrated to enabled shared-daemon endpoints. Stop any legacy per-workspace server or tunnel processes before starting the upgraded daemon.
+
 ## ChatGPT Web tunnel
 
 ```bash
@@ -215,10 +308,11 @@ codebridge restart
 `codebridge key set` stores the Runtime API key in the local `.env` file with `0600` permissions. In ChatGPT Web:
 
 1. Open **Settings → Connectors → Developer mode**.
-2. Add a custom MCP connector.
-3. Select the configured tunnel.
+2. Add one custom MCP connector.
+3. Select the configured tunnel channel `session`, which points to `/mcp/session`.
 4. Choose `No auth`; the Runtime API key stays on the local machine and is not entered in the connector.
-5. Call `workspace_info` or `workspace_snapshot` to verify the connection.
+5. Start a new chat and write `workspace <id>`, for example `workspace loyalty-api`.
+6. In another chat, write a different workspace ID. Each chat carries its own opaque binding automatically.
 
 ### ChatGPT Skills and Codebridge
 
@@ -370,7 +464,7 @@ Figma Desktop can be connected through the same generic HTTP bridge:
 Important behavior:
 
 - The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`.
-- Tool discovery runs once during Codebridge startup. Restart Codebridge after an upstream server changes its tool list.
+- Tool discovery runs once during Codebridge startup. Compatible workspace runtimes reuse the same upstream MCP client/session; policy or tool-filter differences keep separate contracts while reusing that connection. Stdio pooling additionally requires the same confined resolved `cwd`. Restart Codebridge after an upstream server changes its tool list.
 - `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
 - `codebridge start` streams `[startup]` phase logs while workspace, memory, and upstream MCP dependencies initialize. The launcher readiness timeout includes every enabled server's `startupTimeoutMs`, so a slow dependency is not killed by the previous fixed 10-second supervisor timeout.
 - `codebridge doctor` requests a deep local health check and reports each configured upstream as `mcp:<name>`, including transport, discovered tool count, reconnect count, and the latest sanitized connection error.
@@ -487,7 +581,7 @@ A file or subdirectory is always mapped to its configured owning root before the
 
 ### Session identity
 
-Each logical MCP connection receives its own memory session. Codebridge prefers the protocol session ID; when the transport does not provide one, it creates a stable process-local hash from the session object. Concurrent chats or connections are therefore not merged into one process-level session.
+Fixed endpoints derive memory identity from the MCP connection. Codebridge prefers the protocol session ID; when the transport does not provide one, it creates a stable process-local hash from the session object. Named endpoints prefix that identity with `workspace:<id>:`. The `/mcp/session` router instead uses `workspace:<id>:chat:<binding-hash>`, so two chats remain separate even if ChatGPT reconnects or reuses one transport. The raw workspace binding is never used as a provider session ID.
 
 ### Asynchronous recorder
 
@@ -502,13 +596,13 @@ tool completed
   → delivered / failed / dropped counters
 ```
 
-During shutdown, the recorder stops accepting new entries and drains the remaining queue. `memory_status` exposes `enqueued`, `delivered`, `retried`, `failed`, `dropped`, and the current queue depth.
+Compatible workspace runtimes share one daemon-scoped recorder; every queued observation still carries its own project, `cwd`, and workspace-prefixed session ID. Closing one runtime leaves the queue active. During daemon shutdown, `SharedServices` stops acquisitions, drains each recorder, and closes the pooled provider afterward. `memory_status` exposes `scope=daemon`, `enqueued`, `delivered`, `retried`, `failed`, `dropped`, and the current queue depth.
 
 ## Provider options
 
 `memory.options` contains adapter-specific configuration, such as custom REST paths or a response-size limit. Codebridge rejects any option key containing `secret`, `password`, `token`, `apiKey`, `authorization`, or `credential`; secrets must be referenced through `memory.secretEnv`.
 
-A new provider can register through `memory/factory.Register` without changing the MCP tools or runtime dispatch.
+A new provider can register through `memory/factory.Register` without changing the MCP tools or runtime dispatch. Pooled providers are wrapped by a serializer, so plugins do not need to implement their own concurrent-call safety; optional export/import capabilities are preserved.
 
 ## Export and import
 
@@ -543,6 +637,7 @@ Exports are normalized into the Codebridge schema. Import replays each item thro
 - The `balanced` policy permits edits but requires an exact one-time approval for deletion, installation, network access, mutating Git, `memory_forget`, and upstream tools not explicitly classified as read-only.
 - The `full` policy enables the complete project workflow while catastrophic system commands remain blocked; upstream `alwaysApproveTools` still require approval.
 - Audit arguments are recursively redacted before they are written to local state. Community MCP modules reduce audit data to argument names and bounded metadata and are excluded from automatic memory capture.
+- Session-routed coding calls require an explicit opaque binding. Codebridge removes it before runtime dispatch and never persists the raw value in audit, memory, health, or workspace state.
 - A non-loopback MCP host requires a bearer token.
 
 # Repository structure
@@ -561,6 +656,7 @@ internal/processx/    bounded process execution and process-tree management
 internal/upstreammcp/  generic stdio and Streamable HTTP MCP client/session management
 internal/memory/      canonical contracts, recorder, scoping, and adapters
 internal/state/       per-workspace local state
+internal/workspaceregistry/ persistent named-workspace registry and migration
 internal/assets/      embedded MCP Apps widget
 ```
 
@@ -570,7 +666,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed design.
 
 ```bash
 go test ./...
-go test -race ./internal/memory/... ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver
+go test -race ./internal/memory/... ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver ./internal/server ./internal/workspaceregistry
 go vet ./...
 go build ./...
 GOOS=windows GOARCH=amd64 go build ./...

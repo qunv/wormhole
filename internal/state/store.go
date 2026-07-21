@@ -28,9 +28,15 @@ type Store struct {
 }
 
 func New(workspace string) (*Store, error) {
+	return NewAt(workspace, config.AppDataDir())
+}
+
+func NewAt(workspace, dataDir string) (*Store, error) {
 	sum := sha256.Sum256([]byte(comparePath(workspace)))
 	id := hex.EncodeToString(sum[:8])
-	dataDir := config.AppDataDir()
+	if dataDir == "" {
+		dataDir = config.AppDataDir()
+	}
 	workspaceDir := filepath.Join(dataDir, "workspaces", id)
 	store := &Store{
 		DataDir:      dataDir,

@@ -22,7 +22,9 @@ import (
 
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
+	"codebridge/internal/mcpserver"
 	memoryfactory "codebridge/internal/memory/factory"
+	"codebridge/internal/workspaceregistry"
 
 	"golang.org/x/term"
 )
@@ -55,11 +57,14 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	if err != nil {
 		return err
 	}
-	configID := cfg.ConfigID(executable, assets.Widget())
+	configID, err := daemonConfigID(cfg, executable, assets.Widget())
+	if err != nil {
+		return err
+	}
 	state := readState()
 	health := readHealth(cfg.Port)
 	existingPID := numberValue(healthValue(health, "pid"))
-	if existingPID == 0 && health != nil && state.Port == cfg.Port && pidAlive(state.ServerPID) {
+	if existingPID == 0 && state.Port == cfg.Port && pidAlive(state.ServerPID) {
 		existingPID = state.ServerPID
 	}
 	existingConfigID := fmt.Sprint(healthValue(health, "config_id"))
@@ -120,6 +125,7 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 		state.ServerPID = existingPID
 	}
 	fmt.Fprintf(a.Stdout, "[server] MCP OK: http://127.0.0.1:%d/mcp\n", cfg.Port)
+	fmt.Fprintf(a.Stdout, "[server] Session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionEndpoint)
 
 	var tunnelCmd *exec.Cmd
 	if !cfg.NoTunnel {
@@ -270,13 +276,13 @@ func (a App) startChild(label string, cmd *exec.Cmd, background bool) (*exec.Cmd
 func (a App) stop(cfg config.Config, _ options) error {
 	state := readState()
 	health := readHealth(cfg.Port)
-	if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
-		fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d\n", state.TunnelPID)
-		_ = stopPID(state.TunnelPID)
-	}
 	serverPID := state.ServerPID
 	if health != nil {
 		serverPID = numberValue(health["pid"])
+	}
+	if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
+		fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d\n", state.TunnelPID)
+		_ = stopPID(state.TunnelPID)
 	}
 	if serverPID > 0 && pidAlive(serverPID) {
 		fmt.Fprintf(a.Stdout, "[server] stopping PID %d\n", serverPID)
@@ -290,8 +296,10 @@ func (a App) stop(cfg config.Config, _ options) error {
 func (a App) status(cfg config.Config, opts options) error {
 	state, health := readState(), readHealth(cfg.Port)
 	value := map[string]any{
+		"workspace":   cfg.Workspace,
 		"config_path": config.ConfigPath(), "pid_path": config.PIDPath(), "log_path": config.LogPath(),
-		"mcp_url": fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port), "server": health,
+		"mcp_url":         fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
+		"session_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint), "server": health,
 		"pids": map[string]any{
 			"server": state.ServerPID, "server_alive": pidAlive(state.ServerPID),
 			"tunnel": state.TunnelPID, "tunnel_alive": pidAlive(state.TunnelPID),
@@ -302,7 +310,7 @@ func (a App) status(cfg config.Config, opts options) error {
 		fmt.Fprintln(a.Stdout, string(raw))
 		return nil
 	}
-	fmt.Fprintf(a.Stdout, "Config:  %s\nMCP URL: http://127.0.0.1:%d/mcp\n", config.ConfigPath(), cfg.Port)
+	fmt.Fprintf(a.Stdout, "Config:      %s\nMCP URL:     http://127.0.0.1:%d/mcp\nSession MCP: http://127.0.0.1:%d%s\n", config.ConfigPath(), cfg.Port, cfg.Port, mcpserver.SessionEndpoint)
 	if health == nil {
 		fmt.Fprintln(a.Stdout, "Server:  offline")
 	} else {
@@ -382,13 +390,23 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 }
 
 func startupWaitTimeout(cfg config.Config) time.Duration {
-	timeout := 10 * time.Second
+	timeout := 10*time.Second + startupDependencyTimeout(cfg)
+	if named, err := loadNamedWorkspaceConfigs(cfg); err == nil {
+		for _, item := range named {
+			timeout += startupDependencyTimeout(item.Config)
+		}
+	}
+	return timeout
+}
+
+func startupDependencyTimeout(cfg config.Config) time.Duration {
+	var timeout time.Duration
 	if cfg.Memory.Enabled && cfg.Memory.Required {
 		timeout += time.Duration(cfg.Memory.TimeoutMS) * time.Millisecond
 	}
-	for _, server := range cfg.MCPServers {
-		if server.IsEnabled() {
-			timeout += time.Duration(server.StartupTimeoutMS) * time.Millisecond
+	for _, serverConfig := range cfg.MCPServers {
+		if serverConfig.IsEnabled() {
+			timeout += time.Duration(serverConfig.StartupTimeoutMS) * time.Millisecond
 		}
 	}
 	return timeout
@@ -779,7 +797,18 @@ func writeTunnelProfile(cfg config.Config) (string, error) {
 		lines = append(lines, "  extra_headers:", fmt.Sprintf(`    - "OpenAI-Organization: %s"`, yamlEscape(cfg.Organization)))
 	}
 	lines = append(lines, "log:", "  level: info", "  format: json", "mcp:", "  server_urls:",
-		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d/mcp"`, cfg.Port))
+		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d/mcp"`, cfg.Port),
+		"    - channel: session", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint))
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range workspaceregistry.Enabled(registry) {
+		lines = append(lines,
+			fmt.Sprintf("    - channel: workspace-%s", entry.ID),
+			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, workspaceEndpoint(entry.ID)),
+		)
+	}
 	return path, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
@@ -901,10 +930,21 @@ func mustJSON(value any) string {
 	return string(raw)
 }
 
-func detectWorkspace(cwd string) string {
+func detectGitWorkspace(cwd string) (string, bool) {
 	cmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
 	if raw, err := cmd.Output(); err == nil && strings.TrimSpace(string(raw)) != "" {
-		return strings.TrimSpace(string(raw))
+		root, absoluteErr := filepath.Abs(strings.TrimSpace(string(raw)))
+		if absoluteErr == nil {
+			return filepath.Clean(root), true
+		}
+		return filepath.Clean(strings.TrimSpace(string(raw))), true
+	}
+	return "", false
+}
+
+func detectWorkspace(cwd string) string {
+	if root, ok := detectGitWorkspace(cwd); ok {
+		return root
 	}
 	absolute, _ := filepath.Abs(cwd)
 	return absolute

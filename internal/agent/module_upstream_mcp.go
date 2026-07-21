@@ -44,7 +44,7 @@ func (r *Runtime) registerConfiguredUpstreamMCP(ctx context.Context, reporter St
 			serverConfig.Required,
 			time.Duration(serverConfig.StartupTimeoutMS)*time.Millisecond,
 		))
-		module, err := newUpstreamMCPModule(ctx, r, serverName, serverConfig)
+		lease, err := r.shared.acquireUpstream(ctx, r, serverName, serverConfig)
 		if err != nil {
 			if serverConfig.Required {
 				reportStartup(reporter, "mcp", fmt.Sprintf("%s failed after %s: %s", serverName, time.Since(startedAt).Round(time.Millisecond), err))
@@ -55,14 +55,22 @@ func (r *Runtime) registerConfiguredUpstreamMCP(ctx context.Context, reporter St
 			reportStartup(reporter, "warning", warning)
 			continue
 		}
+		module := lease.Module
 		if err := r.RegisterModule(module); err != nil {
-			_ = module.Close()
 			return fmt.Errorf("register upstream MCP server %q: %w", serverName, err)
 		}
+		resourceState := "created"
+		if lease.ClientReused {
+			resourceState = "reused client"
+		}
+		if lease.ContractReused {
+			resourceState = "reused client and contract"
+		}
 		reportStartup(reporter, "mcp", fmt.Sprintf(
-			"connected %s tools=%d in %s",
+			"connected %s tools=%d resources=%s in %s",
 			serverName,
 			len(module.Specs()),
+			resourceState,
 			time.Since(startedAt).Round(time.Millisecond),
 		))
 	}
@@ -80,37 +88,35 @@ type upstreamMCPModule struct {
 	declaredArgs map[string]map[string]bool
 }
 
-func newUpstreamMCPModule(ctx context.Context, runtime *Runtime, serverName string, cfg config.MCPServerConfig) (ToolModule, error) {
-	cwd := runtime.Workspace.Primary
-	if cfg.EffectiveTransport() == "stdio" {
-		path := cfg.CWD
-		if path == "" {
-			path = "."
-		}
-		resolved, err := runtime.Workspace.Resolve(path)
-		if err != nil {
-			return nil, fmt.Errorf("resolve mcpServers.%s.cwd: %w", serverName, err)
-		}
-		info, err := os.Stat(resolved)
-		if err != nil {
-			return nil, fmt.Errorf("stat mcpServers.%s.cwd: %w", serverName, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("mcpServers.%s.cwd must be a directory", serverName)
-		}
-		cwd = resolved
+func resolveUpstreamCWD(runtime *Runtime, serverName string, cfg config.MCPServerConfig) (string, error) {
+	if cfg.EffectiveTransport() != "stdio" {
+		return "", nil
 	}
-	client, err := upstreammcp.New(ctx, serverName, cfg, runtime.Version, cwd)
+	path := cfg.CWD
+	if path == "" {
+		path = "."
+	}
+	resolved, err := runtime.Workspace.Resolve(path)
 	if err != nil {
-		return nil, fmt.Errorf("connect upstream MCP server %q: %w", serverName, err)
+		return "", fmt.Errorf("resolve mcpServers.%s.cwd: %w", serverName, err)
 	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat mcpServers.%s.cwd: %w", serverName, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("mcpServers.%s.cwd must be a directory", serverName)
+	}
+	return resolved, nil
+}
+
+func newUpstreamMCPModuleFromClient(serverName string, cfg config.MCPServerConfig, client *upstreammcp.Client) (*upstreamMCPModule, error) {
 	module := &upstreamMCPModule{
 		name: "mcp_" + serverName, serverName: serverName, client: client,
 		upstream: map[string]string{}, readOnly: map[string]bool{}, policy: map[string]string{},
 		declaredArgs: map[string]map[string]bool{},
 	}
 	if err := module.buildSpecs(cfg, client.Tools()); err != nil {
-		_ = client.Close()
 		return nil, err
 	}
 	return module, nil
@@ -134,7 +140,9 @@ func (m *upstreamMCPModule) Health(ctx context.Context) any {
 	return status
 }
 
-func (m *upstreamMCPModule) Close() error { return m.client.Close() }
+// SharedServices owns the upstream client lifecycle. Runtime module shutdown is
+// intentionally a no-op so closing one workspace cannot disconnect another.
+func (*upstreamMCPModule) Close() error { return nil }
 
 func (m *upstreamMCPModule) ToolPolicy(tool string, args map[string]any) ToolCallPolicy {
 	mode := m.policy[tool]

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,8 +25,10 @@ import (
 )
 
 type HTTP struct {
-	Runtime *agent.Runtime
-	Server  *http.Server
+	Runtime       *agent.Runtime
+	Runtimes      map[string]*agent.Runtime
+	SessionRouter *mcpserver.SessionRouter
+	Server        *http.Server
 }
 
 func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request) {
@@ -39,28 +42,58 @@ func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request)
 		"pid": os.Getpid(), "mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
 		"auth":             ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
 		"config_id":        h.Runtime.ConfigID,
-		"startup_warnings": h.Runtime.StartupWarnings(),
+		"startup_warnings": h.allStartupWarnings(),
+		"workspaces":       h.workspaceSummaries(),
+		"shared_resources": h.Runtime.SharedResourceStats(),
+		"session_router":   h.SessionRouter.Stats(),
 	}
 	if request.URL.Query().Get("deep") == "1" {
 		ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
 		defer cancel()
 		value["modules"] = h.Runtime.ModuleHealth(ctx)
+		workspaceModules := map[string]any{}
+		for _, id := range h.namedWorkspaceIDs() {
+			workspaceModules[id] = h.Runtimes[id].ModuleHealth(ctx)
+		}
+		value["workspace_modules"] = workspaceModules
 	}
 	h.sendJSON(writer, http.StatusOK, value)
 }
 
 func New(runtime *agent.Runtime) *HTTP {
-	mcpHandler := mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return mcpserver.New(runtime) },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
-	)
-	instance := &HTTP{Runtime: runtime}
+	return NewMulti(runtime, nil)
+}
+
+// NewMulti creates one HTTP daemon with a compatibility endpoint for the
+// default workspace and one fixed endpoint for every named workspace runtime.
+func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
+	instance := &HTTP{Runtime: runtime, Runtimes: map[string]*agent.Runtime{}}
+	for id, child := range named {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" || id == "default" || child == nil {
+			continue
+		}
+		instance.Runtimes[id] = child
+	}
+	instance.SessionRouter = mcpserver.NewSessionRouter(runtime, instance.Runtimes)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", instance.root)
 	mux.HandleFunc("GET /healthz", instance.health)
 	mux.HandleFunc("GET /internal/healthz", instance.internalHealth)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", instance.oauthMetadata)
-	mux.Handle("/mcp", instance.guardMCP(mcpHandler))
+	mux.Handle(
+		mcpserver.SessionEndpoint,
+		instance.guardMCPValues(runtime.Config.AuthToken, instance.SessionRouter.BodyLimit(), sessionStreamableHandler(instance.SessionRouter)),
+	)
+	mux.Handle("/mcp", instance.guardMCP(runtime, streamableHandler(runtime, "default")))
+	for _, id := range instance.namedWorkspaceIDs() {
+		endpoint := "/mcp/workspaces/" + id
+		child := instance.Runtimes[id]
+		mux.Handle(endpoint, instance.guardMCP(child, streamableHandler(child, id)))
+	}
+	mux.HandleFunc("/mcp/workspaces/", instance.unknownWorkspace)
+
 	instance.Server = &http.Server{
 		Addr:              net.JoinHostPort(runtime.Config.Host, strconv.Itoa(runtime.Config.Port)),
 		Handler:           instance.originMiddleware(mux),
@@ -69,6 +102,20 @@ func New(runtime *agent.Runtime) *HTTP {
 		MaxHeaderBytes:    1 << 20,
 	}
 	return instance
+}
+
+func streamableHandler(runtime *agent.Runtime, workspaceID string) http.Handler {
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return mcpserver.NewWorkspace(runtime, workspaceID) },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+}
+
+func sessionStreamableHandler(router *mcpserver.SessionRouter) http.Handler {
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return mcpserver.NewSessionGateway(router) },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
 }
 
 func (h *HTTP) ListenAndServe(ctx context.Context) error {
@@ -96,6 +143,7 @@ func (h *HTTP) ListenAndServe(ctx context.Context) error {
 func (h *HTTP) root(writer http.ResponseWriter, _ *http.Request) {
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok", "name": "Codebridge", "version": h.Runtime.Version,
+		"workspace_count": 1 + len(h.Runtimes), "session_endpoint": mcpserver.SessionEndpoint,
 	})
 }
 
@@ -113,7 +161,29 @@ func (h *HTTP) oauthMetadata(writer http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (h *HTTP) guardMCP(next http.Handler) http.Handler {
+func (h *HTTP) unknownWorkspace(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		h.sendJSON(writer, http.StatusMethodNotAllowed, map[string]any{
+			"jsonrpc": "2.0", "error": map[string]any{"code": -32000, "message": "Method not allowed."}, "id": nil,
+		})
+		return
+	}
+	id := strings.TrimPrefix(request.URL.Path, "/mcp/workspaces/")
+	h.sendJSON(writer, http.StatusNotFound, map[string]any{
+		"jsonrpc": "2.0", "error": map[string]any{
+			"code": -32004, "message": fmt.Sprintf("Unknown or disabled workspace %q.", id),
+		}, "id": nil,
+	})
+}
+
+func (h *HTTP) guardMCP(runtime *agent.Runtime, next http.Handler) http.Handler {
+	return h.guardMCPValues(runtime.Config.AuthToken, runtime.Config.MaxBodyBytes, next)
+}
+
+func (h *HTTP) guardMCPValues(authToken string, maxBodyBytes int, next http.Handler) http.Handler {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = h.Runtime.Config.MaxBodyBytes
+	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			h.sendJSON(writer, http.StatusMethodNotAllowed, map[string]any{
@@ -121,7 +191,7 @@ func (h *HTTP) guardMCP(next http.Handler) http.Handler {
 			})
 			return
 		}
-		if h.Runtime.Config.AuthToken != "" {
+		if authToken != "" {
 			header := request.Header.Get("Authorization")
 			if !strings.HasPrefix(header, "Bearer ") {
 				h.sendJSON(writer, http.StatusUnauthorized, map[string]any{
@@ -130,20 +200,20 @@ func (h *HTTP) guardMCP(next http.Handler) http.Handler {
 				return
 			}
 			token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-			if subtle.ConstantTimeCompare([]byte(token), []byte(h.Runtime.Config.AuthToken)) != 1 {
+			if subtle.ConstantTimeCompare([]byte(token), []byte(authToken)) != 1 {
 				h.sendJSON(writer, http.StatusUnauthorized, map[string]any{
 					"jsonrpc": "2.0", "error": map[string]any{"code": -32001, "message": "Unauthorized."}, "id": nil,
 				})
 				return
 			}
 		}
-		if request.ContentLength > int64(h.Runtime.Config.MaxBodyBytes) {
+		if request.ContentLength > int64(maxBodyBytes) {
 			h.sendJSON(writer, http.StatusRequestEntityTooLarge, map[string]any{
 				"jsonrpc": "2.0", "error": map[string]any{"code": -32002, "message": "Payload too large."}, "id": nil,
 			})
 			return
 		}
-		request.Body = http.MaxBytesReader(writer, request.Body, int64(h.Runtime.Config.MaxBodyBytes))
+		request.Body = http.MaxBytesReader(writer, request.Body, int64(maxBodyBytes))
 		next.ServeHTTP(writer, request)
 	})
 }
@@ -189,6 +259,41 @@ func (h *HTTP) originAllowed(origin string) bool {
 		}
 	}
 	return false
+}
+
+func (h *HTTP) namedWorkspaceIDs() []string {
+	ids := make([]string, 0, len(h.Runtimes))
+	for id := range h.Runtimes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (h *HTTP) workspaceSummaries() []map[string]any {
+	items := []map[string]any{{
+		"id": "default", "endpoint": "/mcp", "root": h.Runtime.Workspace.Primary,
+		"memory_project": h.Runtime.MemoryProject, "tool_count": len(h.Runtime.Tools()),
+	}}
+	for _, id := range h.namedWorkspaceIDs() {
+		runtime := h.Runtimes[id]
+		items = append(items, map[string]any{
+			"id": id, "endpoint": "/mcp/workspaces/" + id, "root": runtime.Workspace.Primary,
+			"memory_project": runtime.MemoryProject, "tool_count": len(runtime.Tools()),
+			"startup_warnings": runtime.StartupWarnings(),
+		})
+	}
+	return items
+}
+
+func (h *HTTP) allStartupWarnings() []string {
+	warnings := append([]string(nil), h.Runtime.StartupWarnings()...)
+	for _, id := range h.namedWorkspaceIDs() {
+		for _, warning := range h.Runtimes[id].StartupWarnings() {
+			warnings = append(warnings, "workspace "+id+": "+warning)
+		}
+	}
+	return warnings
 }
 
 func (h *HTTP) sendJSON(writer http.ResponseWriter, status int, value any) {

@@ -12,13 +12,13 @@ type repoModule struct {
 
 func newRepoModule(runtime *Runtime) ToolModule { return &repoModule{runtime: runtime} }
 func (*repoModule) Name() string                { return "repo" }
-func (*repoModule) Specs() []ToolSpec           { return repoToolSpecs() }
+func (*repoModule) Specs() []ToolSpec           { return sharedModuleSpecs("repo", repoToolSpecs) }
 func (m *repoModule) Handle(ctx context.Context, _ CallIdentity, tool string, args map[string]any) (any, error) {
 	return m.runtime.handleRepo(ctx, tool, args)
 }
 func (m *repoModule) Health(context.Context) any {
 	return map[string]any{
-		"module": "repo", "available": true, "tools": len(repoToolSpecs()),
+		"module": "repo", "available": true, "tools": len(m.Specs()),
 		"ripgrep": m.runtime.Workspace.RGBin != "",
 	}
 }

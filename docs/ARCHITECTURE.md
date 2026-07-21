@@ -34,6 +34,9 @@ HTTP server
    ├── body limit
    ├── bearer authentication
    ├── Origin/CORS guard
+   ├── /mcp/session → SessionRouter → Runtime[binding.workspace]
+   ├── /mcp → Runtime[default]
+   ├── /mcp/workspaces/<id> → Runtime[id]
    └── health endpoints
           │
           ▼
@@ -44,7 +47,7 @@ Official MCP Go SDK
    └── 74 built-in tools plus discovered upstream tools
           │
           ▼
-agent.Runtime.HandleSession
+selected agent.Runtime.HandleSession
    ├── normalize arguments and build CallIdentity
    ├── enforce policy / consume exact approval
    ├── O(1) lookup in the tool-to-module registry
@@ -62,8 +65,9 @@ agent.Runtime.HandleSession
 | `cmd/codebridge` | Process entrypoint and exit codes |
 | `internal/app` | Version/tier metadata and composition root |
 | `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
+| `internal/workspaceregistry` | Named workspace registry, schema migration, atomic persistence, and daemon fingerprint input |
 | `internal/server` | HTTP routing, health, authentication, Origin/CORS, and body limits |
-| `internal/mcpserver` | MCP server construction, session identity, widget resource, and result adapter |
+| `internal/mcpserver` | MCP server construction, per-chat workspace bindings, session identity, widget resource, and result adapter |
 | `internal/agent` | Tool-module registry, shared runtime pipeline, policy, identity, audit, and functional module handlers |
 | `internal/workspace` | Canonical paths, configured roots, owning-root resolution, list/search/tree |
 | `internal/security` | Shell and Git guards, risk classification, approvals, and redaction |
@@ -74,16 +78,22 @@ agent.Runtime.HandleSession
 | `internal/state` | Per-workspace notes, tasks, decisions, audit, index, and backups |
 | `internal/assets` | Embedded MCP Apps widget |
 
-Important dependency direction:
+Important dependency and ownership direction:
 
 ```text
-mcpserver → agent.Runtime → ToolModule
-                              ├── memory.Provider ← provider adapters
-                              ├── upstreammcp.Client ← stdio / Streamable HTTP MCP servers
-                              └── workspace / process / state services
+mcpserver → agent.Runtime[id] → workspace-local ToolModule handlers
+                  │                ├── workspace / process / state services
+                  │                ├── approvals / patches / profile
+                  │                └── memory project + session scope
+                  │
+                  └── SharedServices (daemon owner)
+                         ├── memory.Provider pool ← provider adapters
+                         ├── memory.Recorder pool
+                         ├── upstreammcp.Client/session pool
+                         └── immutable upstream contract pool
 ```
 
-`agent` does not import `agentmemory`; the concrete adapter is selected only through `memory/factory`.
+`agent` does not import `agentmemory`; the concrete adapter is selected only through `memory/factory`. Standalone runtimes create and own a private `SharedServices`; the multi-workspace daemon injects one shared instance and closes it only after every runtime has shut down.
 
 ### 3.1 Tool module registry
 
@@ -114,11 +124,13 @@ execution
 
 Database and Figma are intentionally not built-in modules. They use the same configured `mcpServers` path as every other community integration, so Codebridge does not embed SQL drivers, database credentials, or a Figma-specific MCP client.
 
-Each module owns its tool specifications, group-local routing, health result, and lifecycle behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, and memory observation capture. `CallIdentity` currently carries the logical MCP session ID and can be extended without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy. `Runtime.Shutdown()` closes modules in reverse registration order and returns aggregated close errors; `Runtime.Close()` remains as the compatibility wrapper.
+Each runtime keeps workspace-local module handlers, health views, policy, audit, and memory-scope behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, and memory observation capture. `CallIdentity` carries both the logical MCP session ID and fixed workspace ID without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy.
+
+Built-in module contracts are immutable and constructed once per process through `sharedModuleSpecs`; each runtime still has its own tool-to-handler index. `Runtime.Shutdown()` closes workspace-local modules in reverse registration order. Memory and upstream module `Close()` methods intentionally do not close pooled resources. The daemon closes `SharedServices` after all runtimes, which drains recorders and then closes providers and upstream clients exactly once.
 
 `internal/mcpserver` enumerates `runtime.Tools()` rather than a static global catalog. External modules must be registered with `runtime.RegisterModule` before constructing the MCP server. The package-level `agent.Tools()` function remains only as a compatibility catalog for existing callers and tests.
 
-Configured `mcpServers` entries are materialized during `Runtime.NewContext` after the six built-in modules and before downstream MCP server construction. Each entry creates one `upstreamMCPModule` named `mcp_<server>`. The entry name is the integration's only public identity: startup opens a long-lived MCP client session, calls paginated `tools/list`, validates and bounds the returned contract, filters tools, namespaces names as `<server>__<normalized_name>`, and registers the assembled `ToolSpec` values. Tool-list changes are therefore applied on Codebridge restart rather than mutating the downstream contract in place.
+Configured `mcpServers` entries are materialized after the six built-in modules. `SharedServices` first resolves a connection key from server name, transport settings, timeouts, referenced-secret fingerprints, and—only for stdio—the confined resolved `cwd`. Compatible runtimes reuse one long-lived `upstreammcp.Client` and MCP session. Tool filtering and approval policy form a separate contract key; policy-only differences therefore create different `upstreamMCPModule` contracts while sharing the same client. Startup performs paginated `tools/list`, validates and bounds the returned contract, namespaces names as `<server>__<normalized_name>`, and caches the immutable assembled `ToolSpec` values. Tool-list changes are applied on Codebridge restart rather than mutating the downstream contract in place.
 
 The generic client supports:
 
@@ -127,7 +139,7 @@ stdio              mcp.CommandTransport around executable/argv; Windows batch la
 streamable-http    mcp.StreamableClientTransport with explicit headers
 ```
 
-A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. Sessions are reused across calls and closed by module shutdown. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
+A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. A pooled client serializes calls through its connection lock, reconnects transparently for subsequent work, and is closed only at daemon shared-service shutdown. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
 
 Optional module interfaces keep untrusted upstream data outside shared persistence boundaries:
 
@@ -204,17 +216,55 @@ The supervisor creates `ConfigID` from:
 
 When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server. Changing memory or upstream server configuration, package arguments, tool policy, environment references, or referenced secret values changes `ConfigID` and causes a new server to be created.
 
+### Named workspace endpoints
+
+The multi-workspace daemon keeps one supervisor process, listener, and optional tunnel while creating a fully isolated `agent.Runtime` for every enabled workspace registration:
+
+```text
+workspaces.json
+  <id> → workspace root, config path, data directory, enabled
+
+workspaces/<id>/config.json
+  non-secret workspace runtime configuration
+
+shared daemon
+  /mcp/session
+    → SessionRouter[binding] → Runtime[selected]
+  /mcp
+    → Runtime[default]
+  /mcp/workspaces/<id>
+    → Runtime[id]
+```
+
+`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, version-1 migration, and the registry/config fingerprint used by the supervisor. The ID `default` is reserved, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named configs are loaded without ambient environment overrides, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the default config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint.
+
+Each runtime owns a separate workspace manager, state store, approval manager, patch engine, managed-process registry, profile, memory project, workspace-prefixed session identity, policy, request limits, and workspace-local handlers. The default runtime uses the application state directory; named runtimes use `instances/<id>` as their state root. This keeps notes, tasks, audit, approvals, backups, patch history, and managed processes isolated even when two registrations point at repositories with similar contents.
+
+The daemon owns one `SharedServices` instance. Compatible memory configurations reuse a provider and recorder; incompatible backend, secret, or delivery settings produce separate pooled entries. Compatible upstream connection configurations reuse a client/session, while policy and tool-filter differences retain separate contracts. `workspace_info`, `memory_status`, and `/internal/healthz` publish bounded `shared_resources` counts and acquire/reuse counters without exposing resource keys or secrets.
+
+The MCP adapter prefixes named session IDs with `workspace:<id>:` and places the same workspace ID in `CallIdentity`. Audit records include both `workspace_id` and `session_id`. Exact approval actions are prefixed with the workspace ID before they are stored or consumed, preventing an approval created for one endpoint from authorizing another.
+
+`SessionRouter` adds conversation-level routing without mutating any runtime. `workspace_select` creates a cryptographically random in-memory binding for one enabled runtime. Every routed coding-tool schema requires the returned `workspace_binding`; the router removes it before policy, audit, and handler dispatch, then supplies a runtime session identity derived from a SHA-256 prefix of the token. The raw token is never written to audit, memory, health, or local state. Bindings expire after 24 hours of inactivity, are invalidated by `workspace_clear`, and disappear on daemon restart. Because the binding is explicit on every coding call, two ChatGPT tabs remain isolated even when the client reconnects or reuses one MCP transport.
+
+`workspace start` and `workspace stop` toggle the registry entry and reconcile the shared daemon. A bare `codebridge`, `run`, or `here` invocation inside a Git repository first ensures that the Git root is registered when it differs from the configured default workspace; `restart` performs the same check before stopping the daemon. Automatic IDs are lowercase ASCII slugs derived from the Git root folder, use `-` for unsupported character runs, and receive a stable canonical-path hash suffix on collision. Existing registrations are matched by canonical path and re-enabled instead of duplicated. Non-Git bare invocations and explicit `--workspace` retain the legacy default-workspace behavior.
+
+The supervisor ConfigID includes the registry, every enabled named config, and the secret fingerprints referenced by each runtime, so endpoint, tool, provider, or credential changes cannot silently reuse a stale process. Startup readiness time includes required memory and upstream MCP timeouts from all enabled runtimes.
+
+One tunnel profile publishes channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for each enabled fixed endpoint. Runtime and upstream secrets remain in the shared `.env` and are resolved through environment references rather than copied into workspace configuration files.
+
 ## 5. HTTP and MCP layers
 
 Codebridge exposes:
 
 ```text
-/mcp                 public MCP endpoint
-/healthz             public health endpoint
-/internal/healthz    supervisor health with PID and config ID
+/mcp/session                 per-chat workspace-routing MCP endpoint
+/mcp                         default workspace MCP endpoint
+/mcp/workspaces/<id>         fixed named workspace MCP endpoint
+/healthz                     public health endpoint
+/internal/healthz            loopback supervisor health with PID, ConfigID, workspace, pool, and router summaries
 ```
 
-A non-loopback `host` requires an MCP bearer token. A browser Origin is accepted only when it is loopback or included in the explicit allowlist.
+A non-loopback `host` requires an MCP bearer token. A browser Origin is accepted only when it is loopback or included in the explicit allowlist. The listener security policy is global. Fixed endpoints use their runtime body limit. Because the session endpoint must parse the JSON-RPC envelope before resolving its binding, it conservatively uses the smallest configured runtime body limit, then applies the selected runtime's tool policy and handler behavior.
 
 Each module's `Specs()` output is the source of truth for its tools, and `runtime.Tools()` is the assembled server contract:
 
@@ -369,6 +419,8 @@ agentmemory
 
 When memory is disabled or the provider is `none`, the factory returns the no-op provider. Adding another backend does not require changes to the runtime or MCP tool registry.
 
+`SharedServices` pools providers by backend name, endpoint, timeout, adapter options, secret reference, and secret fingerprint. Runtime-only fields such as agent ID, token budget, project strategy, required/fail-open behavior, capture mode, and health-cache duration do not split the provider pool. Recorder delivery settings use a separate key. Because third-party factory registrations are not required to be thread-safe, pooled providers are wrapped by a serializer that preserves optional `Exporter` and `Importer` interfaces.
+
 ### 8.3 Agentmemory adapter
 
 The adapter uses these default REST endpoints:
@@ -430,7 +482,19 @@ Some transports do not assign a protocol ID. In that case, Codebridge hashes the
 mcp-local:<hash>
 ```
 
-The process-level fallback session is used only by internal callers that do not go through MCP. Concurrent MCP connections therefore remain separate.
+For a named endpoint, the MCP adapter scopes the identity again:
+
+```text
+workspace:<id>:mcp:<protocol-session-id>
+```
+
+For `/mcp/session`, the router derives identity from the selected workspace and a hash of the opaque chat binding rather than from the transport:
+
+```text
+workspace:<id>:chat:<binding-hash>
+```
+
+The process-level fallback session is used only by internal callers that do not go through MCP. Fixed endpoint connections remain separate, while routed chat identities remain separate even if the client reuses one MCP transport. Raw binding tokens are not used as provider session IDs.
 
 ### 8.6 Retrieval semantics
 
@@ -488,6 +552,8 @@ Before enqueueing:
 
 ### 8.9 Recorder delivery guarantees
 
+Compatible workspace runtimes share one daemon-scoped recorder. Each observation already contains its project, `cwd`, and workspace-prefixed session identity, so sharing the delivery queue does not merge memory scope. A different provider or delivery configuration receives a separate pooled recorder.
+
 The recorder uses a bounded channel and non-blocking enqueue:
 
 ```text
@@ -504,12 +570,12 @@ per-attempt timeout
   → delivered or failed
 ```
 
-Backoff is capped at two seconds. During shutdown:
+Backoff is capped at two seconds. Closing an individual workspace runtime leaves the shared recorder active. During daemon `SharedServices.Close()`:
 
-1. `closed=true` rejects new records.
-2. The worker receives the stop signal.
-3. The current queue is drained.
-4. The provider closes after the recorder.
+1. new resource acquisitions are rejected;
+2. upstream clients are closed after workspace handlers have stopped;
+3. each recorder rejects new records and drains its current queue;
+4. each pooled provider closes after its recorders.
 
 Recorder statistics:
 
@@ -559,19 +625,25 @@ Trade-offs:
 Per-workspace state is stored under:
 
 ```text
-workspaces/<workspace-id>/
-  notes.json
-  checkpoint.json
-  current-task.json
-  decisions.md
-  audit.jsonl
-  index.json
-  patch-history.json
-  backups/
-  approvals/
+default runtime state root
+  audit.log
+  workspaces/<workspace-path-hash>/
+    notes.json
+    checkpoint.json
+    current-task.json
+    decisions.md
+    index.json
+    patch-history.json
+    backups/
+    approvals/
+
+instances/<workspace-id>/
+  audit.log
+  workspaces/<workspace-path-hash>/
+    ...same isolated state files...
 ```
 
-The workspace ID is derived from the canonical primary workspace path. Memory-provider data is not stored in the local state directory, except for audit records and counters associated with tool calls.
+The inner workspace path hash is derived from the canonical primary workspace path. The outer named instance directory prevents state overlap across endpoint identities and supports replacing a registration without mixing the old repository's state with the new root. Memory-provider data is not stored in the local state directory, except for audit records and counters associated with tool calls.
 
 ## 10. Security invariants
 
@@ -591,6 +663,8 @@ The workspace ID is derived from the canonical primary workspace path. Memory-pr
 14. Browser Origins are blocked by default unless they are loopback or explicitly allowed.
 15. A non-loopback MCP listener requires a bearer token.
 16. HTTP responses from memory providers and upstream tool contracts are size-limited before processing.
+17. Pooled provider calls are serialized, stdio pooling includes confined resolved `cwd`, and runtime shutdown cannot close resources borrowed by another workspace.
+18. Session-routed coding calls require an explicit opaque binding; the raw binding is removed before runtime dispatch and is never persisted in audit, memory, health, or workspace state.
 
 ## 11. Testing strategy
 
@@ -612,12 +686,19 @@ Contract tests lock down:
 - generic stdio and Streamable HTTP upstream MCP discovery and calls;
 - environment isolation, header forwarding, remote opt-in, and idempotent shutdown;
 - upstream namespace collisions, schema validation, policy mapping, audit minimization, memory exclusion, and downstream gateway round trips.
+- registry version-1 migration, atomic persistence, endpoint enable/disable state, and ConfigID sensitivity to named secrets;
+- real Streamable HTTP routing for default and named endpoints;
+- cross-workspace file, state, audit, approval, and memory-session isolation;
+- per-runtime request limits and shared-daemon health summaries;
+- provider/recorder reuse, runtime-only memory-setting compatibility, provider-call serialization, and optional export/import preservation;
+- upstream client reuse across concurrent workspaces, contract separation for policy differences, stdio `cwd` key isolation, and daemon close-once ownership;
+- session-router tool contracts, two-chat workspace isolation, same-transport binding separation, reconnect recovery, expiry, clear, token redaction, and real Streamable HTTP routing.
 
 Recommended verification:
 
 ```bash
 go test ./...
-go test -race ./internal/memory/... ./internal/upstreammcp ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver
+go test -race ./internal/memory/... ./internal/upstreammcp ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver ./internal/server ./internal/workspaceregistry
 go vet ./...
 go build ./...
 GOOS=windows GOARCH=amd64 go build ./...

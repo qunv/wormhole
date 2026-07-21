@@ -194,6 +194,7 @@ func TestPortAvailableDetectsListener(t *testing.T) {
 }
 
 func TestStartupWaitTimeoutIncludesConfiguredDependencies(t *testing.T) {
+	t.Setenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH", filepath.Join(t.TempDir(), "workspaces.json"))
 	cfg := config.Default()
 	cfg.Memory.Enabled = true
 	cfg.Memory.Required = true

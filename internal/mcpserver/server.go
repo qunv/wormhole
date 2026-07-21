@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"codebridge/internal/agent"
 	"codebridge/internal/assets"
@@ -36,9 +37,23 @@ Prefer dedicated tools over shell commands. File tools and command cwd are confi
 In balanced policy, risky delete, install, network, mutating git, and upstream mutation tools require an exact one-time approval. Use preview_patch or validate_patch before large edits, review_diff before handoff, and task_plan, decision_log, or checkpoint for long work. Run tests, build, or lint only when explicitly requested.`
 
 func New(runtime *agent.Runtime) *mcp.Server {
+	return NewWorkspace(runtime, runtime.WorkspaceID)
+}
+
+func NewWorkspace(runtime *agent.Runtime, workspaceID string) *mcp.Server {
+	workspaceID = strings.ToLower(strings.TrimSpace(workspaceID))
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	name := "Codebridge"
+	instructions := Instructions
+	if workspaceID != "default" {
+		name += " · " + workspaceID
+		instructions += "\n\nThis MCP endpoint is fixed to workspace " + workspaceID + ". Never assume or switch to another workspace."
+	}
 	server := mcp.NewServer(
-		&mcp.Implementation{Name: "Codebridge", Version: runtime.Version},
-		&mcp.ServerOptions{Instructions: Instructions, PageSize: 100},
+		&mcp.Implementation{Name: name, Version: runtime.Version},
+		&mcp.ServerOptions{Instructions: instructions, PageSize: 100},
 	)
 	registerWidget(server)
 	for _, spec := range runtime.Tools() {
@@ -61,7 +76,7 @@ func New(runtime *agent.Runtime) *mcp.Server {
 					return toolError(fmt.Errorf("invalid tool arguments: %w", err)), nil
 				}
 			}
-			sessionID := requestSessionID(request.Session)
+			sessionID := scopedSessionID(workspaceID, requestSessionID(request.Session))
 			value, err := runtime.HandleSession(ctx, sessionID, spec.Name, args)
 			if err != nil {
 				return toolError(err), nil
@@ -88,6 +103,17 @@ func requestSessionID(session *mcp.ServerSession) string {
 	// address to the memory backend.
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%p", session)))
 	return fmt.Sprintf("mcp-local:%x", sum[:8])
+}
+
+func scopedSessionID(workspaceID, sessionID string) string {
+	workspaceID = strings.ToLower(strings.TrimSpace(workspaceID))
+	if workspaceID == "" || workspaceID == "default" {
+		return sessionID
+	}
+	if sessionID == "" {
+		return "workspace:" + workspaceID
+	}
+	return "workspace:" + workspaceID + ":" + sessionID
 }
 
 func registerWidget(server *mcp.Server) {

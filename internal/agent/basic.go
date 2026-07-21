@@ -155,7 +155,7 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 func (r *Runtime) workspaceInfo() map[string]any {
 	return map[string]any{
 		"name": "Codebridge", "version": r.Version, "tier": r.Tier,
-		"primary_root": r.Workspace.Primary, "roots": r.Workspace.Roots,
+		"workspace_id": r.WorkspaceID, "primary_root": r.Workspace.Primary, "roots": r.Workspace.Roots,
 		"mode": r.Config.Mode, "policy": r.Config.Policy, "host": r.Config.Host,
 		"port": r.Config.Port, "auth": ternary(r.Config.AuthToken != "", "bearer", "none"),
 		"config_id": r.ConfigID,
@@ -179,6 +179,7 @@ func (r *Runtime) workspaceInfo() map[string]any {
 			"file_tools_root_confined": true, "command_cwd_root_confined": true,
 			"command_os_sandbox": false, "symlink_escape_blocked": true,
 		},
+		"shared_resources": r.SharedResourceStats(),
 	}
 }
 

@@ -84,10 +84,27 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	if err != nil {
 		return err
 	}
+	defaultConfig := cfg
 	applyOptions(&cfg, opts)
 	switch opts.Command {
 	case "", "run", "here":
 		cwd, _ := os.Getwd()
+		if opts.Workspace != "" {
+			cfg.Workspace = detectWorkspace(cfg.Workspace)
+			opts.Save = true
+			return a.start(ctx, cfg, opts)
+		}
+		if root, isGit := detectGitWorkspace(cwd); isGit {
+			entry, created, enabled, ensureErr := a.ensureAutoWorkspace(cfg, root, opts)
+			if ensureErr != nil {
+				return ensureErr
+			}
+			a.printAutoWorkspace(entry, created, enabled, cfg.Port)
+			opts.Save = true
+			return a.start(ctx, cfg, opts)
+		}
+		// Preserve the legacy behavior for non-Git directories: a bare
+		// invocation explicitly repoints the default workspace.
 		cfg.Workspace = detectWorkspace(cwd)
 		opts.Save = true
 		return a.start(ctx, cfg, opts)
@@ -96,6 +113,16 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	case "start":
 		return a.start(ctx, cfg, opts)
 	case "restart":
+		if opts.Workspace == "" {
+			cwd, _ := os.Getwd()
+			if root, isGit := detectGitWorkspace(cwd); isGit {
+				entry, created, enabled, ensureErr := a.ensureAutoWorkspace(cfg, root, opts)
+				if ensureErr != nil {
+					return ensureErr
+				}
+				a.printAutoWorkspace(entry, created, enabled, cfg.Port)
+			}
+		}
 		_ = a.stop(cfg, opts)
 		return a.start(ctx, cfg, opts)
 	case "stop":
@@ -105,7 +132,7 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	case "doctor":
 		return a.doctor(ctx, cfg, opts)
 	case "workspace":
-		return a.workspace(cfg, opts)
+		return a.workspaceCommand(ctx, defaultConfig, opts)
 	case "setup", "init":
 		return a.setup(cfg, opts)
 	case "url":
@@ -141,31 +168,79 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	executable, _ := os.Executable()
+	configID, err := daemonConfigID(cfg, executable, assets.Widget())
+	if err != nil {
+		return err
+	}
 	reporter := func(stage, message string) {
 		fmt.Fprintf(a.Stdout, "[startup] %-9s %s\n", stage, message)
 	}
 	reporter("boot", fmt.Sprintf("Codebridge %s pid=%d", a.Version, os.Getpid()))
-	runtime, err := agent.NewContextWithReporter(ctx, cfg, a.Version, a.Tier, cfg.ConfigID(executable, assets.Widget()), reporter)
+	shared := agent.NewSharedServices(a.Version)
+	defaultRuntime, err := agent.NewWorkspaceContextWithSharedServices(
+		ctx, "default", "", cfg, a.Version, a.Tier, configID, shared, reporter,
+	)
 	if err != nil {
+		_ = shared.Close()
 		reporter("failed", err.Error())
 		return err
 	}
-	defer runtime.Close()
-	reporter("server", fmt.Sprintf("opening http://%s:%d", cfg.Host, cfg.Port))
-	return server.New(runtime).ListenAndServe(ctx)
+
+	namedConfigs, err := loadNamedWorkspaceConfigs(cfg)
+	if err != nil {
+		defaultRuntime.Close()
+		_ = shared.Close()
+		reporter("failed", err.Error())
+		return err
+	}
+	namedRuntimes := make(map[string]*agent.Runtime, len(namedConfigs))
+	for _, item := range namedConfigs {
+		id := item.Registration.ID
+		workspaceReporter := func(stage, message string) {
+			reporter(stage, "workspace="+id+" "+message)
+		}
+		childConfigID := item.Config.ConfigID(executable, assets.Widget())
+		child, runtimeErr := agent.NewWorkspaceContextWithSharedServices(
+			ctx, id, item.Registration.DataDir, item.Config,
+			a.Version, a.Tier, childConfigID, shared, workspaceReporter,
+		)
+		if runtimeErr != nil {
+			for _, runtime := range namedRuntimes {
+				runtime.Close()
+			}
+			defaultRuntime.Close()
+			_ = shared.Close()
+			reporter("failed", fmt.Sprintf("workspace=%s %v", id, runtimeErr))
+			return runtimeErr
+		}
+		namedRuntimes[id] = child
+	}
+	defer func() {
+		for _, runtime := range namedRuntimes {
+			runtime.Close()
+		}
+		defaultRuntime.Close()
+		_ = shared.Close()
+	}()
+	reporter("server", fmt.Sprintf("opening http://%s:%d with %d workspace endpoint(s)", cfg.Host, cfg.Port, 1+len(namedRuntimes)))
+	return server.NewMulti(defaultRuntime, namedRuntimes).ListenAndServe(ctx)
 }
 
 func (a App) usage() {
 	fmt.Fprintf(a.Stdout, `%s — native Go CLI and local MCP coding agent
 
 Usage:
-  codebridge                    Start/repoint in the current git workspace
+  codebridge                    Start and auto-register the current Git repo
   codebridge setup              Configure local defaults
   codebridge start [options]    Start server and optional tunnel
   codebridge stop|restart       Manage background processes
   codebridge status [--json]    Show health and PID state
   codebridge doctor [--json]    Check local readiness
   codebridge workspace [path]   Show or set the default workspace
+  codebridge workspace add <id> <path> [--extra-root <path>] [--force]
+  codebridge workspace list [--json]
+  codebridge workspace start|stop|status <id>
+  codebridge workspace remove <id> [--force]
   codebridge tunnel [status|install]
   codebridge keys                Print Tunnel/API-key setup URLs
   codebridge profile            Write the tunnel-client YAML profile

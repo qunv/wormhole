@@ -12,12 +12,12 @@ type workflowModule struct {
 
 func newWorkflowModule(runtime *Runtime) ToolModule { return &workflowModule{runtime: runtime} }
 func (*workflowModule) Name() string                { return "workflow" }
-func (*workflowModule) Specs() []ToolSpec           { return workflowToolSpecs() }
+func (*workflowModule) Specs() []ToolSpec           { return sharedModuleSpecs("workflow", workflowToolSpecs) }
 func (m *workflowModule) Handle(ctx context.Context, _ CallIdentity, tool string, args map[string]any) (any, error) {
 	return m.runtime.handleWorkflow(ctx, tool, args)
 }
-func (*workflowModule) Health(context.Context) any {
-	return healthyModule("workflow", len(workflowToolSpecs()))
+func (m *workflowModule) Health(context.Context) any {
+	return healthyModule("workflow", len(m.Specs()))
 }
 func (*workflowModule) Close() error { return nil }
 

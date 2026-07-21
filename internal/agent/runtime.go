@@ -18,7 +18,6 @@ import (
 
 	"codebridge/internal/config"
 	"codebridge/internal/memory"
-	memoryfactory "codebridge/internal/memory/factory"
 	"codebridge/internal/patch"
 	"codebridge/internal/processx"
 	"codebridge/internal/security"
@@ -28,6 +27,8 @@ import (
 
 type Runtime struct {
 	Config                  config.Config
+	WorkspaceID             string
+	DataDir                 string
 	Workspace               *workspace.Manager
 	Store                   *state.Store
 	Approvals               *security.ApprovalManager
@@ -41,6 +42,8 @@ type Runtime struct {
 	Tier                    string
 	ConfigID                string
 
+	shared          *SharedServices
+	ownsShared      bool
 	modules         map[string]ToolModule
 	toolModules     map[string]ToolModule
 	toolSpecs       []ToolSpec
@@ -72,6 +75,37 @@ func NewContext(ctx context.Context, cfg config.Config, version, tier, configID 
 }
 
 func NewContextWithReporter(ctx context.Context, cfg config.Config, version, tier, configID string, reporter StartupReporter) (*Runtime, error) {
+	return NewWorkspaceContextWithReporter(ctx, "default", "", cfg, version, tier, configID, reporter)
+}
+
+// NewWorkspaceContextWithReporter creates one fully isolated runtime inside a
+// standalone resource owner. Daemon composition should use
+// NewWorkspaceContextWithSharedServices so compatible providers and upstream
+// sessions can be pooled across workspace runtimes.
+func NewWorkspaceContextWithReporter(ctx context.Context, workspaceID, dataDir string, cfg config.Config, version, tier, configID string, reporter StartupReporter) (*Runtime, error) {
+	shared := NewSharedServices(version)
+	runtime, err := newWorkspaceContext(ctx, workspaceID, dataDir, cfg, version, tier, configID, shared, true, reporter)
+	if err != nil {
+		_ = shared.Close()
+	}
+	return runtime, err
+}
+
+// NewWorkspaceContextWithSharedServices creates a workspace-local runtime that
+// borrows daemon-wide resources. The caller owns SharedServices and must close
+// it only after every borrowed runtime has shut down.
+func NewWorkspaceContextWithSharedServices(ctx context.Context, workspaceID, dataDir string, cfg config.Config, version, tier, configID string, shared *SharedServices, reporter StartupReporter) (*Runtime, error) {
+	if shared == nil {
+		return nil, errors.New("shared services are required")
+	}
+	return newWorkspaceContext(ctx, workspaceID, dataDir, cfg, version, tier, configID, shared, false, reporter)
+}
+
+func newWorkspaceContext(ctx context.Context, workspaceID, dataDir string, cfg config.Config, version, tier, configID string, shared *SharedServices, ownsShared bool, reporter StartupReporter) (*Runtime, error) {
+	workspaceID = strings.ToLower(strings.TrimSpace(workspaceID))
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	reportStartup(reporter, "workspace", fmt.Sprintf("preparing %s", cfg.Workspace))
 	profile := loadProfileFile(cfg.Workspace)
 	var ignored []string
@@ -87,22 +121,25 @@ func NewContextWithReporter(ctx context.Context, cfg config.Config, version, tie
 		return nil, err
 	}
 	reportStartup(reporter, "workspace", fmt.Sprintf("ready: %s", manager.Primary))
-	store, err := state.New(manager.Primary)
+	store, err := state.NewAt(manager.Primary, dataDir)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Memory.Enabled {
 		reportStartup(reporter, "memory", fmt.Sprintf("initializing provider=%s required=%t", cfg.Memory.Provider, cfg.Memory.Required))
 	}
-	memoryProvider, err := memoryfactory.New(cfg.Memory)
+	memoryLease, err := shared.acquireMemory(cfg.Memory)
 	if err != nil {
 		return nil, err
+	}
+	memoryProvider := memoryLease.Provider
+	if memoryLease.ProviderReused {
+		reportStartup(reporter, "memory", fmt.Sprintf("reusing provider=%s", memoryProvider.Name()))
 	}
 	if cfg.Memory.Enabled && cfg.Memory.Required {
 		reportStartup(reporter, "memory", fmt.Sprintf("checking %s", cfg.Memory.Endpoint))
 		health := memoryProvider.Health(ctx)
 		if !health.Available {
-			_ = memoryProvider.Close()
 			return nil, fmt.Errorf("required memory provider %q is unavailable: %s", memoryProvider.Name(), health.Error)
 		}
 		reportStartup(reporter, "memory", fmt.Sprintf("connected: %s", health.Endpoint))
@@ -111,22 +148,16 @@ func NewContextWithReporter(ctx context.Context, cfg config.Config, version, tie
 	}
 	memoryProject := memory.ResolveProject(manager.Primary, cfg.Memory.ProjectStrategy)
 	memorySessionID := fmt.Sprintf("codebridge-process-%d-%d", os.Getpid(), time.Now().UnixNano())
-	var memoryRecorder *memory.Recorder
-	if cfg.Memory.Enabled && cfg.Memory.CaptureMode != "off" && memoryProvider.Capabilities().Observe {
-		memoryRecorder = memory.NewRecorderWithConfig(memoryProvider, memory.RecorderConfig{
-			QueueSize:       cfg.Memory.QueueSize,
-			DeliveryTimeout: time.Duration(cfg.Memory.DeliveryTimeoutMS) * time.Millisecond,
-			MaxAttempts:     cfg.Memory.RetryMaxAttempts,
-			RetryBackoff:    time.Duration(cfg.Memory.RetryBackoffMS) * time.Millisecond,
-		})
-	}
+	memoryRecorder := memoryLease.Recorder
 	runtime := &Runtime{
-		Config: cfg, Workspace: manager, Store: store,
+		Config: cfg, WorkspaceID: workspaceID, DataDir: store.DataDir,
+		Workspace: manager, Store: store,
 		Approvals: security.NewApprovalManager(store, cfg.ApprovalToken, 10*time.Minute),
 		Processes: processx.NewRegistry(cfg.MaxProcesses),
 		Memory:    memoryProvider, MemoryRecorder: memoryRecorder,
 		MemoryProject: memoryProject, MemoryFallbackSessionID: memorySessionID,
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
+		shared: shared, ownsShared: ownsShared,
 	}
 	runtime.Patches = &patch.Engine{Workspace: manager, Store: store}
 	modules := []ToolModule{
@@ -161,7 +192,12 @@ func reportStartup(reporter StartupReporter, stage, message string) {
 
 func (r *Runtime) Shutdown() error {
 	r.closeOnce.Do(func() {
-		r.closeErr = r.closeModules()
+		moduleErr := r.closeModules()
+		var sharedErr error
+		if r.ownsShared && r.shared != nil {
+			sharedErr = r.shared.Close()
+		}
+		r.closeErr = errors.Join(moduleErr, sharedErr)
 	})
 	return r.closeErr
 }
@@ -178,6 +214,15 @@ func (r *Runtime) StartupWarnings() []string {
 	return append([]string(nil), r.startupWarnings...)
 }
 
+func (r *Runtime) SharedResourceStats() map[string]any {
+	if r == nil || r.shared == nil {
+		return map[string]any{"enabled": false}
+	}
+	stats := r.shared.Stats()
+	stats["tool_contracts"] = sharedModuleContractStats()
+	return stats
+}
+
 func (r *Runtime) Handle(ctx context.Context, name string, args map[string]any) (any, error) {
 	return r.HandleSession(ctx, "", name, args)
 }
@@ -189,14 +234,14 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 	if sessionID == "" {
 		sessionID = r.MemoryFallbackSessionID
 	}
-	identity := CallIdentity{SessionID: sessionID}
+	identity := CallIdentity{SessionID: sessionID, WorkspaceID: r.WorkspaceID}
 	ctx = context.WithValue(ctx, memorySessionContextKey{}, identity.SessionID)
 	if err := r.enforcePolicy(name, args); err != nil {
-		r.audit(name, args, nil, false, err)
+		r.audit(identity, name, args, nil, false, err)
 		return nil, err
 	}
 	value, err := r.dispatch(ctx, identity, name, args)
-	r.audit(name, args, value, err == nil, err)
+	r.audit(identity, name, args, value, err == nil, err)
 	r.captureMemoryObservation(sessionID, name, args, value, err)
 	return value, err
 }
@@ -208,13 +253,14 @@ func memorySessionID(ctx context.Context) string {
 	return value
 }
 
-func (r *Runtime) audit(tool string, args map[string]any, value any, ok bool, callErr error) {
+func (r *Runtime) audit(identity CallIdentity, tool string, args map[string]any, value any, ok bool, callErr error) {
 	if !r.Config.Audit {
 		return
 	}
 	record := map[string]any{
 		"ts": time.Now().UTC().Format(time.RFC3339Nano), "tool": tool, "ok": ok,
-		"workspace": r.Workspace.Primary,
+		"workspace_id": r.WorkspaceID, "workspace": r.Workspace.Primary,
+		"session_id": identity.SessionID,
 	}
 	module, _ := r.ToolModule(tool)
 	auditProvider, customAudit := module.(ToolAuditProvider)
@@ -269,15 +315,23 @@ func (r *Runtime) toolCallPolicy(tool string, args map[string]any, spec ToolSpec
 	module := r.toolModules[tool]
 	r.moduleMu.RUnlock()
 	if provider, ok := module.(ToolPolicyProvider); ok {
-		return provider.ToolPolicy(tool, args)
+		return r.scopeToolCallPolicy(provider.ToolPolicy(tool, args))
 	}
 	if registered && !spec.ReadOnly {
-		return ToolCallPolicy{
+		return r.scopeToolCallPolicy(ToolCallPolicy{
 			ApprovalAction:   genericToolApprovalAction(tool, args),
 			RequiresApproval: true,
-		}
+		})
 	}
 	return ToolCallPolicy{}
+}
+
+func (r *Runtime) scopeToolCallPolicy(policy ToolCallPolicy) ToolCallPolicy {
+	if policy.ApprovalAction == "" || r.WorkspaceID == "" || r.WorkspaceID == "default" {
+		return policy
+	}
+	policy.ApprovalAction = "workspace:" + r.WorkspaceID + ":" + policy.ApprovalAction
+	return policy
 }
 
 func (r *Runtime) consumeToolApproval(tool, action string) error {

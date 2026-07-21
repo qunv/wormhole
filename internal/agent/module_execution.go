@@ -12,13 +12,13 @@ type executionModule struct {
 
 func newExecutionModule(runtime *Runtime) ToolModule { return &executionModule{runtime: runtime} }
 func (*executionModule) Name() string                { return "execution" }
-func (*executionModule) Specs() []ToolSpec           { return executionToolSpecs() }
+func (*executionModule) Specs() []ToolSpec           { return sharedModuleSpecs("execution", executionToolSpecs) }
 func (m *executionModule) Handle(ctx context.Context, _ CallIdentity, tool string, args map[string]any) (any, error) {
 	return m.runtime.handleExec(ctx, tool, args)
 }
 func (m *executionModule) Health(context.Context) any {
 	return map[string]any{
-		"module": "execution", "available": true, "tools": len(executionToolSpecs()),
+		"module": "execution", "available": true, "tools": len(m.Specs()),
 		"managed_processes": len(m.runtime.Processes.List()),
 	}
 }

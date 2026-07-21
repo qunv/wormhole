@@ -145,6 +145,75 @@ func TestMCPPropagatesSessionIDToMemoryObservation(t *testing.T) {
 	}
 }
 
+func TestNamedWorkspaceScopesMemorySessionAndProject(t *testing.T) {
+	observed := make(chan map[string]any, 1)
+	memoryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agentmemory/observe" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode observation: %v", err)
+		}
+		observed <- body
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer memoryServer.Close()
+
+	workspace := t.TempDir()
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = workspace, true, "full"
+	cfg.Memory.Enabled = true
+	cfg.Memory.Provider = "agentmemory"
+	cfg.Memory.Endpoint = memoryServer.URL
+	cfg.Memory.CaptureMode = "selected"
+	runtime, err := agent.NewWorkspaceContextWithReporter(
+		context.Background(), "api", t.TempDir(), cfg, "test", "pro", "test-config", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := NewWorkspace(runtime, "api").Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "save_note", Arguments: map[string]any{"title": "workspace", "body": "api"},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("save_note failed: err=%v result=%s", err, resultText(result))
+	}
+
+	select {
+	case body := <-observed:
+		wantSession := scopedSessionID("api", requestSessionID(serverSession))
+		if got := body["sessionId"]; got != wantSession {
+			t.Fatalf("observation session ID = %#v, want %q", got, wantSession)
+		}
+		if got := body["project"]; got != runtime.MemoryProject {
+			t.Fatalf("observation project = %#v, want %q", got, runtime.MemoryProject)
+		}
+		if got := body["cwd"]; got != workspace {
+			t.Fatalf("observation cwd = %#v, want %q", got, workspace)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("named workspace memory observation was not received")
+	}
+}
+
 func resultText(result *mcp.CallToolResult) string {
 	if len(result.Content) == 0 {
 		return ""

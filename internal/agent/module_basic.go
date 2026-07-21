@@ -12,12 +12,12 @@ type basicModule struct {
 
 func newBasicModule(runtime *Runtime) ToolModule { return &basicModule{runtime: runtime} }
 func (*basicModule) Name() string                { return "basic" }
-func (*basicModule) Specs() []ToolSpec           { return basicToolSpecs() }
+func (*basicModule) Specs() []ToolSpec           { return sharedModuleSpecs("basic", basicToolSpecs) }
 func (m *basicModule) Handle(ctx context.Context, _ CallIdentity, tool string, args map[string]any) (any, error) {
 	return m.runtime.handleBasic(ctx, tool, args)
 }
-func (*basicModule) Health(context.Context) any { return healthyModule("basic", len(basicToolSpecs())) }
-func (*basicModule) Close() error               { return nil }
+func (m *basicModule) Health(context.Context) any { return healthyModule("basic", len(m.Specs())) }
+func (*basicModule) Close() error                 { return nil }
 
 func basicToolSpecs() []ToolSpec {
 	empty := object(nil)

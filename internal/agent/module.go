@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // CallIdentity carries transport-level identity into a tool module without
 // coupling modules to a specific MCP transport implementation.
 type CallIdentity struct {
-	SessionID string `json:"session_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 // ToolModule is the extension boundary for a functional group of tools.
@@ -54,6 +56,35 @@ type ToolObservationPolicyProvider interface {
 }
 
 type builtInModulePolicy struct{}
+
+var sharedToolContracts = struct {
+	sync.Mutex
+	values map[string][]ToolSpec
+}{values: map[string][]ToolSpec{}}
+
+// sharedModuleSpecs builds each built-in module contract once per process.
+// Runtime registries keep workspace-local handlers while sharing the immutable
+// schema maps and annotations behind shallow spec copies.
+func sharedModuleSpecs(name string, build func() []ToolSpec) []ToolSpec {
+	sharedToolContracts.Lock()
+	defer sharedToolContracts.Unlock()
+	specs := sharedToolContracts.values[name]
+	if specs == nil {
+		specs = build()
+		sharedToolContracts.values[name] = specs
+	}
+	return append([]ToolSpec(nil), specs...)
+}
+
+func sharedModuleContractStats() map[string]any {
+	sharedToolContracts.Lock()
+	defer sharedToolContracts.Unlock()
+	tools := 0
+	for _, specs := range sharedToolContracts.values {
+		tools += len(specs)
+	}
+	return map[string]any{"built_in_modules": len(sharedToolContracts.values), "built_in_tools": tools}
+}
 
 func (builtInModulePolicy) ToolPolicy(tool string, args map[string]any) ToolCallPolicy {
 	action := approvalAction(tool, args)
