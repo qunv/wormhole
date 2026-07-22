@@ -15,7 +15,7 @@ const (
 	Tier = "pro"
 )
 
-var Version = "0.1.0-dev"
+var Version = "1.0.0-dev"
 
 // Run is the composition root for the native CLI and its internal MCP server.
 func Run(ctx context.Context, args []string) error {

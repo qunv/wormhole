@@ -1,5 +1,5 @@
 BINARY := codebridge
-VERSION ?= 0.1.0-dev
+VERSION ?= 1.0.0-dev
 LDFLAGS := -s -w -X codebridge/internal/app.Version=$(VERSION)
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin

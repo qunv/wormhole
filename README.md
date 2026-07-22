@@ -20,7 +20,7 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 
 ### Linux and macOS
 
-Install the current beta release with one command:
+Install the current stable release with one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh | sh
@@ -32,14 +32,14 @@ Install a specific release or directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh -o install.sh
-sh install.sh --version v0.1.0-beta --install-dir "$HOME/.local/bin"
+sh install.sh --version v1.0.0 --install-dir "$HOME/.local/bin"
 rm install.sh
 ```
 
 ### Windows PowerShell
 
 ```powershell
-$Version = "v0.1.0-beta"
+$Version = "v1.0.0"
 $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $Arch = switch ($Architecture) {
     "X64" { "amd64" }
@@ -80,7 +80,7 @@ if (($UserPath -split ";") -notcontains $InstallDir) {
 
 Open a new terminal after installation so the updated user `PATH` is loaded.
 
-Release files and checksums are available on the [v0.1.0-beta release page](https://github.com/qunv/codebridge/releases/tag/v0.1.0-beta).
+Release files and checksums are available on the [v1.0.0 release page](https://github.com/qunv/codebridge/releases/tag/v1.0.0).
 
 ## Requirements
 
