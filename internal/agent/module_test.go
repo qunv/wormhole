@@ -51,7 +51,7 @@ func TestRuntimeRegistersFunctionalModules(t *testing.T) {
 	if got := runtime.ModuleNames(); !reflect.DeepEqual(got, wantModules) {
 		t.Fatalf("module order = %#v, want %#v", got, wantModules)
 	}
-	if got, want := len(runtime.Tools()), 74; got != want {
+	if got, want := len(runtime.Tools()), 75; got != want {
 		t.Fatalf("runtime tool count = %d, want %d", got, want)
 	}
 	for tool, want := range map[string]string{

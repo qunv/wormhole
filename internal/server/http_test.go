@@ -229,6 +229,12 @@ func TestNamedEndpointUsesItsRuntimeRequestLimits(t *testing.T) {
 func TestInternalHealthListsWorkspaceEndpoints(t *testing.T) {
 	defaultRuntime := newWorkspaceRuntime(t, "codebridge", t.TempDir(), t.TempDir())
 	apiRuntime := newWorkspaceRuntime(t, "api", t.TempDir(), t.TempDir())
+	if _, err := defaultRuntime.Handle(context.Background(), "ping", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apiRuntime.Handle(context.Background(), "ping", nil); err != nil {
+		t.Fatal(err)
+	}
 	handler := NewMulti(defaultRuntime, map[string]*agent.Runtime{"api": apiRuntime}).Server.Handler
 
 	request := httptest.NewRequest(http.MethodGet, "/internal/healthz", nil)
@@ -252,6 +258,15 @@ func TestInternalHealthListsWorkspaceEndpoints(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("health summaries missing %s: %s", want, text)
 		}
+	}
+	primaryMetrics, _ := health["runtime"].(map[string]any)
+	if primaryMetrics["completed_calls"] != float64(1) || primaryMetrics["recent_calls"] != nil {
+		t.Fatalf("unexpected primary runtime metrics: %#v", primaryMetrics)
+	}
+	workspaceMetrics, _ := health["workspace_runtime"].(map[string]any)
+	apiMetrics, _ := workspaceMetrics["api"].(map[string]any)
+	if apiMetrics["completed_calls"] != float64(1) || apiMetrics["recent_calls"] != nil {
+		t.Fatalf("unexpected API runtime metrics: %#v", apiMetrics)
 	}
 }
 
@@ -291,7 +306,7 @@ func TestInternalHealthReportsSharedResourceReuse(t *testing.T) {
 		t.Fatalf("unexpected shared memory stats: %#v", memoryStats)
 	}
 	contractStats, _ := sharedStats["tool_contracts"].(map[string]any)
-	if contractStats["built_in_modules"] != float64(6) || contractStats["built_in_tools"] != float64(74) {
+	if contractStats["built_in_modules"] != float64(6) || contractStats["built_in_tools"] != float64(75) {
 		t.Fatalf("unexpected shared built-in contract stats: %#v", contractStats)
 	}
 }

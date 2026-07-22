@@ -211,19 +211,19 @@ var selectedMemoryCaptureTools = names(
 	"codegraph_explore", "review_diff", "change_summary", "session_report",
 )
 
-func (r *Runtime) captureMemoryObservation(sessionID, name string, args map[string]any, value any, callErr error) {
+func (r *Runtime) captureMemoryObservation(callID, sessionID, name string, args map[string]any, value any, callErr error) (bool, bool) {
 	moduleName := r.ToolModuleName(name)
-	if r.MemoryRecorder == nil || moduleName == "memory" || name == "ping" || name == "proc_output" {
-		return
+	if r.MemoryRecorder == nil || moduleName == "memory" || name == "ping" || name == "proc_output" || name == "runtime_metrics" {
+		return false, false
 	}
 	if module, ok := r.ToolModule(name); ok {
 		if provider, ok := module.(ToolObservationPolicyProvider); ok && !provider.CaptureObservation(name) {
-			return
+			return false, false
 		}
 	}
 	mode := r.Config.Memory.CaptureMode
 	if mode == "off" || (mode == "selected" && !selectedMemoryCaptureTools[name]) {
-		return
+		return false, false
 	}
 	project, cwd := r.MemoryProject, r.Workspace.Primary
 	pathArg := stringArg(args, "cwd", stringArg(args, "path", "."))
@@ -245,14 +245,15 @@ func (r *Runtime) captureMemoryObservation(sessionID, name string, args map[stri
 		response = map[string]any{"ok": false, "error": "tool failed; inspect the local Codebridge audit for details"}
 	}
 	input := memoryCaptureInput(name, args, mode)
-	r.MemoryRecorder.Record(memory.ObservationRequest{
+	accepted := r.MemoryRecorder.Record(memory.ObservationRequest{
 		HookType: hookType, SessionID: sessionID, Project: project,
 		CWD: cwd, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Data: map[string]any{
-			"hook_event_name": hookType, "tool_name": name,
+			"hook_event_name": hookType, "call_id": callID, "tool_name": name,
 			"tool_input": input, "tool_response": response,
 		},
 	})
+	return true, accepted
 }
 
 func memoryCaptureInput(name string, args map[string]any, mode string) map[string]any {

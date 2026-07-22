@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -72,6 +73,51 @@ func TestStoreAppendLineSerializesConcurrentWriters(t *testing.T) {
 	}
 	if lines != 20 {
 		t.Fatalf("line count = %d, want 20; content=%q", lines, raw)
+	}
+}
+
+func TestStoreAppendLineSerializesAcrossStoreInstances(t *testing.T) {
+	dataDir := t.TempDir()
+	first, err := NewAt(t.TempDir(), dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewAt(t.TempDir(), dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dataDir, "shared-audit.log")
+	stores := []*Store{first, second}
+	var wg sync.WaitGroup
+	for writer := 0; writer < 20; writer++ {
+		writer := writer
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			store := stores[writer%len(stores)]
+			for sequence := 0; sequence < 50; sequence++ {
+				raw, _ := json.Marshal(map[string]int{"writer": writer, "sequence": sequence})
+				if err := store.AppendLine(path, append(raw, '\n')); err != nil {
+					t.Errorf("append: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
+	if len(lines) != 1_000 {
+		t.Fatalf("line count = %d, want 1000", len(lines))
+	}
+	for index, line := range lines {
+		var value map[string]int
+		if err := json.Unmarshal(line, &value); err != nil {
+			t.Fatalf("line %d is malformed: %v content=%q", index, err, line)
+		}
 	}
 }
 

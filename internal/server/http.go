@@ -40,12 +40,14 @@ func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request)
 	value := map[string]any{
 		"status": "ok", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
 		"pid": os.Getpid(), "mode": h.Runtime.Config.Mode, "policy": h.Runtime.Config.Policy,
-		"auth":             ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
-		"config_id":        h.Runtime.ConfigID,
-		"startup_warnings": h.allStartupWarnings(),
-		"workspaces":       h.workspaceSummaries(),
-		"shared_resources": h.Runtime.SharedResourceStats(),
-		"session_router":   h.SessionRouter.Stats(),
+		"auth":              ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"),
+		"config_id":         h.Runtime.ConfigID,
+		"startup_warnings":  h.allStartupWarnings(),
+		"workspaces":        h.workspaceSummaries(),
+		"runtime":           h.Runtime.RuntimeMetrics(false, 0),
+		"workspace_runtime": h.workspaceRuntimeMetrics(),
+		"shared_resources":  h.Runtime.SharedResourceStats(),
+		"session_router":    h.SessionRouter.Stats(),
 	}
 	if request.URL.Query().Get("deep") == "1" {
 		ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
@@ -285,6 +287,14 @@ func (h *HTTP) workspaceSummaries() []map[string]any {
 		})
 	}
 	return items
+}
+
+func (h *HTTP) workspaceRuntimeMetrics() map[string]any {
+	metrics := map[string]any{}
+	for _, id := range h.namedWorkspaceIDs() {
+		metrics[id] = h.Runtimes[id].RuntimeMetrics(false, 0)
+	}
+	return metrics
 }
 
 func (h *HTTP) allStartupWarnings() []string {

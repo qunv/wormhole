@@ -27,6 +27,8 @@ type Store struct {
 	mu           sync.Mutex
 }
 
+var appendPathLocks sync.Map
+
 func New(workspace string) (*Store, error) {
 	return NewAt(workspace, config.AppDataDir())
 }
@@ -78,6 +80,9 @@ func (s *Store) WriteJSON(path string, value any) error {
 }
 
 func (s *Store) AppendLine(path string, line []byte) error {
+	pathLock := appendPathLock(path)
+	pathLock.Lock()
+	defer pathLock.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -90,6 +95,15 @@ func (s *Store) AppendLine(path string, line []byte) error {
 	defer file.Close()
 	_, err = file.Write(line)
 	return err
+}
+
+func appendPathLock(path string) *sync.Mutex {
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	key := comparePath(filepath.Clean(path))
+	value, _ := appendPathLocks.LoadOrStore(key, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

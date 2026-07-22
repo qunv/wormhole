@@ -36,6 +36,9 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 		return text, nil
 	case "workspace_info", "lca":
 		return r.workspaceInfo(), nil
+	case "runtime_metrics":
+		recentLimit := min(max(intArg(args, "recent_limit", 20), 0), maxRecentToolCalls)
+		return r.RuntimeMetrics(boolArg(args, "include_tools", true), recentLimit), nil
 	case "save_note":
 		if err := required(args, "title", "body"); err != nil {
 			return nil, err
@@ -180,6 +183,7 @@ func (r *Runtime) workspaceInfo() map[string]any {
 			"command_os_sandbox": false, "symlink_escape_blocked": true,
 		},
 		"shared_resources": r.SharedResourceStats(),
+		"runtime":          r.RuntimeMetrics(false, 0),
 	}
 }
 

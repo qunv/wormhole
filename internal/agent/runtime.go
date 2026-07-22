@@ -61,6 +61,8 @@ type Runtime struct {
 	memoryHealthMu    sync.Mutex
 	memoryHealthValue memory.HealthResult
 	memoryHealthAt    time.Time
+	metricsOnce       sync.Once
+	metrics           *runtimeCallTracker
 }
 
 // StartupReporter receives human-readable startup phase updates. Reporters
@@ -160,6 +162,7 @@ func newWorkspaceContext(ctx context.Context, workspaceID, dataDir string, cfg c
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
 		shared: shared, ownsShared: ownsShared,
 	}
+	runtime.metricsTracker()
 	runtime.Patches = &patch.Engine{Workspace: manager, Store: store}
 	modules := []ToolModule{
 		newBasicModule(runtime),
@@ -228,22 +231,55 @@ func (r *Runtime) Handle(ctx context.Context, name string, args map[string]any) 
 	return r.HandleSession(ctx, "", name, args)
 }
 
-func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, args map[string]any) (any, error) {
+func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, args map[string]any) (value any, err error) {
 	if args == nil {
 		args = map[string]any{}
 	}
 	if sessionID == "" {
 		sessionID = r.MemoryFallbackSessionID
 	}
+	call := r.beginToolCall(name)
 	identity := CallIdentity{SessionID: sessionID, WorkspaceID: r.WorkspaceID}
+	outcome := toolCallOutcome{}
+	auditAttempted := false
+	returnedNormally := false
+	defer func() {
+		if !returnedNormally {
+			outcome.Err = errToolCallPanicked
+			if !auditAttempted {
+				outcome.AuditErr = r.audit(
+					call, identity, name, args, nil, false, errToolCallPanicked,
+					"failed", time.Since(call.Started),
+				)
+			}
+		} else {
+			outcome.Err = err
+		}
+		outcome.Duration = time.Since(call.Started)
+		r.finishToolCall(call, outcome)
+	}()
+
 	ctx = context.WithValue(ctx, memorySessionContextKey{}, identity.SessionID)
-	if err := r.enforcePolicy(name, args); err != nil {
-		r.audit(identity, name, args, nil, false, err)
+	if policyErr := r.enforcePolicy(name, args); policyErr != nil {
+		err = policyErr
+		outcome.PolicyRejected = true
+		auditAttempted = true
+		outcome.AuditErr = r.audit(
+			call, identity, name, args, nil, false, err, "policy_rejected", time.Since(call.Started),
+		)
+		returnedNormally = true
 		return nil, err
 	}
-	value, err := r.dispatch(ctx, identity, name, args)
-	r.audit(identity, name, args, value, err == nil, err)
-	r.captureMemoryObservation(sessionID, name, args, value, err)
+	value, err = r.dispatch(ctx, identity, name, args)
+	auditAttempted = true
+	outcome.AuditErr = r.audit(
+		call, identity, name, args, value, err == nil, err,
+		classifyToolCallStatus(err, false), time.Since(call.Started),
+	)
+	outcome.ObservationAttempted, outcome.ObservationAccepted = r.captureMemoryObservation(
+		call.ID, sessionID, name, args, value, err,
+	)
+	returnedNormally = true
 	return value, err
 }
 
@@ -254,12 +290,14 @@ func memorySessionID(ctx context.Context) string {
 	return value
 }
 
-func (r *Runtime) audit(identity CallIdentity, tool string, args map[string]any, value any, ok bool, callErr error) {
+func (r *Runtime) audit(call trackedToolCall, identity CallIdentity, tool string, args map[string]any, value any, ok bool, callErr error, status string, duration time.Duration) error {
 	if !r.Config.Audit {
-		return
+		return nil
 	}
 	record := map[string]any{
-		"ts": time.Now().UTC().Format(time.RFC3339Nano), "tool": tool, "ok": ok,
+		"ts": time.Now().UTC().Format(time.RFC3339Nano), "call_id": call.ID,
+		"tool": tool, "tool_module": call.Module, "status": status, "ok": ok,
+		"duration_us":  max(int64(0), duration.Microseconds()),
 		"workspace_id": r.WorkspaceID, "workspace": r.Workspace.Primary,
 		"session_id": identity.SessionID,
 	}
@@ -284,8 +322,14 @@ func (r *Runtime) audit(identity CallIdentity, tool string, args map[string]any,
 			record["error"] = callErr.Error()
 		}
 	}
-	raw, _ := json.Marshal(record)
-	_ = r.Store.AppendLine(r.Store.AuditPath, append(raw, '\n'))
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal audit record: %w", err)
+	}
+	if err := r.Store.AppendLine(r.Store.AuditPath, append(raw, '\n')); err != nil {
+		return fmt.Errorf("append audit record: %w", err)
+	}
+	return nil
 }
 
 func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {

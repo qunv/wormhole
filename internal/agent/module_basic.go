@@ -25,6 +25,7 @@ func basicToolSpecs() []ToolSpec {
 		roSpec("ping", "Ping", "Check whether Codebridge is reachable.", object(map[string]any{"message": str("Optional echo message.")})),
 		roSpec("workspace_info", "Workspace info", "Return roots, mode, policy, limits, and safety rules.", empty),
 		roSpec("lca", "Codebridge status", "Short alias for workspace_info.", empty),
+		roSpec("runtime_metrics", "Runtime metrics", "Return bounded tool-call counts, latency, audit, and recent-call diagnostics without arguments, results, sessions, or error text.", object(map[string]any{"include_tools": boolean(), "recent_limit": integer()})),
 		rwSpec("save_note", "Save note", "Save a local workspace note.", object(map[string]any{"title": str("Note title."), "body": str("Note body.")}, "title", "body"), false),
 		roSpec("list_notes", "List notes", "List saved workspace notes.", object(map[string]any{"limit": integer()})),
 		rwSpec("checkpoint", "Save checkpoint", "Save compact progress for a later chat.", object(map[string]any{"summary": str("Compact progress summary."), "next_steps": array(str("")), "files_touched": array(str(""))}, "summary"), false),

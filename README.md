@@ -1,18 +1,19 @@
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **74 built-in MCP tools plus tools discovered from configured community MCP servers**.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **75 built-in MCP tools plus tools discovered from configured community MCP servers**.
 
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, and `tunnel`.
 - One stateless Streamable HTTP daemon with `/mcp/session` for per-chat workspace selection, `/mcp` for the primary workspace, and `/mcp/workspaces/<id>` for fixed compatibility endpoints.
-- 74 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
+- 75 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
 - Optional CodeGraph navigation and a generic upstream MCP gateway for database, design, cloud, search, and other community integrations.
 - Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, canonical export/import, and daemon-wide provider/recorder pooling.
 - Compatible workspace runtimes reuse upstream MCP clients and immutable tool contracts without sharing workspace state or policy.
+- Bounded `runtime_metrics`, workspace/session diagnostics, correlation IDs, latency buckets, audit-writer health, and loopback supervisor telemetry without retaining arguments, results, sessions, or error text.
 - Builds for Linux, macOS, and Windows.
 
 ## Quick install
@@ -278,7 +279,7 @@ Every endpoint owns a separate runtime with its own:
 
 `SharedServices` owns daemon-lifetime resources. Compatible runtimes reuse one memory provider and asynchronous recorder. Upstream HTTP clients reuse one MCP session when the server name, transport configuration, resolved secrets, and timeouts match. Stdio clients are also keyed by their resolved `cwd`, so two repositories cannot accidentally share a workspace-relative child process. Tool filtering or approval-policy differences create separate immutable contracts while still reusing the compatible upstream client.
 
-Built-in tool schemas are constructed once per process. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, upstream-client, contract, acquire, and reuse counts.
+Built-in tool schemas are constructed once per process. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, upstream-client, contract, acquire, and reuse counts. `runtime_metrics` reports per-workspace call counts, bounded latency summaries, in-flight peaks, policy/cancellation outcomes, audit write failures, memory-observation enqueue/drop counts, and a bounded argument-free recent-call ring.
 
 The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for every enabled fixed endpoint.
 

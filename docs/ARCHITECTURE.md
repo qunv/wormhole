@@ -44,16 +44,18 @@ Official MCP Go SDK
    ├── Streamable HTTP
    ├── logical ServerSession
    ├── embedded Apps resource
-   └── 74 built-in tools plus discovered upstream tools
+   └── 75 built-in tools plus discovered upstream tools
           │
           ▼
 selected agent.Runtime.HandleSession
+   ├── allocate bounded correlation ID and increment in-flight telemetry
    ├── normalize arguments and build CallIdentity
    ├── enforce policy / consume exact approval
    ├── O(1) lookup in the tool-to-module registry
    ├── ToolModule.Handle(ctx, identity, tool, args)
-   ├── append a redacted audit record
-   └── enqueue a redacted memory observation
+   ├── append a correlated redacted audit record
+   ├── enqueue a correlated redacted memory observation
+   └── finalize latency, outcome, audit, and enqueue/drop metrics
 ```
 
 `Runtime.Handle` remains available for internal callers and tests and uses a fallback session identity. MCP requests go through `HandleSession` to preserve logical connection identity.
@@ -139,7 +141,7 @@ stdio              mcp.CommandTransport around executable/argv; Windows batch la
 streamable-http    mcp.StreamableClientTransport with explicit headers
 ```
 
-A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. A pooled client serializes calls through its connection lock, reconnects transparently for subsequent work, and is closed only at daemon shared-service shutdown. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
+A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. A pooled client allows concurrent calls on the SDK session while serializing only connect/reconnect lifecycle transitions. One request's cancellation or deadline does not invalidate a healthy shared session. Transport failures detach only the session instance that failed, reconnect transparently for subsequent work, and close the client only at daemon shared-service shutdown. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
 
 Optional module interfaces keep untrusted upstream data outside shared persistence boundaries:
 
@@ -307,21 +309,27 @@ codebridge skills [list|read]
 
 This boundary avoids two competing sources of reusable instructions and keeps the MCP contract focused on capabilities. A ChatGPT Skill may select and sequence Codebridge tools, but it cannot bypass `ToolSpec` policy classification, exact approvals, root confinement, command guards, audit redaction, or memory capture rules.
 
-The built-in contract contains 74 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Codebridge upgrade that changes `tools/list`.
+The built-in contract contains 75 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Codebridge upgrade that changes `tools/list`.
 
 ## 6. Runtime pipeline and policy
 
 Every tool request follows this pipeline:
 
 ```text
-argument normalization + CallIdentity
+beginToolCall (correlation ID + in-flight counters)
+  → argument normalization + CallIdentity
   → enforcePolicy
   → toolModules[tool].Handle
-  → audit
-  → captureMemoryObservation
+  → correlated audit append
+  → correlated captureMemoryObservation
+  → finishToolCall (outcome + latency + enqueue/drop counters)
 ```
 
-When policy rejects a request, the runtime still records an audit failure but does not capture a post-tool observation because the tool did not run.
+The tracker stores only registered tool/module names, timestamps, counts, durations, outcome classes, and generated call IDs. It never stores session IDs, arguments, results, or error text. Unknown names collapse into one `_unknown` metric key, and the recent-call ring is capped at 64 entries. `runtime_metrics` can omit per-tool and recent data, while `workspace_info`, `session_report`, `workspace_doctor`, and loopback `/internal/healthz` expose progressively richer bounded views.
+
+Audit records include the same `call_id`, tool module, outcome status, and execution duration. Audit write failures do not change the tool result, but they increment runtime health counters and make the audit check in `workspace_doctor` warn. Multiple workspace `Store` instances writing one daemon audit path share a path-keyed append lock so JSONL records cannot interleave.
+
+When policy rejects a request, the runtime still records an audit failure and policy-rejected metric but does not capture a post-tool observation because the tool did not run.
 
 ### Policies
 
@@ -541,7 +549,7 @@ metadata
 
 `metadata` captures a broader set of calls but keeps only fields such as path, `cwd`, staged, recursive, and kind.
 
-Memory tools, community upstream MCP modules, `ping`, and `proc_output` are excluded from automatic capture to prevent recursion and untrusted payload leakage.
+Memory tools, community upstream MCP modules, `ping`, `proc_output`, and `runtime_metrics` are excluded from automatic capture to prevent recursion, telemetry feedback loops, and untrusted payload leakage.
 
 Before enqueueing:
 
@@ -574,8 +582,9 @@ Backoff is capped at two seconds. Closing an individual workspace runtime leaves
 
 1. new resource acquisitions are rejected;
 2. upstream clients are closed after workspace handlers have stopped;
-3. each recorder rejects new records and drains its current queue;
-4. each pooled provider closes after its recorders.
+3. each recorder rejects new records and drains its current queue within a bounded shutdown deadline;
+4. shutdown cancellation interrupts in-flight provider calls and retry backoff, counting unfinished observations as abandoned;
+5. each pooled provider closes after its recorders.
 
 Recorder statistics:
 
@@ -587,6 +596,8 @@ delivered
 retried
 failed
 dropped
+abandoned
+shutdown_timeouts
 ```
 
 This provides at-most-once enqueue with bounded retry delivery; there is no durable local spool. A process crash can still lose observations that have not been delivered.

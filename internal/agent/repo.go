@@ -320,6 +320,9 @@ func (r *Runtime) workspaceDoctor(ctx context.Context, args map[string]any) (any
 	profile, _ := r.projectProfile(root)
 	git, _ := r.gitStatus(ctx, r.Workspace.Relative(root))
 	memoryHealth := r.memoryHealth(ctx, false)
+	runtimeMetrics := r.RuntimeMetrics(false, 0)
+	auditMetrics := runtimeMetrics["audit"].(map[string]any)
+	auditFailures, _ := auditMetrics["write_failures"].(uint64)
 	checks := []map[string]any{
 		{"id": "workspace", "status": "pass", "label": "Workspace", "detail": root},
 		{"id": "roots", "status": "pass", "label": "Root confinement", "detail": len(r.Workspace.Roots)},
@@ -327,6 +330,7 @@ func (r *Runtime) workspaceDoctor(ctx context.Context, args map[string]any) (any
 		{"id": "auth", "status": ternary(r.Config.AuthToken != "", "pass", "warn"), "label": "MCP auth", "detail": ternary(r.Config.AuthToken != "", "bearer enabled", "no bearer token")},
 		{"id": "git", "status": ternary(git.(map[string]any)["is_git_repo"] == true, "pass", "warn"), "label": "Git", "detail": git},
 		{"id": "memory", "status": ternary(!r.Config.Memory.Enabled || memoryHealth.Available, "pass", "warn"), "label": "Memory provider", "detail": memoryHealth},
+		{"id": "audit", "status": ternary(!r.Config.Audit || auditFailures == 0, "pass", "warn"), "label": "Audit writer", "detail": auditMetrics},
 	}
 	score := 100
 	for _, check := range checks {
@@ -699,7 +703,7 @@ func (r *Runtime) sessionReport(ctx context.Context, args map[string]any) (any, 
 	return map[string]any{
 		"ts": time.Now().UTC(), "workspace": r.Workspace.Primary, "git": status,
 		"task": task, "checkpoint": checkpoint, "review": review,
-		"memory": r.memoryStatus(ctx),
+		"memory": r.memoryStatus(ctx), "runtime": r.RuntimeMetrics(true, 10),
 	}, nil
 }
 

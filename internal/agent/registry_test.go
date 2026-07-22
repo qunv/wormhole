@@ -29,7 +29,7 @@ func TestToolRegistryContract(t *testing.T) {
 			}
 		}
 	}
-	if got, want := len(seen), 74; got != want {
+	if got, want := len(seen), 75; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	if got := len(Tools()); got != len(seen) {

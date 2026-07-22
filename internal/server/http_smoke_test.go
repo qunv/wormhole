@@ -27,8 +27,8 @@ func TestExternalStreamableHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 74 {
-		t.Fatalf("tools/list = %d, want 74", len(tools.Tools))
+	if len(tools.Tools) != 75 {
+		t.Fatalf("tools/list = %d, want 75", len(tools.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "ping", Arguments: map[string]any{"message": "smoke"}})
 	if err != nil {
