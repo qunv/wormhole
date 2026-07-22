@@ -322,15 +322,7 @@ func (r *Registry) Output(id string, tail int) (map[string]any, error) {
 	if proc == nil {
 		return nil, fmt.Errorf("no process with id %s", id)
 	}
-	stdout, stderr := proc.stdout.String(), proc.stderr.String()
-	if tail > 0 {
-		if len(stdout) > tail {
-			stdout = stdout[len(stdout)-tail:]
-		}
-		if len(stderr) > tail {
-			stderr = stderr[len(stderr)-tail:]
-		}
-	}
+	stdout, stderr := proc.stdout.TailString(tail), proc.stderr.TailString(tail)
 	status, exitCode := proc.state()
 	return map[string]any{
 		"id": id, "status": status, "exit_code": exitCode,
@@ -389,6 +381,7 @@ func (r *Registry) pruneLocked() {
 type lockedBuffer struct {
 	mu        sync.Mutex
 	data      []byte
+	start     int
 	limit     int
 	keepHead  bool
 	truncated bool
@@ -397,9 +390,10 @@ type lockedBuffer struct {
 func (b *lockedBuffer) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	written := len(data)
 	if b.limit <= 0 {
 		b.data = append(b.data, data...)
-		return len(data), nil
+		return written, nil
 	}
 	if b.keepHead {
 		remaining := max(0, b.limit-len(b.data))
@@ -407,26 +401,63 @@ func (b *lockedBuffer) Write(data []byte) (int, error) {
 			b.truncated = true
 		}
 		b.data = append(b.data, data[:min(remaining, len(data))]...)
-		return len(data), nil
+		return written, nil
 	}
 	if len(data) >= b.limit {
 		b.truncated = b.truncated || len(b.data) > 0 || len(data) > b.limit
-		b.data = append(b.data[:0], data[len(data)-b.limit:]...)
-		return len(data), nil
+		if cap(b.data) < b.limit {
+			b.data = make([]byte, b.limit)
+		} else {
+			b.data = b.data[:b.limit]
+		}
+		copy(b.data, data[len(data)-b.limit:])
+		b.start = 0
+		return written, nil
 	}
-	if overflow := len(b.data) + len(data) - b.limit; overflow > 0 {
-		b.truncated = true
-		copy(b.data, b.data[overflow:])
-		b.data = b.data[:len(b.data)-overflow]
+	if len(b.data) < b.limit {
+		fill := min(b.limit-len(b.data), len(data))
+		b.data = append(b.data, data[:fill]...)
+		data = data[fill:]
+		if len(data) == 0 {
+			return written, nil
+		}
 	}
-	b.data = append(b.data, data...)
-	return len(data), nil
+	b.truncated = true
+	for len(data) > 0 {
+		chunk := min(len(data), b.limit-b.start)
+		copy(b.data[b.start:b.start+chunk], data[:chunk])
+		b.start = (b.start + chunk) % b.limit
+		data = data[chunk:]
+	}
+	return written, nil
 }
 
-func (b *lockedBuffer) String() string {
+func (b *lockedBuffer) String() string { return b.TailString(0) }
+
+func (b *lockedBuffer) TailString(tail int) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return string(append([]byte(nil), b.data...))
+	size := len(b.data)
+	if size == 0 {
+		return ""
+	}
+	if tail <= 0 || tail > size {
+		tail = size
+	}
+	logicalStart := size - tail
+	physicalStart := logicalStart
+	if b.start != 0 && size == b.limit && !b.keepHead {
+		physicalStart = (b.start + logicalStart) % size
+	}
+	if physicalStart+tail <= size {
+		return string(b.data[physicalStart : physicalStart+tail])
+	}
+	first := size - physicalStart
+	var ordered strings.Builder
+	ordered.Grow(tail)
+	_, _ = ordered.Write(b.data[physicalStart:])
+	_, _ = ordered.Write(b.data[:tail-first])
+	return ordered.String()
 }
 
 func (b *lockedBuffer) Truncated() bool {

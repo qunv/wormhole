@@ -37,6 +37,7 @@ type MemoryConfig struct {
 	ProjectStrategy   string         `json:"projectStrategy,omitempty"`
 	Options           map[string]any `json:"options,omitempty"`
 	QueueSize         int            `json:"queueSize,omitempty"`
+	DeliveryWorkers   int            `json:"deliveryWorkers,omitempty"`
 	DeliveryTimeoutMS int            `json:"deliveryTimeoutMs,omitempty"`
 	RetryMaxAttempts  int            `json:"retryMaxAttempts,omitempty"`
 	RetryBackoffMS    int            `json:"retryBackoffMs,omitempty"`
@@ -129,7 +130,7 @@ func Default() Config {
 			SecretEnv: "CODEBRIDGE_MEMORY_SECRET", TimeoutMS: 3_000,
 			CaptureMode: "selected", TokenBudget: 1_600, AgentID: "chatgpt-codebridge",
 			ProjectStrategy: "git-origin",
-			QueueSize:       128, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
+			QueueSize:       128, DeliveryWorkers: 4, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
 			RetryBackoffMS: 100, HealthCacheMS: 5_000,
 		},
 		MCPServers:        map[string]MCPServerConfig{},
@@ -270,7 +271,8 @@ func (c Config) Validate(requireWorkspace bool) error {
 		{"commandOutputDefault", c.CommandOutput}, {"maxBodyBytes", c.MaxBodyBytes},
 		{"maxProcesses", c.MaxProcesses},
 		{"memory.timeoutMs", c.Memory.TimeoutMS}, {"memory.tokenBudget", c.Memory.TokenBudget},
-		{"memory.queueSize", c.Memory.QueueSize}, {"memory.deliveryTimeoutMs", c.Memory.DeliveryTimeoutMS},
+		{"memory.queueSize", c.Memory.QueueSize}, {"memory.deliveryWorkers", c.Memory.DeliveryWorkers},
+		{"memory.deliveryTimeoutMs", c.Memory.DeliveryTimeoutMS},
 		{"memory.retryMaxAttempts", c.Memory.RetryMaxAttempts}, {"memory.retryBackoffMs", c.Memory.RetryBackoffMS},
 		{"memory.healthCacheMs", c.Memory.HealthCacheMS},
 	}
@@ -278,6 +280,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 		if limit.value <= 0 {
 			return fmt.Errorf("%s must be greater than zero", limit.name)
 		}
+	}
+	if c.Memory.DeliveryWorkers > 32 {
+		return fmt.Errorf("memory.deliveryWorkers must not exceed 32")
 	}
 	if c.ReadDefault > c.MaxReadChars {
 		return fmt.Errorf("readDefault must not exceed maxReadChars")
@@ -506,6 +511,9 @@ func normalize(c *Config) {
 	if c.Memory.QueueSize == 0 {
 		c.Memory.QueueSize = 128
 	}
+	if c.Memory.DeliveryWorkers == 0 {
+		c.Memory.DeliveryWorkers = 4
+	}
 	if c.Memory.DeliveryTimeoutMS == 0 {
 		c.Memory.DeliveryTimeoutMS = 2_000
 	}
@@ -583,6 +591,7 @@ func applyEnvironment(c *Config) {
 	intEnv("CODEBRIDGE_MEMORY_TIMEOUT_MS", &c.Memory.TimeoutMS)
 	intEnv("CODEBRIDGE_MEMORY_TOKEN_BUDGET", &c.Memory.TokenBudget)
 	intEnv("CODEBRIDGE_MEMORY_QUEUE_SIZE", &c.Memory.QueueSize)
+	intEnv("CODEBRIDGE_MEMORY_DELIVERY_WORKERS", &c.Memory.DeliveryWorkers)
 	intEnv("CODEBRIDGE_MEMORY_DELIVERY_TIMEOUT_MS", &c.Memory.DeliveryTimeoutMS)
 	intEnv("CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS", &c.Memory.RetryMaxAttempts)
 	intEnv("CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS", &c.Memory.RetryBackoffMS)

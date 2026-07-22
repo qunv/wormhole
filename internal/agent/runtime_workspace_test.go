@@ -42,6 +42,9 @@ func TestWorkspaceRuntimesIsolateStateAndAuditIdentity(t *testing.T) {
 		t.Fatalf("unexpected api notes: %#v", apiNotes)
 	}
 
+	if err := apiRuntime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	raw, err := os.ReadFile(apiRuntime.Store.AuditPath)
 	if err != nil {
 		t.Fatal(err)

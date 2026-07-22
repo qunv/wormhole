@@ -3,20 +3,23 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"codebridge/internal/config"
 )
 
 type testToolModule struct {
-	name     string
-	specs    []ToolSpec
-	identity CallIdentity
-	handled  string
-	closed   int
-	closeErr error
+	name      string
+	specs     []ToolSpec
+	identity  CallIdentity
+	handled   string
+	closed    int
+	handleErr error
+	closeErr  error
 }
 
 func (m *testToolModule) Name() string      { return m.name }
@@ -24,6 +27,9 @@ func (m *testToolModule) Specs() []ToolSpec { return m.specs }
 func (m *testToolModule) Handle(_ context.Context, identity CallIdentity, tool string, _ map[string]any) (any, error) {
 	m.identity = identity
 	m.handled = tool
+	if m.handleErr != nil {
+		return nil, m.handleErr
+	}
 	return map[string]any{"ok": true}, nil
 }
 func (m *testToolModule) Health(context.Context) any {
@@ -103,6 +109,56 @@ func TestModuleDispatchPropagatesCallIdentity(t *testing.T) {
 	}
 }
 
+type blockingHealthModule struct {
+	*testToolModule
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingHealthModule) Health(ctx context.Context) any {
+	m.started <- struct{}{}
+	select {
+	case <-m.release:
+		return map[string]any{"available": true}
+	case <-ctx.Done():
+		return map[string]any{"available": false, "error": ctx.Err().Error()}
+	}
+}
+
+func TestModuleHealthRunsIndependentModulesConcurrently(t *testing.T) {
+	runtime := &Runtime{}
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	for index, name := range []string{"health_a", "health_b"} {
+		module := &blockingHealthModule{
+			testToolModule: testModule(name, fmt.Sprintf("health_probe_%d", index)),
+			started:        started, release: release,
+		}
+		if err := runtime.RegisterModule(module); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan map[string]any, 1)
+	go func() { done <- runtime.ModuleHealth(context.Background()) }()
+	for index := 0; index < 2; index++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatalf("only %d module health checks started concurrently", index)
+		}
+	}
+	close(release)
+	select {
+	case health := <-done:
+		if len(health) != 2 {
+			t.Fatalf("health result = %#v", health)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parallel module health did not finish")
+	}
+}
+
 func TestRuntimeCloseClosesModulesOnce(t *testing.T) {
 	runtime := &Runtime{}
 	module := testModule("custom", "custom_ping")
@@ -132,6 +188,33 @@ func TestRuntimeShutdownReturnsModuleCloseErrors(t *testing.T) {
 	runtime.Close()
 	if module.closed != 1 {
 		t.Fatalf("module close count after repeated shutdown = %d, want 1", module.closed)
+	}
+}
+
+func TestUpstreamMutationAttemptsInvalidateRepositoryCaches(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
+	runtime, err := New(cfg, "test", "pro", "test-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	for index, handleErr := range []error{nil, errors.New("partial upstream failure")} {
+		name := fmt.Sprintf("workspace_writer_%d", index)
+		module := testModule("mcp_"+name, name)
+		module.specs[0].ReadOnly = false
+		module.handleErr = handleErr
+		if err := runtime.RegisterModule(module); err != nil {
+			t.Fatal(err)
+		}
+		before := runtime.currentRepositoryGeneration()
+		_, callErr := runtime.Handle(context.Background(), name, nil)
+		if !errors.Is(callErr, handleErr) {
+			t.Fatalf("mutation %d error = %v, want %v", index, callErr, handleErr)
+		}
+		if after := runtime.currentRepositoryGeneration(); after != before+1 {
+			t.Fatalf("mutation %d generation = %d, want %d", index, after, before+1)
+		}
 	}
 }
 

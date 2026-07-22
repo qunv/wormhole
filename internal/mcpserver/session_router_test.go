@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,9 @@ func TestSessionGatewayRoutesTwoChatsToDifferentWorkspaces(t *testing.T) {
 
 	assertSessionFile(t, filepath.Join(aRoot, "chat.txt"), "from-a")
 	assertSessionFile(t, filepath.Join(bRoot, "chat.txt"), "from-b")
+	if err := aRuntime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	aAudit, err := os.ReadFile(aRuntime.Store.AuditPath)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +129,7 @@ func TestSessionGatewayBindingSurvivesTransportReconnect(t *testing.T) {
 	assertSessionFile(t, filepath.Join(apiRoot, "reconnected.txt"), "ok")
 }
 
-func TestSessionGatewaySwitchKeepsOldTokenScopedToOldWorkspace(t *testing.T) {
+func TestSessionGatewaySwitchInvalidatesOldToken(t *testing.T) {
 	defaultRuntime := newSessionTestRuntime(t, "default", t.TempDir())
 	aRuntime := newSessionTestRuntime(t, "a", t.TempDir())
 	bRuntime := newSessionTestRuntime(t, "b", t.TempDir())
@@ -138,10 +142,10 @@ func TestSessionGatewaySwitchKeepsOldTokenScopedToOldWorkspace(t *testing.T) {
 		t.Fatalf("workspace switch reused binding %q", aBinding)
 	}
 
-	oldInfo := callSessionTool(t, chat, "workspace_info", map[string]any{"workspace_binding": aBinding}, false)
+	oldInfo := callSessionTool(t, chat, "workspace_info", map[string]any{"workspace_binding": aBinding}, true)
 	newInfo := callSessionTool(t, chat, "workspace_info", map[string]any{"workspace_binding": bBinding}, false)
-	if !strings.Contains(resultText(oldInfo), `"workspace_id":"a"`) {
-		t.Fatalf("old token escaped workspace a: %s", resultText(oldInfo))
+	if !strings.Contains(resultText(oldInfo), "invalid or expired") {
+		t.Fatalf("old token remained valid after switch: %s", resultText(oldInfo))
 	}
 	if !strings.Contains(resultText(newInfo), `"workspace_id":"b"`) {
 		t.Fatalf("new token did not select workspace b: %s", resultText(newInfo))
@@ -232,6 +236,51 @@ func TestSessionRouterStatsDoNotExposeTokens(t *testing.T) {
 	}
 	if stats["active_bindings"] != 1 || stats["bound_sessions"] != 1 {
 		t.Fatalf("unexpected router stats: %#v", stats)
+	}
+}
+
+func TestSessionRouterCapsBindingsAndEvictsOldest(t *testing.T) {
+	defaultRuntime := newSessionTestRuntime(t, "default", t.TempDir())
+	router := NewSessionRouter(defaultRuntime, nil)
+	router.maxBindings = 2
+	now := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	router.now = func() time.Time { return now }
+	first, _, err := router.selectWorkspace("chat-1", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if _, _, err := router.selectWorkspace("chat-2", "default"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if _, _, err := router.selectWorkspace("chat-3", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := router.resolve("", first.Token); err == nil {
+		t.Fatal("oldest binding was not evicted")
+	}
+	stats := router.Stats()
+	if stats["active_bindings"] != 2 || stats["evicted_bindings"] != uint64(1) {
+		t.Fatalf("unexpected capacity stats: %#v", stats)
+	}
+}
+
+func TestSessionRouterExplicitResolveDoesNotGrowSessionIndex(t *testing.T) {
+	defaultRuntime := newSessionTestRuntime(t, "default", t.TempDir())
+	router := NewSessionRouter(defaultRuntime, nil)
+	binding, _, err := router.selectWorkspace("selected-session", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 100; index++ {
+		if _, _, err := router.resolve(fmt.Sprintf("reconnect-%d", index), binding.Token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats := router.Stats()
+	if stats["bound_sessions"] != 1 {
+		t.Fatalf("explicit reconnects grew session index: %#v", stats)
 	}
 }
 

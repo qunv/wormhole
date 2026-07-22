@@ -4,6 +4,7 @@
 package patch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,9 +63,16 @@ type Engine struct {
 
 // Backup creates one undo batch without mutating workspace content.
 func (e *Engine) Backup(tool string, paths []string) error {
+	return e.BackupContext(context.Background(), tool, paths)
+}
+
+func (e *Engine) BackupContext(ctx context.Context, tool string, paths []string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_, err := e.backupLocked(tool, paths)
+	_, err := e.backupLocked(ctx, tool, paths)
 	return err
 }
 
@@ -72,17 +80,31 @@ func (e *Engine) Backup(tool string, paths []string) error {
 // must not call another Engine method. A failed callback is rolled back using
 // the exact batch created for this transaction.
 func (e *Engine) Transaction(tool string, paths []string, mutate func() error) error {
+	return e.TransactionContext(context.Background(), tool, paths, mutate)
+}
+
+func (e *Engine) TransactionContext(ctx context.Context, tool string, paths []string, mutate func() error) error {
 	if mutate == nil {
 		return errors.New("mutation callback is required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	batch, err := e.backupLocked(tool, paths)
+	batch, err := e.backupLocked(ctx, tool, paths)
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		_, rollbackErr := e.undoBatchLocked(context.Background(), batch.ID)
+		if rollbackErr != nil {
+			return fmt.Errorf("%s canceled: %v; rollback batch %s failed: %w", tool, err, batch.ID, rollbackErr)
+		}
+		return err
+	}
 	if err := mutate(); err != nil {
-		_, rollbackErr := e.undoBatchLocked(batch.ID)
+		_, rollbackErr := e.undoBatchLocked(context.Background(), batch.ID)
 		if rollbackErr != nil {
 			return fmt.Errorf("%s failed: %v; rollback batch %s failed: %w", tool, err, batch.ID, rollbackErr)
 		}
@@ -91,11 +113,11 @@ func (e *Engine) Transaction(tool string, paths []string, mutate func() error) e
 	return nil
 }
 
-func (e *Engine) backupLocked(tool string, paths []string) (backupBatch, error) {
+func (e *Engine) backupLocked(ctx context.Context, tool string, paths []string) (backupBatch, error) {
 	if e == nil || e.Workspace == nil || e.Store == nil {
 		return backupBatch{}, errors.New("patch engine is not initialized")
 	}
-	resolved, err := e.resolveBackupPaths(paths)
+	resolved, err := e.resolveBackupPaths(ctx, paths)
 	if err != nil {
 		return backupBatch{}, err
 	}
@@ -115,7 +137,10 @@ func (e *Engine) backupLocked(tool string, paths []string) (backupBatch, error) 
 	}()
 
 	for index, target := range resolved {
-		item, err := backupPath(target, filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", index, filepath.Base(target))))
+		if err := ctx.Err(); err != nil {
+			return backupBatch{}, err
+		}
+		item, err := backupPathContext(ctx, target, filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", index, filepath.Base(target))))
 		if err != nil {
 			return backupBatch{}, fmt.Errorf("backup %s: %w", e.Workspace.Relative(target), err)
 		}
@@ -142,13 +167,16 @@ func (e *Engine) backupLocked(tool string, paths []string) (backupBatch, error) 
 	return batch, nil
 }
 
-func (e *Engine) resolveBackupPaths(paths []string) ([]string, error) {
+func (e *Engine) resolveBackupPaths(ctx context.Context, paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("at least one backup path is required")
 	}
 	seen := map[string]bool{}
 	resolved := make([]string, 0, len(paths))
 	for _, candidate := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(candidate) == "" {
 			return nil, errors.New("backup path must not be empty")
 		}
@@ -167,6 +195,16 @@ func (e *Engine) resolveBackupPaths(paths []string) ([]string, error) {
 }
 
 func backupPath(target, destination string) (backupFile, error) {
+	return backupPathContext(context.Background(), target, destination)
+}
+
+func backupPathContext(ctx context.Context, target, destination string) (backupFile, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return backupFile{}, err
+	}
 	item := backupFile{Path: target, Kind: "missing"}
 	info, err := os.Lstat(target)
 	if errors.Is(err, os.ErrNotExist) {
@@ -184,11 +222,11 @@ func backupPath(target, destination string) (backupFile, error) {
 	case info.IsDir():
 		item.Kind = "directory"
 		item.BackupFile = destination
-		err = copyTree(target, destination)
+		err = copyTreeContext(ctx, target, destination)
 	case info.Mode().IsRegular():
 		item.Kind = "file"
 		item.BackupFile = destination
-		err = copyFile(target, destination, info.Mode())
+		err = copyFileContext(ctx, target, destination, info.Mode())
 	default:
 		err = fmt.Errorf("unsupported file type %s", info.Mode())
 	}
@@ -196,12 +234,19 @@ func backupPath(target, destination string) (backupFile, error) {
 }
 
 func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[string]any, error) {
+	return e.ApplyOperationsContext(context.Background(), operations, dryRun)
+}
+
+func (e *Engine) ApplyOperationsContext(ctx context.Context, operations []Operation, dryRun bool) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(operations) == 0 {
 		return nil, errors.New("operations must not be empty")
 	}
-	if err := e.validateOperations(operations); err != nil {
+	if err := e.validateOperations(ctx, operations); err != nil {
 		return nil, err
 	}
 	var batch backupBatch
@@ -214,7 +259,7 @@ func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[strin
 			}
 		}
 		var err error
-		batch, err = e.backupLocked("apply_patch_ops", paths)
+		batch, err = e.backupLocked(ctx, "apply_patch_ops", paths)
 		if err != nil {
 			return nil, err
 		}
@@ -222,7 +267,17 @@ func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[strin
 
 	results := make([]map[string]any, 0, len(operations))
 	for _, op := range operations {
-		result, err := e.applyOne(op, dryRun)
+		if err := ctx.Err(); err != nil {
+			if dryRun {
+				return nil, err
+			}
+			rollback, rollbackErr := e.undoBatchLocked(context.Background(), batch.ID)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("apply canceled: %v; rollback batch %s failed: %w", err, batch.ID, rollbackErr)
+			}
+			return failedPatchResult("operations", results, rollback), err
+		}
+		result, err := e.applyOne(ctx, op, dryRun)
 		if err == nil {
 			results = append(results, result)
 			continue
@@ -231,7 +286,7 @@ func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[strin
 		if dryRun {
 			continue
 		}
-		rollback, rollbackErr := e.undoBatchLocked(batch.ID)
+		rollback, rollbackErr := e.undoBatchLocked(context.Background(), batch.ID)
 		if rollbackErr != nil {
 			return nil, fmt.Errorf("apply failed: %v; rollback batch %s failed: %w", err, batch.ID, rollbackErr)
 		}
@@ -240,8 +295,11 @@ func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[strin
 	return patchResult("operations", results), nil
 }
 
-func (e *Engine) validateOperations(operations []Operation) error {
+func (e *Engine) validateOperations(ctx context.Context, operations []Operation) error {
 	for index, op := range operations {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if strings.TrimSpace(op.Path) == "" {
 			return fmt.Errorf("operations[%d].path is required", index)
 		}
@@ -272,7 +330,10 @@ func (e *Engine) validateOperations(operations []Operation) error {
 	return nil
 }
 
-func (e *Engine) applyOne(op Operation, dryRun bool) (map[string]any, error) {
+func (e *Engine) applyOne(ctx context.Context, op Operation, dryRun bool) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	target, err := e.Workspace.Resolve(op.Path)
 	if err != nil {
 		return nil, err
@@ -286,13 +347,16 @@ func (e *Engine) applyOne(op Operation, dryRun bool) (map[string]any, error) {
 		}
 		return map[string]any{"op": op.Op, "path": e.Workspace.Relative(target), "ok": true, "bytes": len(op.Content)}, nil
 	case "update":
-		raw, err := os.ReadFile(target)
+		raw, err := readFileContext(ctx, target)
 		if err != nil {
 			return nil, err
 		}
 		content := string(raw)
 		count := 0
 		for _, edit := range op.Edits {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if edit.OldText == "" || !strings.Contains(content, edit.OldText) {
 				return nil, fmt.Errorf("old_text not found in %s", op.Path)
 			}
@@ -458,19 +522,32 @@ func diffPath(file diffFile) string {
 }
 
 func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
+	return e.ApplyDiffContext(context.Background(), text, dryRun)
+}
+
+func (e *Engine) ApplyDiffContext(ctx context.Context, text string, dryRun bool) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	files, err := ParseUnifiedDiff(text)
 	if err != nil {
 		return nil, err
 	}
-	paths, err := e.validateDiffPaths(files)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	paths, err := e.validateDiffPaths(ctx, files)
 	if err != nil {
 		return nil, err
 	}
 	var batch backupBatch
 	if !dryRun {
-		batch, err = e.backupLocked("apply_patch_diff", paths)
+		batch, err = e.backupLocked(ctx, "apply_patch_diff", paths)
 		if err != nil {
 			return nil, err
 		}
@@ -478,7 +555,17 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 
 	results := make([]map[string]any, 0, len(files))
 	for _, file := range files {
-		result, applyErr := e.applyDiffFile(file, dryRun)
+		if err := ctx.Err(); err != nil {
+			if dryRun {
+				return nil, err
+			}
+			rollback, rollbackErr := e.undoBatchLocked(context.Background(), batch.ID)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("patch canceled: %v; rollback batch %s failed: %w", err, batch.ID, rollbackErr)
+			}
+			return failedPatchResult("diff", results, rollback), err
+		}
+		result, applyErr := e.applyDiffFile(ctx, file, dryRun)
 		if applyErr == nil {
 			results = append(results, result)
 			continue
@@ -489,7 +576,7 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 		if dryRun {
 			continue
 		}
-		rollback, rollbackErr := e.undoBatchLocked(batch.ID)
+		rollback, rollbackErr := e.undoBatchLocked(context.Background(), batch.ID)
 		if rollbackErr != nil {
 			return nil, fmt.Errorf("patch failed: %v; rollback batch %s failed: %w", applyErr, batch.ID, rollbackErr)
 		}
@@ -498,9 +585,12 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 	return patchResult("diff", results), nil
 }
 
-func (e *Engine) validateDiffPaths(files []diffFile) ([]string, error) {
+func (e *Engine) validateDiffPaths(ctx context.Context, files []diffFile) ([]string, error) {
 	paths := make([]string, 0, len(files)*2)
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if file.Minus == "" || file.Plus == "" {
 			return nil, errors.New("diff paths must not be empty")
 		}
@@ -537,7 +627,10 @@ func diffAction(file diffFile) string {
 	}
 }
 
-func (e *Engine) applyDiffFile(file diffFile, dryRun bool) (map[string]any, error) {
+func (e *Engine) applyDiffFile(ctx context.Context, file diffFile, dryRun bool) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	action := diffAction(file)
 	switch action {
 	case "create":
@@ -545,7 +638,7 @@ func (e *Engine) applyDiffFile(file diffFile, dryRun bool) (map[string]any, erro
 		if err != nil {
 			return nil, err
 		}
-		content, err := applyHunks("", file.Hunks, true)
+		content, err := applyHunksContext(ctx, "", file.Hunks, true)
 		if err != nil {
 			return nil, err
 		}
@@ -581,11 +674,11 @@ func (e *Engine) applyDiffFile(file diffFile, dryRun bool) (map[string]any, erro
 		if !sourceInfo.Mode().IsRegular() {
 			return nil, fmt.Errorf("path is not a regular file: %s", file.Minus)
 		}
-		raw, err := os.ReadFile(source)
+		raw, err := readFileContext(ctx, source)
 		if err != nil {
 			return nil, err
 		}
-		content, err := applyHunks(string(raw), file.Hunks, false)
+		content, err := applyHunksContext(ctx, string(raw), file.Hunks, false)
 		if err != nil {
 			return nil, err
 		}
@@ -622,6 +715,10 @@ func (e *Engine) applyDiffFile(file diffFile, dryRun bool) (map[string]any, erro
 }
 
 func applyHunks(content string, hunks []diffHunk, create bool) (string, error) {
+	return applyHunksContext(context.Background(), content, hunks, create)
+}
+
+func applyHunksContext(ctx context.Context, content string, hunks []diffHunk, create bool) (string, error) {
 	newline := "\n"
 	if strings.Contains(content, "\r\n") {
 		newline = "\r\n"
@@ -637,6 +734,9 @@ func applyHunks(content string, hunks []diffHunk, create bool) (string, error) {
 	}
 	offset := 0
 	for _, hunk := range hunks {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		index := hunk.OldStart - 1
 		if hunk.OldCount == 0 {
 			index = hunk.OldStart
@@ -688,22 +788,38 @@ func failedPatchResult(mode string, results []map[string]any, rollback map[strin
 }
 
 func (e *Engine) Undo() (map[string]any, error) {
+	return e.UndoContext(context.Background())
+}
+
+func (e *Engine) UndoContext(ctx context.Context) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	history, err := e.readHistoryLocked()
 	if err != nil || len(history) == 0 {
 		return nil, errors.New("no patch history to undo")
 	}
-	return e.undoBatchLocked(history[len(history)-1].ID)
+	return e.undoBatchLocked(ctx, history[len(history)-1].ID)
 }
 
-func (e *Engine) undoBatchLocked(batchID string) (map[string]any, error) {
+func (e *Engine) undoBatchLocked(ctx context.Context, batchID string) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	history, err := e.readHistoryLocked()
 	if err != nil {
 		return nil, err
 	}
 	index := -1
 	for current := range history {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if history[current].ID == batchID {
 			index = current
 			break
@@ -713,7 +829,7 @@ func (e *Engine) undoBatchLocked(batchID string) (map[string]any, error) {
 		return nil, fmt.Errorf("patch backup batch %s was not found", batchID)
 	}
 	batch := history[index]
-	restored, failures := restoreBatch(batch)
+	restored, failures := restoreBatchContext(ctx, batch)
 	if len(failures) > 0 {
 		return map[string]any{"ok": false, "batch_id": batch.ID, "restored": restored, "errors": failures}, errors.New("one or more backup paths could not be restored")
 	}
@@ -739,10 +855,18 @@ func (e *Engine) readHistoryLocked() ([]backupBatch, error) {
 }
 
 func restoreBatch(batch backupBatch) ([]string, []map[string]string) {
+	return restoreBatchContext(context.Background(), batch)
+}
+
+func restoreBatchContext(ctx context.Context, batch backupBatch) ([]string, []map[string]string) {
 	var restored []string
 	var failures []map[string]string
 	for _, item := range batch.Files {
-		if err := restoreBackupFile(item); err != nil {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
+			break
+		}
+		if err := restoreBackupFileContext(ctx, item); err != nil {
 			failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
 		} else {
 			restored = append(restored, item.Path)
@@ -752,6 +876,13 @@ func restoreBatch(batch backupBatch) ([]string, []map[string]string) {
 }
 
 func restoreBackupFile(item backupFile) error {
+	return restoreBackupFileContext(context.Background(), item)
+}
+
+func restoreBackupFileContext(ctx context.Context, item backupFile) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !item.HadContent {
 		return os.RemoveAll(item.Path)
 	}
@@ -760,13 +891,13 @@ func restoreBackupFile(item backupFile) error {
 	}
 	switch item.Kind {
 	case "directory":
-		return copyTree(item.BackupFile, item.Path)
+		return copyTreeContext(ctx, item.BackupFile, item.Path)
 	case "file":
 		mode := fs.FileMode(item.Mode)
 		if mode == 0 {
 			mode = 0o644
 		}
-		return copyFile(item.BackupFile, item.Path, mode)
+		return copyFileContext(ctx, item.BackupFile, item.Path, mode)
 	case "symlink":
 		if err := os.MkdirAll(filepath.Dir(item.Path), 0o755); err != nil {
 			return err
@@ -827,7 +958,41 @@ func atomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	return os.Rename(name, path)
 }
 
+func readFileContext(ctx context.Context, path string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(contextReader{ctx: ctx, reader: file})
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
+}
+
 func copyFile(src, dst string, mode fs.FileMode) error {
+	return copyFileContext(context.Background(), src, dst, mode)
+}
+
+func copyFileContext(ctx context.Context, src, dst string, mode fs.FileMode) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	input, err := os.Open(src)
 	if err != nil {
 		return err
@@ -847,7 +1012,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 			_ = os.Remove(dst)
 		}
 	}()
-	if _, err := io.Copy(output, input); err != nil {
+	if _, err := io.Copy(output, contextReader{ctx: ctx, reader: input}); err != nil {
 		return err
 	}
 	if err := output.Sync(); err != nil {
@@ -861,7 +1026,17 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 }
 
 func copyTree(src, dst string) error {
+	return copyTreeContext(context.Background(), src, dst)
+}
+
+func copyTreeContext(ctx context.Context, src, dst string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -890,7 +1065,7 @@ func copyTree(src, dst string) error {
 			}
 			return os.Chmod(target, info.Mode().Perm())
 		case info.Mode().IsRegular():
-			return copyFile(path, target, info.Mode())
+			return copyFileContext(ctx, path, target, info.Mode())
 		default:
 			return fmt.Errorf("unsupported file type %s", info.Mode())
 		}

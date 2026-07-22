@@ -128,9 +128,13 @@ Database and Figma are intentionally not built-in modules. They use the same con
 
 Each runtime keeps workspace-local module handlers, health views, policy, audit, and memory-scope behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, and memory observation capture. `CallIdentity` carries both the logical MCP session ID and fixed workspace ID without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy.
 
-Built-in module contracts are immutable and constructed once per process through `sharedModuleSpecs`; each runtime still has its own tool-to-handler index. `Runtime.Shutdown()` closes workspace-local modules in reverse registration order. Memory and upstream module `Close()` methods intentionally do not close pooled resources. The daemon closes `SharedServices` after all runtimes, which drains recorders and then closes providers and upstream clients exactly once.
+Built-in module contracts are immutable and constructed once per process through `sharedModuleSpecs`; each runtime still has its own tool-to-handler index. Fixed-workspace and session-routing `mcp.Server` instances are also assembled once when the HTTP daemon is created and are reused for each stateless request. `Runtime.Shutdown()` closes workspace-local modules in reverse registration order. Memory and upstream module `Close()` methods intentionally do not close pooled resources. The daemon closes `SharedServices` after all runtimes, which flushes audit writers, drains recorders, and then closes providers and upstream clients exactly once.
 
 `internal/mcpserver` enumerates `runtime.Tools()` rather than a static global catalog. External modules must be registered with `runtime.RegisterModule` before constructing the MCP server. The package-level `agent.Tools()` function remains only as a compatibility catalog for existing callers and tests.
+
+Managed process stdout and stderr use fixed-capacity circular byte buffers. Writes remain O(chunk size) after the buffer fills instead of shifting the retained 200 KiB tail on every log chunk, and `proc_output(tail_chars)` copies only the requested logical tail across at most two ring segments.
+
+Repository diagnostics share a runtime-local inventory cache keyed by owning root and mutation generation. One bounded, sorted, context-aware traversal supplies tree views, project profile, important files, and symbol-cache keys. Depth/limit/symbol combinations are retained as a small LRU-like view set; the latest compatible view is also persisted to `index.json` for restart diagnostics. Successful filesystem, patch, arbitrary shell, managed-process start, and mutating-Git operations increment the generation and discard repository and Git snapshots. External edits are bounded by the five-minute inventory TTL. Git status uses one `--porcelain=v2 --branch` process and a 300 ms cache. Pattern scans use streaming tracked-file `git grep`, cancel the subprocess at the result limit, and fall back to a bounded tracked-file stream or filesystem scan.
 
 Configured `mcpServers` entries are materialized after the six built-in modules. `SharedServices` first resolves a connection key from server name, transport settings, timeouts, referenced-secret fingerprints, and—only for stdio—the confined resolved `cwd`. Compatible runtimes reuse one long-lived `upstreammcp.Client` and MCP session. Tool filtering and approval policy form a separate contract key; policy-only differences therefore create different `upstreamMCPModule` contracts while sharing the same client. Startup performs paginated `tools/list`, validates and bounds the returned contract, namespaces names as `<server>__<normalized_name>`, and caches the immutable assembled `ToolSpec` values. Tool-list changes are applied on Codebridge restart rather than mutating the downstream contract in place.
 
@@ -141,7 +145,9 @@ stdio              mcp.CommandTransport around executable/argv; Windows batch la
 streamable-http    mcp.StreamableClientTransport with explicit headers
 ```
 
-A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. A pooled client allows concurrent calls on the SDK session while serializing only connect/reconnect lifecycle transitions. One request's cancellation or deadline does not invalidate a healthy shared session. Transport failures detach only the session instance that failed, reconnect transparently for subsequent work, and close the client only at daemon shared-service shutdown. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
+A stdio child receives only a small platform environment plus explicitly configured `inheritEnv`, non-secret `env`, and secret `envRefs` values. stdout remains reserved for MCP framing; stderr is counted and bounded as health metadata. Streamable HTTP endpoints are loopback-only unless `allowRemote=true`. A pooled client allows concurrent calls on the SDK session while serializing only connect/reconnect lifecycle transitions. A per-client semaphore bounds calls at `maxConcurrency` and records queued, in-flight, peak, completed, context-rejected, and circuit-rejected counts. One request's cancellation or deadline does not invalidate a healthy shared session. Transport failures detach only the session generation that failed; reference-counted retired sessions close only after every active borrower releases them, so reconnect cannot interrupt another call. A failed read-only call may reconnect and retry once; mutation calls reconnect for subsequent work but are never replayed automatically.
+
+Health checks are single-flight and cached for `healthCacheMs` across every workspace sharing the client. Three consecutive transport or reconnect failures open a cooldown circuit for `failureCooldownMs`; reconnect attempts fail fast during that window and resume afterward. A successful reconnect or call resets the consecutive-failure state. Client health exposes only bounded counters, timestamps, transport identity, sanitized errors, and a hostname or executable basename—not headers, arguments, results, or secret values.
 
 Optional module interfaces keep untrusted upstream data outside shared persistence boundaries:
 
@@ -242,11 +248,11 @@ shared daemon
 
 Each runtime owns a separate workspace manager, state store, approval manager, patch engine, managed-process registry, profile, memory project, workspace-prefixed session identity, policy, request limits, and workspace-local handlers. The primary runtime uses the application state directory; named runtimes use `instances/<id>` as their state root. This keeps notes, tasks, audit, approvals, backups, patch history, and managed processes isolated even when two registrations point at repositories with similar contents.
 
-The daemon owns one `SharedServices` instance. Compatible memory configurations reuse a provider and recorder; incompatible backend, secret, or delivery settings produce separate pooled entries. Compatible upstream connection configurations reuse a client/session, while policy and tool-filter differences retain separate contracts. `workspace_info`, `memory_status`, and `/internal/healthz` publish bounded `shared_resources` counts and acquire/reuse counters without exposing resource keys or secrets.
+The daemon owns one `SharedServices` instance. Compatible memory configurations reuse a provider and recorder; incompatible backend, secret, or delivery settings produce separate pooled entries. Runtimes that share an audit path also share one bounded batching writer. Compatible upstream connection configurations reuse a client/session, while policy and tool-filter differences retain separate contracts. `workspace_info`, `memory_status`, and `/internal/healthz` publish bounded `shared_resources` counts and acquire/reuse counters without exposing resource keys or secrets.
 
 The MCP adapter prefixes workspace session IDs with `workspace:<id>:` and places the same workspace ID in `CallIdentity`. Audit records include both `workspace_id` and `session_id`. Exact approval actions are prefixed with the workspace ID before they are stored or consumed, preventing an approval created for one endpoint from authorizing another.
 
-`SessionRouter` adds conversation-level routing without mutating any runtime. `workspace_select` creates a cryptographically random in-memory binding for one enabled runtime. Every routed coding-tool schema requires the returned `workspace_binding`; the router removes it before policy, audit, and handler dispatch, then supplies a runtime session identity derived from a SHA-256 prefix of the token. The raw token is never written to audit, memory, health, or local state. Bindings expire after 24 hours of inactivity, are invalidated by `workspace_clear`, and disappear on daemon restart. Because the binding is explicit on every coding call, two ChatGPT tabs remain isolated even when the client reconnects or reuses one MCP transport.
+`SessionRouter` adds conversation-level routing without mutating any runtime. `workspace_select` creates a cryptographically random in-memory binding for one enabled runtime. Every routed coding-tool schema requires the returned `workspace_binding`; the router removes it before policy, audit, and handler dispatch, then supplies a runtime session identity derived from a SHA-256 prefix of the token. The raw token is never written to audit, memory, health, or local state. A new selection on the same MCP session invalidates its old binding. Bindings expire after 24 hours of inactivity, are invalidated by `workspace_clear`, and disappear on daemon restart. Resolution checks only the selected token on the hot path; full expiry cleanup runs at most once per minute. Active bindings are capped at 4,096 with least-recently-used eviction at capacity, and a reverse session index makes clear/expiry removal proportional only to sessions attached to that token. Because the binding is explicit on every coding call, two ChatGPT tabs remain isolated even when the client reconnects or reuses one MCP transport.
 
 `workspace start` and `workspace stop` toggle a named registry entry and reconcile the shared daemon. The primary runtime ID is a lowercase ASCII slug derived from the Git root folder, or from the current folder outside Git. A bare `codebridge`, `run`, or `here` invocation registers the Git root only when it differs from the configured primary workspace; `restart` performs the same check before stopping the daemon. Named-workspace IDs receive a stable canonical-path hash suffix on collision. Existing registrations are matched by canonical path and re-enabled instead of duplicated.
 
@@ -327,7 +333,7 @@ beginToolCall (correlation ID + in-flight counters)
 
 The tracker stores only registered tool/module names, timestamps, counts, durations, outcome classes, and generated call IDs. It never stores session IDs, arguments, results, or error text. Unknown names collapse into one `_unknown` metric key, and the recent-call ring is capped at 64 entries. `runtime_metrics` can omit per-tool and recent data, while `workspace_info`, `session_report`, `workspace_doctor`, and loopback `/internal/healthz` expose progressively richer bounded views.
 
-Audit records include the same `call_id`, tool module, outcome status, and execution duration. Audit write failures do not change the tool result, but they increment runtime health counters and make the audit check in `workspace_doctor` warn. Multiple workspace `Store` instances writing one daemon audit path share a path-keyed append lock so JSONL records cannot interleave.
+Audit records include the same `call_id`, tool module, outcome status, and execution duration. Runtime dispatch redacts and encodes the bounded record, then enqueues it to the shared audit writer instead of opening the file on the tool-call critical path. The writer drains bounded batches, rotates `audit.log` at 64 MiB with five retained generations, and falls back to a synchronous append when its queue is saturated so records are not silently dropped. `FlushAudit` provides an explicit persistence barrier for tests and controlled shutdown. Audit write failures do not change the tool result, but synchronous/enqueue failures and background writer failures are reported separately in runtime health and make the audit check in `workspace_doctor` warn. State operations use a bounded striped path-lock table, so unrelated notes, task, index, approval, and audit files do not share one workspace-wide mutex while writes to the same path remain serialized.
 
 When policy rejects a request, the runtime still records an audit failure and policy-rejected metric but does not capture a post-tool observation because the tool did not run.
 
@@ -337,7 +343,7 @@ When policy rejects a request, the runtime still records an audit failure and po
 - `balanced`: allows edits but requires exact one-time approval for risky actions and upstream tools classified as `approval` or `always-approval`.
 - `full`: does not require ordinary approvals, although command guards still block catastrophic operations and upstream `always-approval` tools remain gated.
 
-An approval action includes the exact target or a hash of the complete tool-plus-arguments payload. `memory_forget` serializes its arguments into the approval action, while generic and upstream write tools use a bounded SHA-256 action so approval cannot be reused for different arguments and raw payloads are not exposed in the action string.
+An approval action includes the exact target or a hash of the complete tool-plus-arguments payload. `memory_forget` serializes its arguments into the approval action, while generic and upstream write tools use a bounded SHA-256 action so approval cannot be reused for different arguments and raw payloads are not exposed in the action string. The approval manager loads persisted records into an action-to-record index once, re-reads only candidate records before authorization to remain fail-closed against external changes, and chooses the most recently approved exact record. Denied, consumed, and expired records are retained for at most 30 days and the local cache/file set is trimmed toward 1,024 records without deleting active approvals.
 
 ## 7. Workspace identity and confinement
 
@@ -562,18 +568,20 @@ Before enqueueing:
 
 Compatible workspace runtimes share one daemon-scoped recorder. Each observation already contains its project, `cwd`, and workspace-prefixed session identity, so sharing the delivery queue does not merge memory scope. A different provider or delivery configuration receives a separate pooled recorder.
 
-The recorder uses a bounded channel and non-blocking enqueue:
+The recorder uses a bounded queue and non-blocking enqueue:
 
 ```text
 queue available → enqueued
 queue full      → dropped++, tool response is not blocked
 ```
 
+Providers without an explicit `ConcurrencySafeProvider` opt-in retain one serialized worker. Opted-in providers use up to `deliveryWorkers` queues selected by a deterministic FNV hash of `SessionID`. One session therefore always reaches one FIFO worker, while unrelated sessions can deliver concurrently. The configured total queue capacity is divided across shards and health reports minimum/maximum shard capacity so hot-session burst limits are visible.
+
 Worker delivery:
 
 ```text
 per-attempt timeout
-  → exponential retry
+  → capped exponential retry with deterministic jitter
   → maximum attempts
   → delivered or failed
 ```
@@ -581,16 +589,21 @@ per-attempt timeout
 Backoff is capped at two seconds. Closing an individual workspace runtime leaves the shared recorder active. During daemon `SharedServices.Close()`:
 
 1. new resource acquisitions are rejected;
-2. upstream clients are closed after workspace handlers have stopped;
-3. each recorder rejects new records and drains its current queue within a bounded shutdown deadline;
+2. shared audit writers flush and close;
+3. each recorder rejects new records and drains its current shard queues within a bounded shutdown deadline;
 4. shutdown cancellation interrupts in-flight provider calls and retry backoff, counting unfinished observations as abandoned;
-5. each pooled provider closes after its recorders.
+5. each pooled memory provider closes after its recorders;
+6. reference-counted upstream clients retire their current sessions and close immediately when no active borrower remains, or after the final borrower releases.
 
 Recorder statistics:
 
 ```text
+workers
+sharded
 queue_depth
 queue_capacity
+shard_capacity_min
+shard_capacity_max
 enqueued
 delivered
 retried
@@ -674,8 +687,11 @@ The inner workspace path hash is derived from the canonical primary workspace pa
 14. Browser Origins are blocked by default unless they are loopback or explicitly allowed.
 15. A non-loopback MCP listener requires a bearer token.
 16. HTTP responses from memory providers and upstream tool contracts are size-limited before processing.
-17. Pooled provider calls are serialized, stdio pooling includes confined resolved `cwd`, and runtime shutdown cannot close resources borrowed by another workspace.
+17. Pooled memory-provider calls remain serialized unless the provider explicitly implements `ConcurrencySafeProvider`; sharded recorder delivery preserves FIFO order within each session.
 18. Session-routed coding calls require an explicit opaque binding; the raw binding is removed before runtime dispatch and is never persisted in audit, memory, health, or workspace state.
+19. Repository inventories, derived views, symbol views, and Git snapshots have independent cardinality limits, TTLs, mutation generations, and caller-context cancellation.
+20. Upstream clients bound concurrency, cache health per session generation, defer retired-session close until active borrowers release, and cool down repeated reconnect failures.
+21. Patch backup, copy, hunk application, and undo operations observe caller cancellation between files/chunks; rollback uses an independent context so cancellation cannot interrupt restoration.
 
 ## 11. Testing strategy
 
@@ -691,7 +707,7 @@ Contract tests lock down:
 - behavior without an authentication secret;
 - context fallback;
 - project normalization and owning-root behavior;
-- recorder delivery, retry, drain, and dropped counters;
+- recorder delivery, retry jitter, drain, dropped counters, provider opt-in concurrency, cross-session overlap, and same-session FIFO order;
 - required and optional provider startup behavior;
 - export filtering and canonical import;
 - generic stdio and Streamable HTTP upstream MCP discovery and calls;
@@ -702,7 +718,9 @@ Contract tests lock down:
 - cross-workspace file, state, audit, approval, and memory-session isolation;
 - per-runtime request limits and shared-daemon health summaries;
 - provider/recorder reuse, runtime-only memory-setting compatibility, provider-call serialization, and optional export/import preservation;
-- upstream client reuse across concurrent workspaces, contract separation for policy differences, stdio `cwd` key isolation, and daemon close-once ownership;
+- upstream client reuse across concurrent workspaces, contract separation for policy differences, stdio `cwd` key isolation, bounded call concurrency, health-cache deduplication, circuit cooldown, active-session retirement, and daemon close-once ownership;
+- repository inventory/view/symbol cardinality, mutation invalidation, Git snapshot reuse, tracked-only pattern scans, and cancellation;
+- patch cancellation before mutation plus context-aware backup/copy/hunk/undo paths;
 - session-router tool contracts, two-chat workspace isolation, same-transport binding separation, reconnect recovery, expiry, clear, token redaction, and real Streamable HTTP routing.
 
 Recommended verification:

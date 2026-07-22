@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codebridge/internal/config"
@@ -23,7 +24,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const stderrLimit = 32 << 10
+const (
+	stderrLimit             = 32 << 10
+	circuitFailureThreshold = 3
+)
+
+type clientSessionState struct {
+	session *mcp.ClientSession
+	refs    int
+	retired bool
+}
+
+type healthCacheEntry struct {
+	checkedAt time.Time
+	available bool
+	errorText string
+	session   *clientSessionState
+}
 
 type Client struct {
 	name    string
@@ -31,20 +48,35 @@ type Client struct {
 	version string
 	cwd     string
 
-	connectMu sync.Mutex
-	mu        sync.RWMutex
+	connectMu     sync.Mutex
+	healthCheckMu sync.Mutex
+	mu            sync.RWMutex
 
-	session         *mcp.ClientSession
-	tools           []*mcp.Tool
-	closed          bool
-	connectedAt     time.Time
-	lastError       string
-	reconnects      int
-	resolvedCommand string
-	processID       int
-	endpointHost    string
-	secrets         []string
-	stderr          *boundedCounter
+	session          *clientSessionState
+	tools            []*mcp.Tool
+	closed           bool
+	connectedAt      time.Time
+	lastError        string
+	reconnects       int
+	resolvedCommand  string
+	processID        int
+	endpointHost     string
+	secrets          []string
+	stderr           *boundedCounter
+	callSlots        chan struct{}
+	healthCache      healthCacheEntry
+	consecutiveFails int
+	circuitOpenUntil time.Time
+	breakerTrips     uint64
+
+	queuedCalls       atomic.Int64
+	inFlightCalls     atomic.Int64
+	maxInFlightCalls  atomic.Int64
+	completedCalls    atomic.Uint64
+	rejectedCalls     atomic.Uint64
+	circuitRejected   atomic.Uint64
+	healthCacheHits   atomic.Uint64
+	healthCacheMisses atomic.Uint64
 }
 
 type transportBuild struct {
@@ -55,10 +87,36 @@ type transportBuild struct {
 	secrets         []string
 }
 
+func effectiveClientConfig(cfg config.MCPServerConfig) config.MCPServerConfig {
+	if cfg.StartupTimeoutMS <= 0 {
+		cfg.StartupTimeoutMS = config.DefaultMCPStartupTimeoutMS
+	}
+	if cfg.CallTimeoutMS <= 0 {
+		cfg.CallTimeoutMS = config.DefaultMCPCallTimeoutMS
+	}
+	if cfg.HealthTimeoutMS <= 0 {
+		cfg.HealthTimeoutMS = config.DefaultMCPHealthTimeoutMS
+	}
+	if cfg.HealthCacheMS <= 0 {
+		cfg.HealthCacheMS = config.DefaultMCPHealthCacheMS
+	}
+	if cfg.FailureCooldownMS <= 0 {
+		cfg.FailureCooldownMS = config.DefaultMCPFailureCooldownMS
+	}
+	if cfg.MaxConcurrency <= 0 {
+		cfg.MaxConcurrency = config.DefaultMCPMaxConcurrency
+	}
+	if cfg.MaxTools <= 0 {
+		cfg.MaxTools = config.DefaultMCPMaxTools
+	}
+	return cfg
+}
+
 func New(ctx context.Context, name string, cfg config.MCPServerConfig, version, cwd string) (*Client, error) {
+	cfg = effectiveClientConfig(cfg)
 	client := &Client{
 		name: name, cfg: cfg, version: version, cwd: cwd,
-		stderr: newBoundedCounter(stderrLimit),
+		stderr: newBoundedCounter(stderrLimit), callSlots: make(chan struct{}, cfg.MaxConcurrency),
 	}
 	client.connectMu.Lock()
 	defer client.connectMu.Unlock()
@@ -81,80 +139,119 @@ func (c *Client) Tools() []*mcp.Tool {
 }
 
 func (c *Client) Call(ctx context.Context, tool string, args map[string]any, retryReadOnly bool) (*mcp.CallToolResult, error) {
-	session, err := c.sessionOrReconnect(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := c.acquireCallSlot(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseCallSlot()
+
+	state, err := c.borrowSessionOrReconnect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result, err := c.callSession(ctx, session, tool, args)
-	if err == nil {
-		c.clearErrorFor(session)
+	result, callErr := c.callSession(ctx, state.session, tool, args)
+	c.releaseSession(state)
+	if callErr == nil {
+		c.clearErrorFor(state)
 		return result, nil
 	}
-	if !shouldInvalidateSession(err) {
-		return nil, c.sanitizedError(err)
+	if !shouldInvalidateSession(callErr) {
+		return nil, c.sanitizedError(callErr)
 	}
-	c.invalidateSession(session, err)
+	c.invalidateSession(state, callErr)
 	if !retryReadOnly {
-		return nil, c.sanitizedError(err)
+		return nil, c.sanitizedError(callErr)
 	}
-	session, err = c.sessionOrReconnect(ctx)
+	state, err = c.borrowSessionOrReconnect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result, err = c.callSession(ctx, session, tool, args)
-	if err != nil {
-		if shouldInvalidateSession(err) {
-			c.invalidateSession(session, err)
+	result, callErr = c.callSession(ctx, state.session, tool, args)
+	c.releaseSession(state)
+	if callErr != nil {
+		if shouldInvalidateSession(callErr) {
+			c.invalidateSession(state, callErr)
 		}
-		return nil, c.sanitizedError(err)
+		return nil, c.sanitizedError(callErr)
 	}
-	c.clearErrorFor(session)
+	c.clearErrorFor(state)
 	return result, nil
 }
 
 func (c *Client) Health(ctx context.Context) map[string]any {
-	c.mu.RLock()
-	closed, session := c.closed, c.session
-	c.mu.RUnlock()
-	if closed {
-		return c.status(false, "upstream MCP client is closed")
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if session == nil {
-		return c.status(false, c.currentError("upstream MCP session is disconnected"))
+	if cached, ok := c.cachedHealth(); ok {
+		c.healthCacheHits.Add(1)
+		return c.healthStatus(cached, true)
 	}
+	c.healthCheckMu.Lock()
+	defer c.healthCheckMu.Unlock()
+	if cached, ok := c.cachedHealth(); ok {
+		c.healthCacheHits.Add(1)
+		return c.healthStatus(cached, true)
+	}
+	c.healthCacheMisses.Add(1)
+	entry := healthCacheEntry{checkedAt: time.Now().UTC()}
+	state, err := c.borrowCurrentSession()
+	if err != nil {
+		entry.errorText = c.currentError(err.Error())
+		c.storeHealth(entry, nil)
+		return c.healthStatus(entry, false)
+	}
+	entry.session = state
 	timeout := time.Duration(c.cfg.HealthTimeoutMS) * time.Millisecond
 	healthCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := session.Ping(healthCtx, nil); err != nil {
-		if healthCtx.Err() != nil {
-			err = healthCtx.Err()
+	err = state.session.Ping(healthCtx, nil)
+	healthContextErr := healthCtx.Err()
+	cancel()
+	c.releaseSession(state)
+	if err != nil {
+		if healthContextErr != nil {
+			err = healthContextErr
 		}
 		if shouldInvalidateSession(err) {
-			c.invalidateSession(session, err)
+			c.invalidateSession(state, err)
 		}
-		return c.status(false, c.sanitizedError(err).Error())
+		entry.errorText = c.sanitizedError(err).Error()
+	} else if c.sessionIsCurrent(state) {
+		entry.available = true
+		c.clearErrorFor(state)
+	} else {
+		entry.errorText = c.currentError("upstream MCP session changed during health check")
 	}
-	c.clearErrorFor(session)
-	return c.status(true, "")
+	c.storeHealth(entry, state)
+	return c.healthStatus(entry, false)
 }
 
 func (c *Client) Close() error {
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
+	var closeSession *mcp.ClientSession
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return nil
 	}
 	c.closed = true
-	session := c.session
+	state := c.session
 	c.session = nil
 	c.processID = 0
+	c.healthCache = healthCacheEntry{}
+	if state != nil {
+		state.retired = true
+		if state.refs == 0 {
+			closeSession = state.session
+		}
+	}
 	c.mu.Unlock()
-	if session == nil {
+	if closeSession == nil {
 		return nil
 	}
-	if err := session.Close(); err != nil {
+	if err := closeSession.Close(); err != nil {
 		return c.sanitizedError(err)
 	}
 	return nil
@@ -199,14 +296,24 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 		}
 	}
 
+	var closePrevious *mcp.ClientSession
 	c.mu.Lock()
 	previous := c.session
-	c.session = session
+	c.session = &clientSessionState{session: session}
+	if previous != nil {
+		previous.retired = true
+		if previous.refs == 0 {
+			closePrevious = previous.session
+		}
+	}
 	if discover {
 		c.tools = tools
 	}
 	c.connectedAt = time.Now().UTC()
 	c.lastError = ""
+	c.consecutiveFails = 0
+	c.circuitOpenUntil = time.Time{}
+	c.healthCache = healthCacheEntry{}
 	c.resolvedCommand = build.resolvedCommand
 	c.endpointHost = build.endpointHost
 	c.secrets = append([]string(nil), build.secrets...)
@@ -215,44 +322,68 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 		c.processID = build.command.Process.Pid
 	}
 	c.mu.Unlock()
-	if previous != nil {
-		_ = previous.Close()
+	if closePrevious != nil {
+		_ = closePrevious.Close()
 	}
 	return nil
 }
 
-func (c *Client) sessionOrReconnect(ctx context.Context) (*mcp.ClientSession, error) {
-	c.mu.RLock()
-	closed, session := c.closed, c.session
-	c.mu.RUnlock()
-	if closed {
-		return nil, errors.New("upstream MCP client is closed")
+func (c *Client) borrowSessionOrReconnect(ctx context.Context) (*clientSessionState, error) {
+	if state, err := c.borrowCurrentSession(); err == nil {
+		return state, nil
 	}
-	if session != nil {
-		return session, nil
-	}
-
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
-	c.mu.RLock()
-	closed, session = c.closed, c.session
-	c.mu.RUnlock()
-	if closed {
-		return nil, errors.New("upstream MCP client is closed")
+	if state, err := c.borrowCurrentSession(); err == nil {
+		return state, nil
 	}
-	if session != nil {
-		return session, nil
+	if err := c.circuitError(); err != nil {
+		c.circuitRejected.Add(1)
+		return nil, err
 	}
 	if err := c.reconnectLocked(ctx); err != nil {
 		return nil, err
 	}
-	c.mu.RLock()
-	session = c.session
-	c.mu.RUnlock()
-	if session == nil {
+	return c.borrowCurrentSession()
+}
+
+func (c *Client) borrowCurrentSession() (*clientSessionState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errors.New("upstream MCP client is closed")
+	}
+	state := c.session
+	if state == nil || state.retired || state.session == nil {
 		return nil, errors.New("upstream MCP session is disconnected")
 	}
-	return session, nil
+	state.refs++
+	return state, nil
+}
+
+func (c *Client) releaseSession(state *clientSessionState) {
+	if state == nil {
+		return
+	}
+	var closeSession *mcp.ClientSession
+	c.mu.Lock()
+	if state.refs > 0 {
+		state.refs--
+	}
+	if state.retired && state.refs == 0 {
+		closeSession = state.session
+		state.session = nil
+	}
+	c.mu.Unlock()
+	if closeSession != nil {
+		_ = closeSession.Close()
+	}
+}
+
+func (c *Client) sessionIsCurrent(state *clientSessionState) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return state != nil && c.session == state && !state.retired && state.session != nil
 }
 
 func (c *Client) reconnectLocked(ctx context.Context) error {
@@ -280,18 +411,26 @@ func (c *Client) callSession(ctx context.Context, session *mcp.ClientSession, to
 	return result, err
 }
 
-func (c *Client) invalidateSession(failed *mcp.ClientSession, callErr error) {
-	detached := false
+func (c *Client) invalidateSession(failed *clientSessionState, callErr error) {
+	if failed == nil {
+		return
+	}
+	var closeSession *mcp.ClientSession
 	c.mu.Lock()
 	if c.session == failed {
 		c.session = nil
 		c.processID = 0
-		c.lastError = c.sanitizeLocked(callErr.Error())
-		detached = true
+		failed.retired = true
+		c.recordFailureLocked(callErr)
+		c.healthCache = healthCacheEntry{}
+		if failed.refs == 0 {
+			closeSession = failed.session
+			failed.session = nil
+		}
 	}
 	c.mu.Unlock()
-	if detached && failed != nil {
-		_ = failed.Close()
+	if closeSession != nil {
+		_ = closeSession.Close()
 	}
 }
 
@@ -338,6 +477,32 @@ func (c *Client) buildTransport() (transportBuild, error) {
 	}
 }
 
+func (c *Client) acquireCallSlot(ctx context.Context) error {
+	c.queuedCalls.Add(1)
+	select {
+	case c.callSlots <- struct{}{}:
+		c.queuedCalls.Add(-1)
+		active := c.inFlightCalls.Add(1)
+		for {
+			current := c.maxInFlightCalls.Load()
+			if active <= current || c.maxInFlightCalls.CompareAndSwap(current, active) {
+				break
+			}
+		}
+		return nil
+	case <-ctx.Done():
+		c.queuedCalls.Add(-1)
+		c.rejectedCalls.Add(1)
+		return ctx.Err()
+	}
+}
+
+func (c *Client) releaseCallSlot() {
+	c.inFlightCalls.Add(-1)
+	c.completedCalls.Add(1)
+	<-c.callSlots
+}
+
 func (c *Client) status(available bool, errorText string) map[string]any {
 	c.mu.RLock()
 	connectedAt := c.connectedAt
@@ -346,12 +511,28 @@ func (c *Client) status(available bool, errorText string) map[string]any {
 	resolvedCommand := c.resolvedCommand
 	processID := c.processID
 	endpointHost := c.endpointHost
+	consecutiveFailures := c.consecutiveFails
+	circuitOpenUntil := c.circuitOpenUntil
+	breakerTrips := c.breakerTrips
 	c.mu.RUnlock()
 	stderrBytes, stderrTruncated := c.stderr.Stats()
 	result := map[string]any{
 		"server": c.name, "transport": c.cfg.EffectiveTransport(), "available": available,
 		"tool_count": toolCount, "reconnect_count": reconnects,
-		"stderr_bytes": stderrBytes, "stderr_truncated": stderrTruncated,
+		"max_concurrency": c.cfg.MaxConcurrency, "queued_calls": c.queuedCalls.Load(),
+		"in_flight_calls": c.inFlightCalls.Load(), "max_in_flight_calls": c.maxInFlightCalls.Load(),
+		"completed_calls": c.completedCalls.Load(), "rejected_calls": c.rejectedCalls.Load(),
+		"circuit_rejected": c.circuitRejected.Load(), "breaker_trips": breakerTrips,
+		"consecutive_failures": consecutiveFailures,
+		"health_cache_hits":    c.healthCacheHits.Load(), "health_cache_misses": c.healthCacheMisses.Load(),
+		"health_cache_ttl_ms": c.cfg.HealthCacheMS,
+		"stderr_bytes":        stderrBytes, "stderr_truncated": stderrTruncated,
+	}
+	if !circuitOpenUntil.IsZero() && time.Now().UTC().Before(circuitOpenUntil) {
+		result["circuit_open"] = true
+		result["circuit_open_until"] = circuitOpenUntil
+	} else {
+		result["circuit_open"] = false
 	}
 	if !connectedAt.IsZero() {
 		result["connected_at"] = connectedAt
@@ -371,6 +552,54 @@ func (c *Client) status(available bool, errorText string) map[string]any {
 	return result
 }
 
+func (c *Client) cachedHealth() (healthCacheEntry, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry := c.healthCache
+	validSession := entry.session == c.session
+	return entry, validSession && !entry.checkedAt.IsZero() && time.Since(entry.checkedAt) < time.Duration(c.cfg.HealthCacheMS)*time.Millisecond
+}
+
+func (c *Client) storeHealth(entry healthCacheEntry, state *clientSessionState) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.session != state {
+		return false
+	}
+	entry.session = state
+	c.healthCache = entry
+	return true
+}
+
+func (c *Client) healthStatus(entry healthCacheEntry, cached bool) map[string]any {
+	result := c.status(entry.available, entry.errorText)
+	result["health_cached"] = cached
+	result["health_checked_at"] = entry.checkedAt
+	result["health_age_ms"] = max(int64(0), time.Since(entry.checkedAt).Milliseconds())
+	return result
+}
+
+func (c *Client) circuitError() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.circuitOpenUntil.IsZero() && time.Now().UTC().Before(c.circuitOpenUntil) {
+		return errors.New("upstream MCP circuit is cooling down")
+	}
+	return nil
+}
+
+func (c *Client) recordFailureLocked(err error) {
+	if err == nil {
+		return
+	}
+	c.lastError = c.sanitizeLocked(err.Error())
+	c.consecutiveFails++
+	if c.consecutiveFails >= circuitFailureThreshold {
+		c.circuitOpenUntil = time.Now().UTC().Add(time.Duration(c.cfg.FailureCooldownMS) * time.Millisecond)
+		c.breakerTrips++
+	}
+}
+
 func (c *Client) setSecrets(values []string) {
 	c.mu.Lock()
 	c.secrets = append([]string(nil), values...)
@@ -378,8 +607,12 @@ func (c *Client) setSecrets(values []string) {
 }
 
 func (c *Client) setError(err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
 	c.mu.Lock()
-	c.lastError = c.sanitizeLocked(err.Error())
+	c.recordFailureLocked(err)
+	c.healthCache = healthCacheEntry{}
 	c.mu.Unlock()
 }
 
@@ -387,10 +620,12 @@ func shouldInvalidateSession(err error) bool {
 	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-func (c *Client) clearErrorFor(session *mcp.ClientSession) {
+func (c *Client) clearErrorFor(state *clientSessionState) {
 	c.mu.Lock()
-	if c.session == session {
+	if c.session == state {
 		c.lastError = ""
+		c.consecutiveFails = 0
+		c.circuitOpenUntil = time.Time{}
 	}
 	c.mu.Unlock()
 }

@@ -255,8 +255,20 @@ func latencyBucket(duration time.Duration) int {
 func (r *Runtime) RuntimeMetrics(includeTools bool, recentLimit int) map[string]any {
 	tracker := r.metricsTracker()
 	now := time.Now().UTC()
+	repositoryCache := r.repositoryCacheStats()
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
+	auditMetrics := map[string]any{
+		"enabled": r.Config.Audit, "write_failures": tracker.auditWriteFailures,
+	}
+	if r.AuditWriter != nil {
+		writerStats := r.AuditWriter.Stats()
+		for _, key := range []string{"queue_depth", "queue_capacity", "enqueued", "fallback_writes", "batches", "rotations", "write_failures", "max_bytes", "max_files"} {
+			if value, ok := writerStats[key]; ok {
+				auditMetrics["writer_"+key] = value
+			}
+		}
+	}
 	result := map[string]any{
 		"started_at":     tracker.startedAt,
 		"uptime_seconds": max(int64(0), int64(now.Sub(tracker.startedAt)/time.Second)),
@@ -271,13 +283,12 @@ func (r *Runtime) RuntimeMetrics(includeTools bool, recentLimit int) map[string]
 			"lt_1s": tracker.latencyBuckets[2], "lt_10s": tracker.latencyBuckets[3],
 			"gte_10s": tracker.latencyBuckets[4],
 		},
-		"audit": map[string]any{
-			"enabled": r.Config.Audit, "write_failures": tracker.auditWriteFailures,
-		},
+		"audit": auditMetrics,
 		"memory_observations": map[string]uint64{
 			"attempted": tracker.observationAttempted, "enqueued": tracker.observationEnqueued,
 			"dropped": tracker.observationDropped,
 		},
+		"repository_cache": repositoryCache,
 	}
 	if !tracker.lastAuditFailureAt.IsZero() {
 		result["audit"].(map[string]any)["last_failure_at"] = tracker.lastAuditFailureAt

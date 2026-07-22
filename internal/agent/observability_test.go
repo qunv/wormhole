@@ -54,6 +54,9 @@ func TestRuntimeMetricsTrackOutcomesAndAuditCorrelation(t *testing.T) {
 		}
 	}
 
+	if err := runtime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	raw, err := os.ReadFile(runtime.Store.AuditPath)
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +178,9 @@ func TestRuntimeMetricsFinalizePanickingCalls(t *testing.T) {
 	recent := metrics["recent_calls"].([]map[string]any)
 	if len(recent) != 1 || recent[0]["status"] != "failed" {
 		t.Fatalf("panic outcome missing from recent calls: %#v", recent)
+	}
+	if err := runtime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(runtime.Store.AuditPath)
 	if err != nil {

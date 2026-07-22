@@ -12,6 +12,7 @@ import (
 
 type RecorderConfig struct {
 	QueueSize       int
+	Workers         int
 	DeliveryTimeout time.Duration
 	MaxAttempts     int
 	RetryBackoff    time.Duration
@@ -20,13 +21,15 @@ type RecorderConfig struct {
 
 type Recorder struct {
 	provider Provider
-	queue    chan ObservationRequest
+	queues   []chan ObservationRequest
 	stop     chan struct{}
 	done     chan struct{}
 	close    sync.Once
 	gate     sync.RWMutex
 	closed   bool
 	config   RecorderConfig
+	workers  int
+	workerWG sync.WaitGroup
 
 	deliveryCtx    context.Context
 	cancelDelivery context.CancelFunc
@@ -38,6 +41,7 @@ type Recorder struct {
 	retried          atomic.Uint64
 	abandoned        atomic.Uint64
 	shutdownTimeouts atomic.Uint64
+	retrySequence    atomic.Uint64
 }
 
 func NewRecorder(provider Provider, queueSize int) *Recorder {
@@ -47,6 +51,9 @@ func NewRecorder(provider Provider, queueSize int) *Recorder {
 func NewRecorderWithConfig(provider Provider, config RecorderConfig) *Recorder {
 	if config.QueueSize <= 0 {
 		config.QueueSize = 128
+	}
+	if config.Workers <= 0 {
+		config.Workers = 4
 	}
 	if config.DeliveryTimeout <= 0 {
 		config.DeliveryTimeout = 2 * time.Second
@@ -60,18 +67,54 @@ func NewRecorderWithConfig(provider Provider, config RecorderConfig) *Recorder {
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = 5 * time.Second
 	}
+	workers := effectiveRecorderWorkers(provider, config.Workers, config.QueueSize)
 	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
 	r := &Recorder{
 		provider:       provider,
-		queue:          make(chan ObservationRequest, config.QueueSize),
+		queues:         makeRecorderQueues(config.QueueSize, workers),
 		stop:           make(chan struct{}),
 		done:           make(chan struct{}),
 		config:         config,
+		workers:        workers,
 		deliveryCtx:    deliveryCtx,
 		cancelDelivery: cancelDelivery,
 	}
-	go r.run()
+	for index := range r.queues {
+		r.workerWG.Add(1)
+		go r.runWorker(r.queues[index])
+	}
+	go func() {
+		r.workerWG.Wait()
+		r.cancelDelivery()
+		close(r.done)
+	}()
 	return r
+}
+
+func effectiveRecorderWorkers(provider Provider, requested, queueSize int) int {
+	workers := min(max(requested, 1), 32)
+	workers = min(workers, max(queueSize, 1))
+	concurrent := false
+	if marker, ok := provider.(ConcurrencySafeProvider); ok {
+		concurrent = marker.ConcurrencySafe()
+	}
+	if !concurrent {
+		return 1
+	}
+	return workers
+}
+
+func makeRecorderQueues(queueSize, workers int) []chan ObservationRequest {
+	queues := make([]chan ObservationRequest, workers)
+	base, remainder := queueSize/workers, queueSize%workers
+	for index := range queues {
+		capacity := base
+		if index < remainder {
+			capacity++
+		}
+		queues[index] = make(chan ObservationRequest, max(capacity, 1))
+	}
+	return queues
 }
 
 func (r *Recorder) Record(request ObservationRequest) bool {
@@ -83,8 +126,9 @@ func (r *Recorder) Record(request ObservationRequest) bool {
 	if r.closed {
 		return false
 	}
+	queue := r.queues[r.shard(request.SessionID)]
 	select {
-	case r.queue <- request:
+	case queue <- request:
 		r.enqueued.Add(1)
 		return true
 	default:
@@ -93,19 +137,45 @@ func (r *Recorder) Record(request ObservationRequest) bool {
 	}
 }
 
+func (r *Recorder) shard(sessionID string) int {
+	if len(r.queues) <= 1 || sessionID == "" {
+		return 0
+	}
+	hash := uint32(2166136261)
+	for index := 0; index < len(sessionID); index++ {
+		hash ^= uint32(sessionID[index])
+		hash *= 16777619
+	}
+	return int(hash % uint32(len(r.queues)))
+}
+
 func (r *Recorder) Stats() map[string]any {
 	if r == nil {
 		return map[string]any{"enabled": false}
 	}
+	depth, capacity := 0, 0
+	shardCapacityMin, shardCapacityMax := 0, 0
+	for index, queue := range r.queues {
+		depth += len(queue)
+		capacity += cap(queue)
+		if index == 0 || cap(queue) < shardCapacityMin {
+			shardCapacityMin = cap(queue)
+		}
+		if cap(queue) > shardCapacityMax {
+			shardCapacityMax = cap(queue)
+		}
+	}
 	return map[string]any{
-		"enabled": true, "queue_depth": len(r.queue), "queue_capacity": cap(r.queue),
+		"enabled": true, "workers": r.workers, "sharded": r.workers > 1,
+		"queue_depth": depth, "queue_capacity": capacity,
+		"shard_capacity_min": shardCapacityMin, "shard_capacity_max": shardCapacityMax,
 		"enqueued": r.enqueued.Load(), "delivered": r.delivered.Load(),
 		"failed": r.failed.Load(), "retried": r.retried.Load(), "dropped": r.dropped.Load(),
 		"abandoned": r.abandoned.Load(), "shutdown_timeouts": r.shutdownTimeouts.Load(),
 	}
 }
 
-// Close stops accepting observations and drains the queue for at most the
+// Close stops accepting observations and drains the queues for at most the
 // configured shutdown timeout. It is safe to call more than once.
 func (r *Recorder) Close() {
 	if r == nil {
@@ -142,30 +212,29 @@ func (r *Recorder) CloseContext(ctx context.Context) error {
 	}
 }
 
-func (r *Recorder) run() {
-	defer close(r.done)
-	defer r.cancelDelivery()
+func (r *Recorder) runWorker(queue chan ObservationRequest) {
+	defer r.workerWG.Done()
 	for {
 		select {
 		case <-r.deliveryCtx.Done():
-			r.abandonQueued()
+			r.abandonQueue(queue)
 			return
 		case <-r.stop:
-			r.drain()
+			r.drainQueue(queue)
 			return
-		case request := <-r.queue:
+		case request := <-queue:
 			r.deliver(request)
 		}
 	}
 }
 
-func (r *Recorder) drain() {
+func (r *Recorder) drainQueue(queue chan ObservationRequest) {
 	for {
 		select {
 		case <-r.deliveryCtx.Done():
-			r.abandonQueued()
+			r.abandonQueue(queue)
 			return
-		case request := <-r.queue:
+		case request := <-queue:
 			r.deliver(request)
 		default:
 			return
@@ -173,10 +242,10 @@ func (r *Recorder) drain() {
 	}
 }
 
-func (r *Recorder) abandonQueued() {
+func (r *Recorder) abandonQueue(queue chan ObservationRequest) {
 	for {
 		select {
-		case <-r.queue:
+		case <-queue:
 			r.abandoned.Add(1)
 		default:
 			return
@@ -226,8 +295,13 @@ func (r *Recorder) retryDelay(attempt int) time.Duration {
 	for index := 1; index < attempt; index++ {
 		delay *= 2
 		if delay >= 2*time.Second {
-			return 2 * time.Second
+			delay = 2 * time.Second
+			break
 		}
 	}
-	return delay
+	// Deterministic per-recorder jitter prevents synchronized retries without a
+	// shared random-number lock or nondeterministic tests.
+	sequence := r.retrySequence.Add(1)
+	percent := 80 + int((sequence*1103515245+12345)%41)
+	return time.Duration(int64(delay) * int64(percent) / 100)
 }

@@ -27,7 +27,12 @@ func TestMCPServersAcceptGenericCommandsAndApplyDefaults(t *testing.T) {
 		if server.EffectiveTransport() != "stdio" {
 			t.Fatalf("command %q normalized to transport=%q", command, server.EffectiveTransport())
 		}
-		if server.StartupTimeoutMS != DefaultMCPStartupTimeoutMS || server.CallTimeoutMS != DefaultMCPCallTimeoutMS || server.MaxTools != DefaultMCPMaxTools {
+		if server.StartupTimeoutMS != DefaultMCPStartupTimeoutMS ||
+			server.CallTimeoutMS != DefaultMCPCallTimeoutMS ||
+			server.HealthCacheMS != DefaultMCPHealthCacheMS ||
+			server.FailureCooldownMS != DefaultMCPFailureCooldownMS ||
+			server.MaxConcurrency != DefaultMCPMaxConcurrency ||
+			server.MaxTools != DefaultMCPMaxTools {
 			t.Fatalf("command %q did not receive defaults: %#v", command, server)
 		}
 		if err := cfg.Validate(false); err != nil {
@@ -122,6 +127,23 @@ func TestMCPServerConfigIDIncludesSecretFingerprints(t *testing.T) {
 	second := cfg.ConfigID(binary, []byte("widget"))
 	if first == second {
 		t.Fatal("ConfigID did not change when an upstream MCP secret changed")
+	}
+}
+
+func TestMCPServersBoundConcurrencyCacheAndCooldown(t *testing.T) {
+	for field, configure := range map[string]func(*MCPServerConfig){
+		"healthCacheMs":     func(server *MCPServerConfig) { server.HealthCacheMS = 60_001 },
+		"failureCooldownMs": func(server *MCPServerConfig) { server.FailureCooldownMS = 60_001 },
+		"maxConcurrency":    func(server *MCPServerConfig) { server.MaxConcurrency = 129 },
+	} {
+		cfg := Default()
+		server := validStdioServer("uvx")
+		configure(&server)
+		cfg.MCPServers["bounded"] = server
+		normalize(&cfg)
+		if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), field) {
+			t.Fatalf("invalid %s was not rejected: %v", field, err)
+		}
 	}
 }
 

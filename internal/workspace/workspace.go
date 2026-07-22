@@ -154,6 +154,13 @@ func (m *Manager) IsRoot(path string) bool {
 }
 
 func (m *Manager) List(start string, recursive bool, limit int) ([]Entry, error) {
+	return m.ListContext(context.Background(), start, recursive, limit)
+}
+
+func (m *Manager) ListContext(ctx context.Context, start string, recursive bool, limit int) ([]Entry, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root, err := m.Resolve(start)
 	if err != nil {
 		return nil, err
@@ -164,6 +171,9 @@ func (m *Manager) List(start string, recursive bool, limit int) ([]Entry, error)
 	var entries []Entry
 	var walk func(string) error
 	walk = func(dir string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		items, err := os.ReadDir(dir)
 		if err != nil {
 			return err
@@ -175,6 +185,9 @@ func (m *Manager) List(start string, recursive bool, limit int) ([]Entry, error)
 			return items[i].Name() < items[j].Name()
 		})
 		for _, item := range items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if len(entries) >= limit {
 				return nil
 			}
@@ -206,6 +219,13 @@ func (m *Manager) List(start string, recursive bool, limit int) ([]Entry, error)
 }
 
 func (m *Manager) FindFiles(start, glob string, limit int) ([]string, string, error) {
+	return m.FindFilesContext(context.Background(), start, glob, limit)
+}
+
+func (m *Manager) FindFilesContext(ctx context.Context, start, glob string, limit int) ([]string, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root, err := m.Resolve(start)
 	if err != nil {
 		return nil, "", err
@@ -219,7 +239,7 @@ func (m *Manager) FindFiles(start, glob string, limit int) ([]string, string, er
 			args = append(args, "-g", glob)
 		}
 		out := make([]string, 0, limit)
-		exit, _, runErr := streamCommandLines(root, m.RGBin, args, func(line string) bool {
+		exit, _, runErr := streamCommandLines(ctx, root, m.RGBin, args, func(line string) bool {
 			line = strings.TrimSpace(line)
 			if line != "" {
 				out = append(out, m.Relative(filepath.Join(root, line)))
@@ -235,6 +255,9 @@ func (m *Manager) FindFiles(start, glob string, limit int) ([]string, string, er
 	}
 	var out []string
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}
@@ -264,6 +287,13 @@ func (m *Manager) FindFiles(start, glob string, limit int) ([]string, string, er
 }
 
 func (m *Manager) Search(start, query string, regex bool, glob string, contextLines, limit int) ([]Match, string, error) {
+	return m.SearchContext(context.Background(), start, query, regex, glob, contextLines, limit)
+}
+
+func (m *Manager) SearchContext(ctx context.Context, start, query string, regex bool, glob string, contextLines, limit int) ([]Match, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root, err := m.Resolve(start)
 	if err != nil {
 		return nil, "", err
@@ -281,7 +311,7 @@ func (m *Manager) Search(start, query string, regex bool, glob string, contextLi
 		}
 		args = append(args, "-e", query, "--", ".")
 		matches := make([]Match, 0, limit)
-		exit, _, runErr := streamCommandLines(root, m.RGBin, args, func(line string) bool {
+		exit, _, runErr := streamCommandLines(ctx, root, m.RGBin, args, func(line string) bool {
 			if match, ok := parseGrepLine(line, root, m); ok {
 				matches = append(matches, match)
 			}
@@ -289,7 +319,7 @@ func (m *Manager) Search(start, query string, regex bool, glob string, contextLi
 		})
 		if runErr == nil && (exit == 0 || exit == 1) {
 			if contextLines > 0 {
-				m.attachContext(matches, contextLines)
+				m.attachContext(ctx, matches, contextLines)
 			}
 			return matches, "ripgrep", nil
 		}
@@ -297,14 +327,21 @@ func (m *Manager) Search(start, query string, regex bool, glob string, contextLi
 			return nil, "ripgrep", runErr
 		}
 	}
-	matches, err := m.searchScan(root, query, regex, glob, limit)
+	matches, err := m.searchScan(ctx, root, query, regex, glob, limit)
 	if contextLines > 0 {
-		m.attachContext(matches, contextLines)
+		m.attachContext(ctx, matches, contextLines)
 	}
 	return matches, "scan", err
 }
 
 func (m *Manager) Tree(start string, depth, limit int) ([]string, int, int, error) {
+	return m.TreeContext(context.Background(), start, depth, limit)
+}
+
+func (m *Manager) TreeContext(ctx context.Context, start string, depth, limit int) ([]string, int, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root, err := m.Resolve(start)
 	if err != nil {
 		return nil, 0, 0, err
@@ -319,6 +356,9 @@ func (m *Manager) Tree(start string, depth, limit int) ([]string, int, int, erro
 	dirs, files := 0, 0
 	var walk func(string, int) error
 	walk = func(dir string, level int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if level > depth || len(entries) >= limit {
 			return nil
 		}
@@ -333,6 +373,9 @@ func (m *Manager) Tree(start string, depth, limit int) ([]string, int, int, erro
 			return items[i].Name() < items[j].Name()
 		})
 		for _, item := range items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if len(entries) >= limit {
 				break
 			}
@@ -428,7 +471,7 @@ func parseGrepLine(line, root string, manager *Manager) (Match, bool) {
 	return Match{Path: manager.Relative(filepath.Join(root, line[:first])), Line: number, Text: text}, true
 }
 
-func (m *Manager) searchScan(root, query string, useRegex bool, glob string, limit int) ([]Match, error) {
+func (m *Manager) searchScan(ctx context.Context, root, query string, useRegex bool, glob string, limit int) ([]Match, error) {
 	var expression regexLike
 	if useRegex {
 		compiled, err := compileRegex(query)
@@ -441,6 +484,9 @@ func (m *Manager) searchScan(root, query string, useRegex bool, glob string, lim
 	needle := strings.ToLower(query)
 	var matches []Match
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}
@@ -468,6 +514,10 @@ func (m *Manager) searchScan(root, query string, useRegex bool, glob string, lim
 		scanner.Buffer(make([]byte, 64<<10), maxRipgrepLineBytes)
 		lineNumber := 0
 		for scanner.Scan() {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_ = file.Close()
+				return ctxErr
+			}
 			lineNumber++
 			line := scanner.Text()
 			found := strings.Contains(strings.ToLower(line), needle)
@@ -499,7 +549,7 @@ func (m *Manager) searchScan(root, query string, useRegex bool, glob string, lim
 	return matches, err
 }
 
-func (m *Manager) attachContext(matches []Match, count int) {
+func (m *Manager) attachContext(ctx context.Context, matches []Match, count int) {
 	type contextGroup struct {
 		indices []int
 		lines   map[int]string
@@ -520,6 +570,9 @@ func (m *Manager) attachContext(matches []Match, count int) {
 		group.maxLine = max(group.maxLine, matches[index].Line+count)
 	}
 	for path, group := range groups {
+		if ctx.Err() != nil {
+			return
+		}
 		file, err := os.Open(path)
 		if err != nil {
 			continue
@@ -528,6 +581,9 @@ func (m *Manager) attachContext(matches []Match, count int) {
 		scanner.Buffer(make([]byte, 64<<10), maxRipgrepLineBytes)
 		lineNumber := 0
 		for lineNumber < group.maxLine && scanner.Scan() {
+			if ctx.Err() != nil {
+				break
+			}
 			lineNumber++
 			for _, index := range group.indices {
 				if lineNumber >= matches[index].Line-count && lineNumber <= matches[index].Line+count {
@@ -555,10 +611,13 @@ const maxRipgrepLineBytes = 1 << 20
 
 var errStopWalk = errors.New("stop walk")
 
-func streamCommandLines(root, executable string, args []string, visit func(string) bool) (int, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func streamCommandLines(ctx context.Context, root, executable string, args []string, visit func(string) bool) (int, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd := exec.CommandContext(timeoutCtx, executable, args...)
 	cmd.Dir = root
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -585,8 +644,8 @@ func streamCommandLines(root, executable string, args []string, visit func(strin
 	if stopped {
 		return 0, true, nil
 	}
-	if ctx.Err() != nil {
-		return -1, false, ctx.Err()
+	if timeoutCtx.Err() != nil {
+		return -1, false, timeoutCtx.Err()
 	}
 	if scanErr != nil {
 		return -1, false, scanErr

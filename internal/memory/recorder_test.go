@@ -6,6 +6,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,6 +169,116 @@ func TestRecorderCountsDroppedObservationsWhenQueueIsFull(t *testing.T) {
 	recorder.Close()
 	if got := recorder.Stats()["dropped"]; got != uint64(1) {
 		t.Fatalf("dropped = %#v, want 1", got)
+	}
+}
+
+type concurrentRecorderProvider struct {
+	recorderProvider
+	active    atomic.Int32
+	maxActive atomic.Int32
+	started   chan string
+	release   chan struct{}
+	orderMu   sync.Mutex
+	order     []int
+}
+
+func (*concurrentRecorderProvider) ConcurrencySafe() bool { return true }
+
+func (p *concurrentRecorderProvider) Observe(ctx context.Context, request ObservationRequest) error {
+	active := p.active.Add(1)
+	for {
+		current := p.maxActive.Load()
+		if active <= current || p.maxActive.CompareAndSwap(current, active) {
+			break
+		}
+	}
+	defer p.active.Add(-1)
+	if value, ok := request.Data.(int); ok {
+		p.orderMu.Lock()
+		p.order = append(p.order, value)
+		p.orderMu.Unlock()
+	}
+	if p.started != nil {
+		select {
+		case p.started <- request.SessionID:
+		default:
+		}
+	}
+	if p.release != nil {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func TestRecorderUsesOneWorkerForProvidersWithoutConcurrencyOptIn(t *testing.T) {
+	provider := &recorderProvider{observed: make(chan ObservationRequest, 4)}
+	recorder := NewRecorderWithConfig(provider, RecorderConfig{QueueSize: 8, Workers: 4})
+	defer recorder.Close()
+	stats := recorder.Stats()
+	if stats["workers"] != 1 || stats["sharded"] != false || stats["queue_capacity"] != 8 {
+		t.Fatalf("unexpected serialized recorder stats: %#v", stats)
+	}
+}
+
+func TestRecorderRunsDifferentSessionShardsConcurrently(t *testing.T) {
+	provider := &concurrentRecorderProvider{
+		started: make(chan string, 4), release: make(chan struct{}),
+	}
+	recorder := NewRecorderWithConfig(provider, RecorderConfig{
+		QueueSize: 8, Workers: 4, DeliveryTimeout: time.Second, MaxAttempts: 1,
+	})
+	defer recorder.Close()
+	first := "session-a"
+	second := "session-b"
+	for recorder.shard(first) == recorder.shard(second) {
+		second += "-x"
+	}
+	if !recorder.Record(ObservationRequest{SessionID: first}) || !recorder.Record(ObservationRequest{SessionID: second}) {
+		t.Fatal("different-session observations were not queued")
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case <-provider.started:
+		case <-time.After(time.Second):
+			close(provider.release)
+			t.Fatalf("only %d observations started concurrently", index)
+		}
+	}
+	if provider.maxActive.Load() < 2 {
+		t.Fatalf("max active deliveries = %d, want at least 2", provider.maxActive.Load())
+	}
+	close(provider.release)
+	recorder.Close()
+	stats := recorder.Stats()
+	if stats["workers"] != 4 || stats["delivered"] != uint64(2) {
+		t.Fatalf("unexpected sharded recorder stats: %#v", stats)
+	}
+}
+
+func TestRecorderPreservesOrderWithinSession(t *testing.T) {
+	provider := &concurrentRecorderProvider{}
+	recorder := NewRecorderWithConfig(provider, RecorderConfig{
+		QueueSize: 64, Workers: 4, DeliveryTimeout: time.Second, MaxAttempts: 1,
+	})
+	for index := 0; index < 10; index++ {
+		if !recorder.Record(ObservationRequest{SessionID: "ordered", Data: index}) {
+			t.Fatalf("observation %d was not queued", index)
+		}
+	}
+	recorder.Close()
+	provider.orderMu.Lock()
+	defer provider.orderMu.Unlock()
+	if len(provider.order) != 10 {
+		t.Fatalf("delivered order length = %d, want 10: %#v", len(provider.order), provider.order)
+	}
+	for index, value := range provider.order {
+		if value != index {
+			t.Fatalf("delivery order[%d] = %d, want %d: %#v", index, value, index, provider.order)
+		}
 	}
 }
 

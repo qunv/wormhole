@@ -39,6 +39,7 @@ func (r *Runtime) handleExec(ctx context.Context, name string, args map[string]a
 		if err != nil {
 			return nil, err
 		}
+		r.invalidateRepositoryCaches()
 		return map[string]any{
 			"ok": true, "id": proc.ID, "name": proc.Name, "command": command,
 			"cwd": cwd, "pid": proc.PID,
@@ -84,6 +85,7 @@ func (r *Runtime) runCommand(ctx context.Context, args map[string]any) (any, err
 	timeout := time.Duration(intArg(args, "timeout_ms", 120_000)) * time.Millisecond
 	maxChars := min(max(intArg(args, "max_output_chars", r.Config.CommandOutput), 1), r.Config.MaxCommandOutput)
 	result := processx.Run(ctx, command, cwd, stringArg(args, "shell", ""), timeout, maxChars)
+	r.invalidateRepositoryCaches()
 	stdout := processx.Trim(result.Stdout, intArg(args, "head_lines", 0), intArg(args, "tail_lines", 0), maxChars)
 	stderr := processx.Trim(result.Stderr, intArg(args, "head_lines", 0), intArg(args, "tail_lines", 0), maxChars)
 	return map[string]any{
@@ -175,6 +177,9 @@ func (r *Runtime) rawGit(ctx context.Context, args map[string]any) (any, error) 
 		return nil, err
 	}
 	result := processx.Capture(ctx, "git", argv, cwd, 120*time.Second)
+	if result.ExitCode == 0 && !security.IsReadOnlyGit(argv) {
+		r.invalidateRepositoryCaches()
+	}
 	return map[string]any{
 		"cwd": cwd, "args": argv, "exit_code": result.ExitCode,
 		"timed_out": result.TimedOut, "stdout": result.Stdout, "stderr": result.Stderr,
@@ -186,27 +191,117 @@ func (r *Runtime) gitStatus(ctx context.Context, cwdArg string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := processx.Capture(ctx, "git", []string{"status", "--porcelain"}, cwd, 30*time.Second)
-	if result.ExitCode != 0 {
-		return map[string]any{
-			"cwd": cwd, "is_git_repo": false, "clean": nil,
-			"error": firstLine(result.Stderr),
-		}, nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	branchResult := processx.Capture(ctx, "git", []string{"rev-parse", "--abbrev-ref", "HEAD"}, cwd, 30*time.Second)
-	var files []map[string]any
-	for _, line := range nonEmptyLines(result.Stdout) {
-		if len(line) < 3 {
-			continue
+	now := time.Now().UTC()
+	generation := r.currentRepositoryGeneration()
+	r.repoCacheMu.Lock()
+	if cached, ok := r.gitStatusCache[cwd]; ok && cached.Generation == generation && now.Sub(cached.GeneratedAt) < gitStatusCacheTTL {
+		r.repoCacheMu.Unlock()
+		return gitStatusMap(cached, true), nil
+	}
+	r.repoCacheMu.Unlock()
+
+	result := processx.Capture(ctx, "git", []string{"status", "--porcelain=v2", "--branch", "--untracked-files=all"}, cwd, 30*time.Second)
+	snapshot := gitStatusSnapshot{GeneratedAt: now, Generation: generation, CWD: cwd}
+	if result.ExitCode != 0 {
+		snapshot.Error = firstLine(result.Stderr)
+	} else {
+		snapshot.IsGitRepo = true
+		snapshot.Branch, snapshot.Files = parseGitStatusV2(result.Stdout)
+		snapshot.RenderedFiles = renderGitStatusFiles(snapshot.Files)
+		clean := len(snapshot.Files) == 0
+		snapshot.Clean = &clean
+	}
+	r.repoCacheMu.Lock()
+	if r.repoGeneration == generation {
+		if r.gitStatusCache == nil {
+			r.gitStatusCache = map[string]gitStatusSnapshot{}
 		}
-		files = append(files, map[string]any{
-			"index": string(line[0]), "worktree": string(line[1]), "path": strings.TrimSpace(line[3:]),
-		})
+		if _, exists := r.gitStatusCache[cwd]; !exists && len(r.gitStatusCache) >= gitStatusCacheLimit {
+			oldestCWD := ""
+			var oldest time.Time
+			for candidate, entry := range r.gitStatusCache {
+				if oldestCWD == "" || entry.GeneratedAt.Before(oldest) {
+					oldestCWD, oldest = candidate, entry.GeneratedAt
+				}
+			}
+			delete(r.gitStatusCache, oldestCWD)
+		}
+		r.gitStatusCache[cwd] = snapshot
+	}
+	r.repoCacheMu.Unlock()
+	return gitStatusMap(snapshot, false), nil
+}
+
+func parseGitStatusV2(output string) (string, []gitFileStatus) {
+	branch := ""
+	var files []gitFileStatus
+	for _, line := range nonEmptyLines(output) {
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
+			branch = strings.TrimSpace(strings.TrimPrefix(line, "# branch.head "))
+			if branch == "(detached)" {
+				branch = "HEAD"
+			}
+		case strings.HasPrefix(line, "1 "):
+			fields := strings.SplitN(line, " ", 9)
+			if len(fields) == 9 {
+				files = append(files, gitFileStatus{Index: gitStatusCode(fields[1], 0), Worktree: gitStatusCode(fields[1], 1), Path: fields[8]})
+			}
+		case strings.HasPrefix(line, "2 "):
+			fields := strings.SplitN(line, " ", 10)
+			if len(fields) == 10 {
+				path, _, _ := strings.Cut(fields[9], "\t")
+				files = append(files, gitFileStatus{Index: gitStatusCode(fields[1], 0), Worktree: gitStatusCode(fields[1], 1), Path: path})
+			}
+		case strings.HasPrefix(line, "u "):
+			fields := strings.Fields(line)
+			if len(fields) >= 11 {
+				files = append(files, gitFileStatus{Index: gitStatusCode(fields[1], 0), Worktree: gitStatusCode(fields[1], 1), Path: strings.Join(fields[10:], " ")})
+			}
+		case strings.HasPrefix(line, "? "):
+			files = append(files, gitFileStatus{Index: "?", Worktree: "?", Path: strings.TrimPrefix(line, "? ")})
+		}
+	}
+	return branch, files
+}
+
+func gitStatusCode(value string, index int) string {
+	if index < 0 || index >= len(value) || value[index] == '.' {
+		return " "
+	}
+	return string(value[index])
+}
+
+func renderGitStatusFiles(files []gitFileStatus) []map[string]any {
+	if len(files) == 0 {
+		return nil
+	}
+	rendered := make([]map[string]any, 0, len(files))
+	for _, file := range files {
+		rendered = append(rendered, map[string]any{"index": file.Index, "worktree": file.Worktree, "path": file.Path})
+	}
+	return rendered
+}
+
+func gitStatusMap(snapshot gitStatusSnapshot, cached bool) map[string]any {
+	if !snapshot.IsGitRepo {
+		return map[string]any{
+			"cwd": snapshot.CWD, "is_git_repo": false, "clean": nil,
+			"error": snapshot.Error, "cached": cached,
+		}
+	}
+	files := snapshot.RenderedFiles
+	if files == nil && len(snapshot.Files) > 0 {
+		files = renderGitStatusFiles(snapshot.Files)
 	}
 	return map[string]any{
-		"cwd": cwd, "is_git_repo": true, "branch": strings.TrimSpace(branchResult.Stdout),
-		"clean": len(files) == 0, "count": len(files), "files": files,
-	}, nil
+		"cwd": snapshot.CWD, "is_git_repo": true, "branch": snapshot.Branch,
+		"clean": snapshot.Clean != nil && *snapshot.Clean, "count": len(files), "files": files,
+		"cached": cached, "generated_at": snapshot.GeneratedAt,
+	}
 }
 
 func (r *Runtime) gitDiff(ctx context.Context, args map[string]any) (any, error) {

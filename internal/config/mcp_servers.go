@@ -15,10 +15,13 @@ import (
 )
 
 const (
-	DefaultMCPStartupTimeoutMS = 15_000
-	DefaultMCPCallTimeoutMS    = 30_000
-	DefaultMCPHealthTimeoutMS  = 3_000
-	DefaultMCPMaxTools         = 200
+	DefaultMCPStartupTimeoutMS  = 15_000
+	DefaultMCPCallTimeoutMS     = 30_000
+	DefaultMCPHealthTimeoutMS   = 3_000
+	DefaultMCPHealthCacheMS     = 5_000
+	DefaultMCPFailureCooldownMS = 1_000
+	DefaultMCPMaxConcurrency    = 8
+	DefaultMCPMaxTools          = 200
 )
 
 type MCPServerConfig struct {
@@ -41,11 +44,14 @@ type MCPServerConfig struct {
 	AllowedTools []string `json:"allowedTools,omitempty"`
 	DeniedTools  []string `json:"deniedTools,omitempty"`
 
-	Required         bool `json:"required,omitempty"`
-	StartupTimeoutMS int  `json:"startupTimeoutMs,omitempty"`
-	CallTimeoutMS    int  `json:"callTimeoutMs,omitempty"`
-	HealthTimeoutMS  int  `json:"healthTimeoutMs,omitempty"`
-	MaxTools         int  `json:"maxTools,omitempty"`
+	Required          bool `json:"required,omitempty"`
+	StartupTimeoutMS  int  `json:"startupTimeoutMs,omitempty"`
+	CallTimeoutMS     int  `json:"callTimeoutMs,omitempty"`
+	HealthTimeoutMS   int  `json:"healthTimeoutMs,omitempty"`
+	HealthCacheMS     int  `json:"healthCacheMs,omitempty"`
+	FailureCooldownMS int  `json:"failureCooldownMs,omitempty"`
+	MaxConcurrency    int  `json:"maxConcurrency,omitempty"`
+	MaxTools          int  `json:"maxTools,omitempty"`
 
 	Policy MCPServerPolicyConfig `json:"policy,omitempty"`
 }
@@ -94,6 +100,15 @@ func normalizeMCPServers(c *Config) {
 		}
 		if server.HealthTimeoutMS == 0 {
 			server.HealthTimeoutMS = DefaultMCPHealthTimeoutMS
+		}
+		if server.HealthCacheMS == 0 {
+			server.HealthCacheMS = DefaultMCPHealthCacheMS
+		}
+		if server.FailureCooldownMS == 0 {
+			server.FailureCooldownMS = DefaultMCPFailureCooldownMS
+		}
+		if server.MaxConcurrency == 0 {
+			server.MaxConcurrency = DefaultMCPMaxConcurrency
 		}
 		if server.MaxTools == 0 {
 			server.MaxTools = DefaultMCPMaxTools
@@ -157,6 +172,9 @@ func validateMCPServers(c Config) error {
 			{"startupTimeoutMs", server.StartupTimeoutMS, 10 * 60_000},
 			{"callTimeoutMs", server.CallTimeoutMS, 60 * 60_000},
 			{"healthTimeoutMs", server.HealthTimeoutMS, 60_000},
+			{"healthCacheMs", server.HealthCacheMS, 60_000},
+			{"failureCooldownMs", server.FailureCooldownMS, 60_000},
+			{"maxConcurrency", server.MaxConcurrency, 128},
 			{"maxTools", server.MaxTools, 1_000},
 		} {
 			if limit.value <= 0 || limit.value > limit.max {

@@ -116,6 +116,40 @@ func TestLockedBufferHeadAndTailLimits(t *testing.T) {
 	if got := tail.String(); got != "cdefg" || !tail.Truncated() {
 		t.Fatalf("tail buffer = %q truncated=%v", got, tail.Truncated())
 	}
+	_, _ = tail.Write([]byte("hijk"))
+	if got := tail.String(); got != "ghijk" {
+		t.Fatalf("wrapped tail buffer = %q", got)
+	}
+	_, _ = tail.Write([]byte("0123456789"))
+	if got := tail.String(); got != "56789" {
+		t.Fatalf("large-write tail buffer = %q", got)
+	}
+	if got := tail.TailString(3); got != "789" {
+		t.Fatalf("bounded tail read = %q", got)
+	}
+}
+
+func BenchmarkLockedBufferRollingTailAfterFull(b *testing.B) {
+	buffer := &lockedBuffer{limit: 200_000}
+	chunk := make([]byte, 4096)
+	_, _ = buffer.Write(make([]byte, 200_000))
+	b.SetBytes(int64(len(chunk)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_, _ = buffer.Write(chunk)
+	}
+}
+
+func BenchmarkLockedBufferTailRead128(b *testing.B) {
+	buffer := &lockedBuffer{limit: 200_000}
+	_, _ = buffer.Write(make([]byte, 200_000))
+	_, _ = buffer.Write(make([]byte, 4096))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = buffer.TailString(128)
+	}
 }
 
 func helperCommand(mode string) string {

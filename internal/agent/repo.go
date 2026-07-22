@@ -9,33 +9,40 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"codebridge/internal/processx"
 )
 
+const markerScanKind = "to" + "do"
+
 type repoIndex struct {
-	SchemaVersion   int              `json:"schema_version"`
-	TS              time.Time        `json:"ts"`
-	Root            string           `json:"root"`
-	Depth           int              `json:"depth"`
-	Limit           int              `json:"limit"`
-	SymbolsIncluded bool             `json:"symbols_included"`
-	Profile         map[string]any   `json:"profile"`
-	Tree            []string         `json:"tree"`
-	Dirs            int              `json:"dirs"`
-	Files           int              `json:"files"`
-	ImportantFiles  []map[string]any `json:"important_files"`
-	Symbols         []map[string]any `json:"symbols,omitempty"`
+	SchemaVersion      int              `json:"schema_version"`
+	TS                 time.Time        `json:"ts"`
+	Generation         uint64           `json:"generation"`
+	Root               string           `json:"root"`
+	Depth              int              `json:"depth"`
+	Limit              int              `json:"limit"`
+	SymbolsIncluded    bool             `json:"symbols_included"`
+	InventoryTruncated bool             `json:"inventory_truncated,omitempty"`
+	Profile            map[string]any   `json:"profile"`
+	Tree               []string         `json:"tree"`
+	Dirs               int              `json:"dirs"`
+	Files              int              `json:"files"`
+	ImportantFiles     []map[string]any `json:"important_files"`
+	Symbols            []map[string]any `json:"symbols,omitempty"`
 }
 
-const repoIndexSchemaVersion = 2
+const repoIndexSchemaVersion = 3
 
 func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]any) (any, error) {
 	switch name {
@@ -48,22 +55,29 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 		if err != nil {
 			return nil, err
 		}
-		return r.projectProfile(root)
+		inventory, _, err := r.loadRepoInventory(ctx, root, boolArg(args, "refresh", false))
+		if err != nil {
+			return nil, err
+		}
+		return inventory.Profile, nil
 	case "important_files":
 		root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
 		if err != nil {
 			return nil, err
 		}
-		files := r.importantFiles(root)
-		return map[string]any{"count": len(files), "files": files}, nil
+		inventory, _, err := r.loadRepoInventory(ctx, root, false)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"count": len(inventory.Important), "files": inventory.Important}, nil
 	case "repo_map":
-		return r.repoMap(args)
+		return r.repoMap(ctx, args)
 	case "repo_symbols":
 		root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
 		if err != nil {
 			return nil, err
 		}
-		symbols, err := r.scanSymbols(root, intArg(args, "max_files", 500), intArg(args, "max_matches", 2000), stringArg(args, "kind", ""))
+		symbols, err := r.scanSymbols(ctx, root, intArg(args, "max_files", 500), intArg(args, "max_matches", 2000), stringArg(args, "kind", ""), false)
 		if err != nil {
 			return nil, err
 		}
@@ -73,16 +87,23 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 	case "index_status":
 		var index repoIndex
 		if err := r.Store.ReadJSON(r.Store.IndexPath, &index); err != nil {
-			return map[string]any{"cached": false, "message": "No index cached yet. Call repo_map."}, nil
+			return map[string]any{
+				"cached": false, "message": "No index cached yet. Call repo_map.",
+				"memory_cache": r.repositoryCacheStats(),
+			}, nil
 		}
 		age := time.Since(index.TS)
+		generation := r.currentRepositoryGeneration()
 		return map[string]any{
-			"cached": true, "fresh": age < 5*time.Minute, "ts": index.TS,
-			"age_seconds": int(age.Seconds()), "ttl_seconds": 300,
-			"schema_version": index.SchemaVersion, "depth": index.Depth, "limit": index.Limit,
-			"symbols_included":  index.SymbolsIncluded,
-			"profile_languages": index.Profile["languages"], "profile_frameworks": index.Profile["frameworks"],
+			"cached": true, "fresh": age < repoCacheTTL && index.Generation == generation, "ts": index.TS,
+			"age_seconds": int(age.Seconds()), "ttl_seconds": int(repoCacheTTL / time.Second),
+			"schema_version": index.SchemaVersion, "generation": index.Generation,
+			"current_generation": generation, "depth": index.Depth, "limit": index.Limit,
+			"inventory_truncated": index.InventoryTruncated,
+			"symbols_included":    index.SymbolsIncluded,
+			"profile_languages":   index.Profile["languages"], "profile_frameworks": index.Profile["frameworks"],
 			"symbols_cached": index.SymbolsIncluded, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
+			"memory_cache": r.repositoryCacheStats(),
 		}, nil
 	case "detect_test_commands":
 		root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
@@ -99,9 +120,9 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 	case "review_diff":
 		return r.reviewDiff(ctx, args)
 	case "security_scan":
-		return r.patternScan(stringArg(args, "path", "."), intArg(args, "limit", 200), "security")
+		return r.patternScan(ctx, stringArg(args, "path", "."), intArg(args, "limit", 200), "security")
 	case "todo_scan":
-		return r.patternScan(stringArg(args, "path", "."), intArg(args, "limit", 300), "todo")
+		return r.patternScan(ctx, stringArg(args, "path", "."), intArg(args, "limit", 300), markerScanKind)
 	case "change_summary":
 		return r.changeSummary(ctx, args)
 	case "session_report":
@@ -111,150 +132,42 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 	}
 }
 
-func (r *Runtime) projectProfile(root string) (map[string]any, error) {
-	languages, frameworks, packageManagers := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	var manifests []string
-	scripts := map[string]string{}
-	entries, _ := r.Workspace.List(root, true, 4000)
-	extensionLanguages := map[string]string{
-		".go": "go", ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
-		".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript", ".py": "python",
-		".rs": "rust", ".java": "java", ".kt": "kotlin", ".dart": "dart", ".rb": "ruby",
-		".php": "php", ".cs": "csharp", ".cpp": "cpp", ".c": "c", ".swift": "swift",
-	}
-	for _, entry := range entries {
-		if entry.Type != "file" {
-			continue
-		}
-		base := strings.ToLower(filepath.Base(entry.Path))
-		if language := extensionLanguages[strings.ToLower(filepath.Ext(entry.Path))]; language != "" {
-			languages[language] = true
-		}
-		if manifestNames[base] {
-			manifests = append(manifests, entry.Path)
-		}
-	}
-	if fileExists(filepath.Join(root, "go.mod")) {
-		languages["go"], packageManagers["go"] = true, true
-	}
-	if fileExists(filepath.Join(root, "Cargo.toml")) {
-		languages["rust"], packageManagers["cargo"] = true, true
-	}
-	if fileExists(filepath.Join(root, "pyproject.toml")) || fileExists(filepath.Join(root, "requirements.txt")) {
-		languages["python"], packageManagers["pip"] = true, true
-	}
-	if raw, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil {
-		languages["javascript"] = true
-		var pkg struct {
-			Scripts      map[string]string `json:"scripts"`
-			Dependencies map[string]string `json:"dependencies"`
-			DevDeps      map[string]string `json:"devDependencies"`
-		}
-		if json.Unmarshal(raw, &pkg) == nil {
-			for key, value := range pkg.Scripts {
-				scripts[key] = value
-			}
-			for dependency := range mergeStringMaps(pkg.Dependencies, pkg.DevDeps) {
-				switch dependency {
-				case "react", "next":
-					frameworks[dependency] = true
-				case "vue":
-					frameworks["vue"] = true
-				case "@angular/core":
-					frameworks["angular"] = true
-				case "svelte":
-					frameworks["svelte"] = true
-				case "express":
-					frameworks["express"] = true
-				case "fastify":
-					frameworks["fastify"] = true
-				}
-			}
-		}
-		switch {
-		case fileExists(filepath.Join(root, "pnpm-lock.yaml")):
-			packageManagers["pnpm"] = true
-		case fileExists(filepath.Join(root, "yarn.lock")):
-			packageManagers["yarn"] = true
-		default:
-			packageManagers["npm"] = true
-		}
-	}
-	return map[string]any{
-		"rootDir": root, "languages": sortedKeys(languages), "frameworks": sortedKeys(frameworks),
-		"packageManagers": sortedKeys(packageManagers), "manifests": manifests, "scripts": scripts,
-	}, nil
-}
-
-func (r *Runtime) importantFiles(root string) []map[string]any {
-	names := map[string]bool{
-		"readme.md": true, "agents.md": true, "contributing.md": true, "license": true,
-		"go.mod": true, "go.sum": true, "package.json": true, "package-lock.json": true,
-		"pnpm-lock.yaml": true, "yarn.lock": true, "cargo.toml": true, "pyproject.toml": true,
-		"dockerfile": true, "docker-compose.yml": true, "makefile": true, ".gitignore": true,
-		"tsconfig.json": true, "vite.config.ts": true, "next.config.js": true,
-	}
-	var out []map[string]any
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if entry.IsDir() {
-			if path != root && r.Workspace.Skips[entry.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, _ := filepath.Rel(root, path)
-		if strings.Count(rel, string(os.PathSeparator)) > 3 {
-			return nil
-		}
-		base := strings.ToLower(entry.Name())
-		if !names[base] && !strings.HasPrefix(filepath.ToSlash(rel), ".github/workflows/") {
-			return nil
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return nil
-		}
-		out = append(out, map[string]any{"path": r.Workspace.Relative(path), "size": info.Size()})
-		if len(out) >= 100 {
-			return errStop
-		}
-		return nil
-	})
-	return out
-}
-
-func (r *Runtime) buildIndex(root string, depth, limit int, symbols, refresh bool) (repoIndex, bool, error) {
+func (r *Runtime) buildIndex(ctx context.Context, root string, depth, limit int, symbols, refresh bool) (repoIndex, bool, error) {
 	depth, limit = normalizeRepoIndexParams(depth, limit)
-	r.repoIndexMu.Lock()
-	defer r.repoIndexMu.Unlock()
-
-	var cached repoIndex
-	if !refresh && r.Store.ReadJSON(r.Store.IndexPath, &cached) == nil &&
-		cached.SchemaVersion == repoIndexSchemaVersion &&
-		cached.Root == root && cached.Depth == depth && cached.Limit == limit &&
-		(!symbols || cached.SymbolsIncluded) && time.Since(cached.TS) < 5*time.Minute {
-		return cached, true, nil
-	}
-	tree, dirs, files, err := r.Workspace.Tree(root, depth, limit)
+	inventory, _, err := r.loadRepoInventory(ctx, root, refresh)
 	if err != nil {
 		return repoIndex{}, false, err
 	}
-	profile, err := r.projectProfile(root)
-	if err != nil {
-		return repoIndex{}, false, err
+	key := repoViewKey{
+		Root: root, Generation: inventory.Generation, Depth: depth, Limit: limit, Symbols: symbols,
 	}
+	if !refresh {
+		if cached, ok := r.cachedRepoView(key); ok && time.Since(cached.TS) < repoCacheTTL {
+			return cached, true, nil
+		}
+		if !symbols {
+			richKey := key
+			richKey.Symbols = true
+			if cached, ok := r.cachedRepoView(richKey); ok && time.Since(cached.TS) < repoCacheTTL {
+				return cached, true, nil
+			}
+		}
+	}
+	tree, dirs, files := treeFromInventory(inventory.Entries, depth, limit)
 	index := repoIndex{
-		SchemaVersion: repoIndexSchemaVersion, TS: time.Now().UTC(), Root: root,
-		Depth: depth, Limit: limit, SymbolsIncluded: symbols,
-		Profile: profile, Tree: tree, Dirs: dirs, Files: files,
-		ImportantFiles: r.importantFiles(root),
+		SchemaVersion: repoIndexSchemaVersion, TS: inventory.GeneratedAt,
+		Generation: inventory.Generation, Root: root, Depth: depth, Limit: limit,
+		SymbolsIncluded: symbols, InventoryTruncated: inventory.Truncated,
+		Profile: inventory.Profile, Tree: tree, Dirs: dirs, Files: files,
+		ImportantFiles: inventory.Important,
 	}
 	if symbols {
-		index.Symbols, _ = r.scanSymbols(root, 500, 2000, "")
+		index.Symbols, err = r.scanSymbols(ctx, root, 500, 2000, "", refresh)
+		if err != nil {
+			return repoIndex{}, false, err
+		}
 	}
+	r.storeRepoView(key, index)
 	_ = r.Store.WriteJSON(r.Store.IndexPath, index)
 	return index, false, nil
 }
@@ -269,12 +182,12 @@ func normalizeRepoIndexParams(depth, limit int) (int, int) {
 	return depth, limit
 }
 
-func (r *Runtime) repoMap(args map[string]any) (any, error) {
+func (r *Runtime) repoMap(ctx context.Context, args map[string]any) (any, error) {
 	root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
 	if err != nil {
 		return nil, err
 	}
-	index, cached, err := r.buildIndex(root, intArg(args, "depth", 3), intArg(args, "max_entries", 800), false, boolArg(args, "refresh", false))
+	index, cached, err := r.buildIndex(ctx, root, intArg(args, "depth", 3), intArg(args, "max_entries", 800), false, boolArg(args, "refresh", false))
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +203,7 @@ func (r *Runtime) workspaceSnapshot(ctx context.Context, args map[string]any) (a
 	if err != nil {
 		return nil, err
 	}
-	index, cached, err := r.buildIndex(root, intArg(args, "depth", 3), intArg(args, "max_entries", 350), boolArg(args, "include_symbols", false), boolArg(args, "refresh", false))
+	index, cached, err := r.buildIndex(ctx, root, intArg(args, "depth", 3), intArg(args, "max_entries", 350), boolArg(args, "include_symbols", false), boolArg(args, "refresh", false))
 	if err != nil {
 		return nil, err
 	}
@@ -317,12 +230,18 @@ func (r *Runtime) workspaceDoctor(ctx context.Context, args map[string]any) (any
 	if err != nil {
 		return nil, err
 	}
-	profile, _ := r.projectProfile(root)
+	inventory, _, inventoryErr := r.loadRepoInventory(ctx, root, false)
+	profile := map[string]any{}
+	if inventoryErr == nil {
+		profile = inventory.Profile
+	}
 	git, _ := r.gitStatus(ctx, r.Workspace.Relative(root))
 	memoryHealth := r.memoryHealth(ctx, false)
 	runtimeMetrics := r.RuntimeMetrics(false, 0)
 	auditMetrics := runtimeMetrics["audit"].(map[string]any)
 	auditFailures, _ := auditMetrics["write_failures"].(uint64)
+	writerAuditFailures, _ := auditMetrics["writer_write_failures"].(uint64)
+	auditFailures += writerAuditFailures
 	checks := []map[string]any{
 		{"id": "workspace", "status": "pass", "label": "Workspace", "detail": root},
 		{"id": "roots", "status": "pass", "label": "Root confinement", "detail": len(r.Workspace.Roots)},
@@ -357,11 +276,30 @@ var symbolPatterns = []struct {
 	{"route", regexp.MustCompile(`\b(?:app|router)\.(get|post|put|patch|delete)\s*\(\s*["']([^"']+)`)},
 }
 
-func (r *Runtime) scanSymbols(root string, maxFiles, maxMatches int, kind string) ([]map[string]any, error) {
+func (r *Runtime) scanSymbols(ctx context.Context, root string, maxFiles, maxMatches int, kind string, refresh bool) ([]map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	maxFiles = min(max(maxFiles, 1), 20_000)
+	maxMatches = min(max(maxMatches, 1), 20_000)
+	generation := r.currentRepositoryGeneration()
+	key := repoSymbolKey{Root: root, Generation: generation, MaxFiles: maxFiles, MaxMatches: maxMatches, Kind: kind}
+	if !refresh {
+		r.repoCacheMu.Lock()
+		if cached, ok := r.repoSymbols[key]; ok && time.Since(cached.GeneratedAt) < repoCacheTTL {
+			symbols := append([]map[string]any(nil), cached.Symbols...)
+			r.repoCacheMu.Unlock()
+			return symbols, nil
+		}
+		r.repoCacheMu.Unlock()
+	}
 	var out []map[string]any
 	files := 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if walkErr != nil {
 			return nil
 		}
 		if entry.IsDir() {
@@ -376,15 +314,23 @@ func (r *Runtime) scanSymbols(root string, maxFiles, maxMatches int, kind string
 		if !sourceExtensions[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
-		files++
-		file, err := os.Open(path)
-		if err != nil {
+		info, infoErr := entry.Info()
+		if infoErr != nil || info.Size() > 4<<20 {
 			return nil
 		}
-		defer file.Close()
+		files++
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return nil
+		}
 		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 64<<10), 1<<20)
 		line := 0
 		for scanner.Scan() {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_ = file.Close()
+				return ctxErr
+			}
 			line++
 			text := scanner.Text()
 			for _, pattern := range symbolPatterns {
@@ -405,12 +351,36 @@ func (r *Runtime) scanSymbols(root string, maxFiles, maxMatches int, kind string
 				break
 			}
 		}
-		return nil
+		scanErr := scanner.Err()
+		_ = file.Close()
+		return scanErr
 	})
 	if errors.Is(err, errStop) {
 		err = nil
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	r.repoCacheMu.Lock()
+	if r.repoGeneration == generation {
+		if r.repoSymbols == nil {
+			r.repoSymbols = map[repoSymbolKey]repoSymbolCacheEntry{}
+		}
+		if _, exists := r.repoSymbols[key]; !exists && len(r.repoSymbols) >= repoSymbolCacheLimit {
+			var oldestKey repoSymbolKey
+			var oldest time.Time
+			first := true
+			for candidate, entry := range r.repoSymbols {
+				if first || entry.GeneratedAt.Before(oldest) {
+					oldestKey, oldest, first = candidate, entry.GeneratedAt, false
+				}
+			}
+			delete(r.repoSymbols, oldestKey)
+		}
+		r.repoSymbols[key] = repoSymbolCacheEntry{GeneratedAt: time.Now().UTC(), Symbols: append([]map[string]any(nil), out...)}
+	}
+	r.repoCacheMu.Unlock()
+	return out, nil
 }
 
 func (r *Runtime) detectCommands(root string) map[string]any {
@@ -598,32 +568,88 @@ func (r *Runtime) reviewDiff(ctx context.Context, args map[string]any) (any, err
 	return map[string]any{"verdict": verdict, "findings": findings, "summary": fmt.Sprintf("%d heuristic finding(s)", len(findings))}, nil
 }
 
-func (r *Runtime) patternScan(rootArg string, limit int, kind string) (any, error) {
+func (r *Runtime) patternScan(ctx context.Context, rootArg string, limit int, kind string) (any, error) {
 	root, err := r.Workspace.Resolve(rootArg)
 	if err != nil {
 		return nil, err
 	}
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\b(TODO|FIXME|HACK|XXX)\b`),
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	limit = min(max(limit, 1), 10_000)
+	patterns := scanPatterns(kind)
+	findings, gitAvailable, err := r.patternScanGit(ctx, root, limit, kind, patterns)
+	if err == nil && gitAvailable {
+		return map[string]any{"kind": kind, "engine": "git-grep", "count": len(findings), "findings": findings}, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	findings, trackedOnly, err := r.patternScanFallback(ctx, root, limit, kind, patterns)
+	if err != nil {
+		return nil, err
+	}
+	engine := "scan"
+	if trackedOnly {
+		engine = "tracked-scan"
+	}
+	return map[string]any{"kind": kind, "engine": engine, "count": len(findings), "findings": findings}, nil
+}
+
+func scanPatterns(kind string) []*regexp.Regexp {
 	if kind == "security" {
-		patterns = []*regexp.Regexp{
+		return []*regexp.Regexp{
 			regexp.MustCompile(`(?i)\b(api[_-]?key|secret|password|auth[_-]?token|bearer)\s*[:=]\s*["'][^"']{8,}`),
 			regexp.MustCompile(`(?i)\b(eval|exec)\s*\(`),
 			regexp.MustCompile(`(?i)\b(md5|sha1)\b`),
 		}
 	}
-	var findings []map[string]any
-	tracked := map[string]bool{}
-	gitFiles := processx.Capture(context.Background(), "git", []string{"ls-files", "-z"}, root, 30*time.Second)
-	if gitFiles.ExitCode == 0 {
-		for _, rel := range strings.Split(gitFiles.Stdout, "\x00") {
-			if rel != "" {
-				tracked[filepath.Clean(filepath.Join(root, rel))] = true
-			}
-		}
+	markerPattern := `(?i)\b(` + "TO" + "DO|FIX" + "ME|HA" + "CK|X" + "XX" + `)\b`
+	return []*regexp.Regexp{regexp.MustCompile(markerPattern)}
+}
+
+func (r *Runtime) patternScanGit(ctx context.Context, root string, limit int, kind string, patterns []*regexp.Regexp) ([]map[string]any, bool, error) {
+	prefilter := "TO" + "DO|FIX" + "ME|HA" + "CK|X" + "XX"
+	if kind == "security" {
+		prefilter = "api[_-]?key|secret|password|auth[_-]?token|bearer|eval|exec|md5|sha1"
 	}
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	args := []string{"grep", "-n", "-I", "-i", "-E", "-e", prefilter, "--", "."}
+	findings := make([]map[string]any, 0, min(limit, 64))
+	exit, stopped, runErr := streamAgentCommandLines(ctx, root, "git", args, 30*time.Second, func(line string) bool {
+		path, lineNumber, text, ok := parsePatternGrepLine(line)
+		if !ok {
+			return true
+		}
+		if finding, matched := r.patternFinding(filepath.Join(root, path), lineNumber, text, kind, patterns); matched {
+			findings = append(findings, finding)
+		}
+		return len(findings) < limit
+	})
+	if stopped {
+		return findings, true, nil
+	}
+	if exit == 0 || exit == 1 {
+		return findings, true, nil
+	}
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		return nil, true, runErr
+	}
+	return nil, false, runErr
+}
+
+func (r *Runtime) patternScanFallback(ctx context.Context, root string, limit int, kind string, patterns []*regexp.Regexp) ([]map[string]any, bool, error) {
+	findings := make([]map[string]any, 0, min(limit, 64))
+	trackedAvailable, trackedErr := r.scanTrackedPatternFiles(ctx, root, limit, kind, patterns, &findings)
+	if trackedAvailable {
+		return findings, true, trackedErr
+	}
+	if trackedErr != nil && ctx.Err() != nil {
+		return nil, true, trackedErr
+	}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -633,36 +659,193 @@ func (r *Runtime) patternScan(rootArg string, limit int, kind string) (any, erro
 			}
 			return nil
 		}
-		if len(findings) >= limit || !textExtensions[strings.ToLower(filepath.Ext(path))] {
-			return nil
+		if len(findings) >= limit {
+			return errStop
 		}
-		if len(tracked) > 0 && !tracked[filepath.Clean(path)] {
-			return nil
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil || len(raw) > 1_000_000 || strings.IndexByte(string(raw), 0) >= 0 {
-			return nil
-		}
-		for lineIndex, line := range strings.Split(string(raw), "\n") {
-			for patternIndex, pattern := range patterns {
-				if pattern.MatchString(line) {
-					text := capString(strings.TrimSpace(line), 300)
-					if kind == "security" && patternIndex == 0 {
-						text = "[redacted potential credential]"
-					}
-					findings = append(findings, map[string]any{
-						"path": r.Workspace.Relative(path), "line": lineIndex + 1, "text": text,
-					})
-					break
-				}
+		return r.scanPatternFile(ctx, path, limit, kind, patterns, &findings)
+	})
+	if errors.Is(err, errStop) {
+		err = nil
+	}
+	return findings, false, err
+}
+
+func (r *Runtime) scanTrackedPatternFiles(ctx context.Context, root string, limit int, kind string, patterns []*regexp.Regexp, findings *[]map[string]any) (bool, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(timeoutCtx, "git", "ls-files", "-z")
+	command.Dir = root
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return false, err
+	}
+	if err := command.Start(); err != nil {
+		return false, nil
+	}
+	reader := bufio.NewReaderSize(stdout, 32<<10)
+	stopped := false
+	for {
+		record, readErr := reader.ReadString(0)
+		record = strings.TrimSuffix(record, "\x00")
+		if record != "" {
+			path := filepath.Join(root, filepath.FromSlash(record))
+			if scanErr := r.scanPatternFile(timeoutCtx, path, limit, kind, patterns, findings); scanErr != nil {
+				cancel()
+				_ = command.Wait()
+				return true, scanErr
 			}
-			if len(findings) >= limit {
+			if len(*findings) >= limit {
+				stopped = true
+				cancel()
 				break
 			}
 		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			cancel()
+			_ = command.Wait()
+			return true, readErr
+		}
+	}
+	waitErr := command.Wait()
+	if stopped {
+		return true, nil
+	}
+	if timeoutCtx.Err() != nil {
+		return true, timeoutCtx.Err()
+	}
+	if waitErr != nil {
+		var exitError *exec.ExitError
+		if errors.As(waitErr, &exitError) {
+			return false, nil
+		}
+		return false, waitErr
+	}
+	return true, nil
+}
+
+func (r *Runtime) scanPatternFile(ctx context.Context, path string, limit int, kind string, patterns []*regexp.Regexp, findings *[]map[string]any) error {
+	if len(*findings) >= limit || !textExtensions[strings.ToLower(filepath.Ext(path))] {
 		return nil
-	})
-	return map[string]any{"kind": kind, "count": len(findings), "findings": findings}, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1_000_000 {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64<<10), 1_000_000)
+	lineNumber := 0
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			_ = file.Close()
+			return err
+		}
+		lineNumber++
+		line := scanner.Text()
+		if strings.IndexByte(line, 0) >= 0 {
+			_ = file.Close()
+			return nil
+		}
+		if finding, matched := r.patternFinding(path, lineNumber, line, kind, patterns); matched {
+			*findings = append(*findings, finding)
+			if len(*findings) >= limit {
+				break
+			}
+		}
+	}
+	scanErr := scanner.Err()
+	_ = file.Close()
+	return scanErr
+}
+
+func (r *Runtime) patternFinding(path string, lineNumber int, line, kind string, patterns []*regexp.Regexp) (map[string]any, bool) {
+	for patternIndex, pattern := range patterns {
+		if !pattern.MatchString(line) {
+			continue
+		}
+		text := capString(strings.TrimSpace(line), 300)
+		if kind == "security" && patternIndex == 0 {
+			text = "[redacted potential credential]"
+		}
+		return map[string]any{"path": r.Workspace.Relative(path), "line": lineNumber, "text": text}, true
+	}
+	return nil, false
+}
+
+func parsePatternGrepLine(line string) (string, int, string, bool) {
+	for first := strings.IndexByte(line, ':'); first >= 0; {
+		rest := line[first+1:]
+		secondOffset := strings.IndexByte(rest, ':')
+		if secondOffset < 0 {
+			break
+		}
+		second := first + 1 + secondOffset
+		lineNumber, parseErr := strconv.Atoi(line[first+1 : second])
+		if parseErr == nil {
+			return line[:first], lineNumber, line[second+1:], true
+		}
+		next := strings.IndexByte(line[first+1:], ':')
+		if next < 0 {
+			break
+		}
+		first += next + 1
+	}
+	return "", 0, "", false
+}
+
+func streamAgentCommandLines(ctx context.Context, root, executable string, args []string, timeout time.Duration, visit func(string) bool) (int, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(timeoutCtx, executable, args...)
+	cmd.Dir = root
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return -1, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return -1, false, err
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	stopped := false
+	for scanner.Scan() {
+		if !visit(scanner.Text()) {
+			stopped = true
+			cancel()
+			break
+		}
+	}
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if stopped {
+		return 0, true, nil
+	}
+	if timeoutCtx.Err() != nil {
+		return -1, false, timeoutCtx.Err()
+	}
+	if scanErr != nil {
+		return -1, false, scanErr
+	}
+	if waitErr != nil {
+		var exitError *exec.ExitError
+		if errors.As(waitErr, &exitError) {
+			return exitError.ExitCode(), false, waitErr
+		}
+		return -1, false, waitErr
+	}
+	return 0, false, nil
 }
 
 func (r *Runtime) changeSummary(ctx context.Context, args map[string]any) (any, error) {

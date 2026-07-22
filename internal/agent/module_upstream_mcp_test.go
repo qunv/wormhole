@@ -106,6 +106,9 @@ func TestRuntimeUsesMCPServerNameAsToolNamespace(t *testing.T) {
 		t.Fatalf("unexpected forwarded result: %T %#v", result, result)
 	}
 
+	if err := runtime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	audit, err := os.ReadFile(runtime.Store.AuditPath)
 	if err != nil {
 		t.Fatal(err)

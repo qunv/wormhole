@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"codebridge/internal/config"
 	"codebridge/internal/memory"
 	memoryfactory "codebridge/internal/memory/factory"
+	"codebridge/internal/state"
 	"codebridge/internal/upstreammcp"
 )
 
@@ -30,12 +32,15 @@ type SharedServices struct {
 	closed           bool
 	memoryProviders  map[string]memory.Provider
 	memoryRecorders  map[string]*memory.Recorder
+	auditWriters     map[string]*state.AuditWriter
 	upstreamClients  map[string]*upstreammcp.Client
 	upstreamModules  map[string]*upstreamMCPModule
 	memoryAcquires   uint64
 	memoryReuses     uint64
 	recorderAcquires uint64
 	recorderReuses   uint64
+	auditAcquires    uint64
+	auditReuses      uint64
 	upstreamAcquires uint64
 	upstreamReuses   uint64
 	contractAcquires uint64
@@ -64,11 +69,36 @@ func NewSharedServices(version string) *SharedServices {
 		version:         version,
 		memoryProviders: map[string]memory.Provider{},
 		memoryRecorders: map[string]*memory.Recorder{},
+		auditWriters:    map[string]*state.AuditWriter{},
 		upstreamClients: map[string]*upstreammcp.Client{},
 		upstreamModules: map[string]*upstreamMCPModule{},
 		memoryFactory:   memoryfactory.New,
 		upstreamFactory: upstreammcp.New,
 	}
+}
+
+func (s *SharedServices) acquireAudit(path string) (*state.AuditWriter, error) {
+	if s == nil {
+		return nil, errors.New("shared services are required")
+	}
+	key := path
+	if absolute, err := filepath.Abs(path); err == nil {
+		key = absolute
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("shared services are closed")
+	}
+	if writer := s.auditWriters[key]; writer != nil {
+		s.auditAcquires++
+		s.auditReuses++
+		return writer, nil
+	}
+	writer := state.NewAuditWriter(key, state.AuditWriterConfig{})
+	s.auditWriters[key] = writer
+	s.auditAcquires++
+	return writer, nil
 }
 
 func (s *SharedServices) acquireMemory(cfg config.MemoryConfig) (sharedMemoryLease, error) {
@@ -142,6 +172,7 @@ func (s *SharedServices) acquireRecorder(providerKey string, provider memory.Pro
 
 	recorder := memory.NewRecorderWithConfig(provider, memory.RecorderConfig{
 		QueueSize:       cfg.QueueSize,
+		Workers:         cfg.DeliveryWorkers,
 		DeliveryTimeout: time.Duration(cfg.DeliveryTimeoutMS) * time.Millisecond,
 		MaxAttempts:     cfg.RetryMaxAttempts,
 		RetryBackoff:    time.Duration(cfg.RetryBackoffMS) * time.Millisecond,
@@ -261,6 +292,9 @@ func (s *SharedServices) Stats() map[string]any {
 			"acquires": s.memoryAcquires, "reuses": s.memoryReuses,
 			"recorder_acquires": s.recorderAcquires, "recorder_reuses": s.recorderReuses,
 		},
+		"audit": map[string]any{
+			"writers": len(s.auditWriters), "acquires": s.auditAcquires, "reuses": s.auditReuses,
+		},
 		"upstream_mcp": map[string]any{
 			"clients": len(s.upstreamClients), "contracts": len(s.upstreamModules),
 			"client_acquires": s.upstreamAcquires, "client_reuses": s.upstreamReuses,
@@ -280,6 +314,10 @@ func (s *SharedServices) Close() error {
 		for _, client := range s.upstreamClients {
 			clients = append(clients, client)
 		}
+		auditWriters := make([]*state.AuditWriter, 0, len(s.auditWriters))
+		for _, writer := range s.auditWriters {
+			auditWriters = append(auditWriters, writer)
+		}
 		recorders := make([]*memory.Recorder, 0, len(s.memoryRecorders))
 		for _, recorder := range s.memoryRecorders {
 			recorders = append(recorders, recorder)
@@ -291,9 +329,9 @@ func (s *SharedServices) Close() error {
 		s.mu.Unlock()
 
 		var errs []error
-		for _, client := range clients {
-			if err := client.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close shared upstream MCP client: %w", err))
+		for _, writer := range auditWriters {
+			if err := writer.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close shared audit writer: %w", err))
 			}
 		}
 		if len(recorders) > 0 {
@@ -321,6 +359,11 @@ func (s *SharedServices) Close() error {
 				errs = append(errs, fmt.Errorf("close shared memory provider %q: %w", provider.Name(), err))
 			}
 		}
+		for _, client := range clients {
+			if err := client.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close shared upstream MCP client: %w", err))
+			}
+		}
 		s.closeErr = errors.Join(errs...)
 	})
 	return s.closeErr
@@ -346,8 +389,8 @@ func memoryProviderResourceKey(cfg config.MemoryConfig) string {
 
 func memoryRecorderResourceKey(providerKey string, cfg config.MemoryConfig) string {
 	return resourceDigest(map[string]any{
-		"provider":   providerKey,
-		"queue_size": cfg.QueueSize, "delivery_timeout_ms": cfg.DeliveryTimeoutMS,
+		"provider": providerKey, "queue_size": cfg.QueueSize,
+		"delivery_workers": cfg.DeliveryWorkers, "delivery_timeout_ms": cfg.DeliveryTimeoutMS,
 		"retry_max_attempts": cfg.RetryMaxAttempts, "retry_backoff_ms": cfg.RetryBackoffMS,
 	})
 }

@@ -31,6 +31,7 @@ type Runtime struct {
 	DataDir                 string
 	Workspace               *workspace.Manager
 	Store                   *state.Store
+	AuditWriter             *state.AuditWriter
 	Approvals               *security.ApprovalManager
 	Patches                 *patch.Engine
 	Processes               *processx.Registry
@@ -58,6 +59,12 @@ type Runtime struct {
 	profileMu         sync.RWMutex
 	profile           map[string]any
 	repoIndexMu       sync.Mutex
+	repoCacheMu       sync.Mutex
+	repoGeneration    uint64
+	repoInventories   map[string]repoInventory
+	repoViews         map[repoViewKey]repoIndex
+	repoSymbols       map[repoSymbolKey]repoSymbolCacheEntry
+	gitStatusCache    map[string]gitStatusSnapshot
 	memoryHealthMu    sync.Mutex
 	memoryHealthValue memory.HealthResult
 	memoryHealthAt    time.Time
@@ -128,6 +135,13 @@ func newWorkspaceContext(ctx context.Context, workspaceID, dataDir string, cfg c
 	if err != nil {
 		return nil, err
 	}
+	var auditWriter *state.AuditWriter
+	if cfg.Audit {
+		auditWriter, err = shared.acquireAudit(store.AuditPath)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if cfg.Memory.Enabled {
 		reportStartup(reporter, "memory", fmt.Sprintf("initializing provider=%s required=%t", cfg.Memory.Provider, cfg.Memory.Required))
 	}
@@ -154,7 +168,7 @@ func newWorkspaceContext(ctx context.Context, workspaceID, dataDir string, cfg c
 	memoryRecorder := memoryLease.Recorder
 	runtime := &Runtime{
 		Config: cfg, WorkspaceID: workspaceID, DataDir: store.DataDir,
-		Workspace: manager, Store: store,
+		Workspace: manager, Store: store, AuditWriter: auditWriter,
 		Approvals: security.NewApprovalManager(store, cfg.ApprovalToken, 10*time.Minute),
 		Processes: processx.NewRegistry(cfg.MaxProcesses),
 		Memory:    memoryProvider, MemoryRecorder: memoryRecorder,
@@ -271,6 +285,13 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 		return nil, err
 	}
 	value, err = r.dispatch(ctx, identity, name, args)
+	if strings.HasPrefix(call.Module, "mcp_") {
+		if spec, ok := r.ToolSpec(name); ok && !spec.ReadOnly {
+			// Upstream mutation tools may report an error after partially changing
+			// workspace-visible state, so invalidate conservatively on every attempt.
+			r.invalidateRepositoryCaches()
+		}
+	}
 	auditAttempted = true
 	outcome.AuditErr = r.audit(
 		call, identity, name, args, value, err == nil, err,
@@ -326,10 +347,22 @@ func (r *Runtime) audit(call trackedToolCall, identity CallIdentity, tool string
 	if err != nil {
 		return fmt.Errorf("marshal audit record: %w", err)
 	}
-	if err := r.Store.AppendLine(r.Store.AuditPath, append(raw, '\n')); err != nil {
+	line := append(raw, '\n')
+	if r.AuditWriter != nil && filepath.Clean(r.AuditWriter.Path()) == filepath.Clean(r.Store.AuditPath) {
+		if err := r.AuditWriter.Append(line); err != nil {
+			return fmt.Errorf("enqueue audit record: %w", err)
+		}
+	} else if err := r.Store.AppendLine(r.Store.AuditPath, line); err != nil {
 		return fmt.Errorf("append audit record: %w", err)
 	}
 	return nil
+}
+
+func (r *Runtime) FlushAudit(ctx context.Context) error {
+	if r == nil || r.AuditWriter == nil {
+		return nil
+	}
+	return r.AuditWriter.Flush(ctx)
 }
 
 func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {
@@ -451,6 +484,7 @@ func (r *Runtime) reloadProfile() map[string]any {
 	r.profileMu.Lock()
 	r.profile = profile
 	r.profileMu.Unlock()
+	r.invalidateRepositoryCaches()
 	return profile
 }
 

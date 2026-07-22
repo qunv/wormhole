@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	SessionEndpoint   = "/mcp/session"
-	defaultBindingTTL = 24 * time.Hour
+	SessionEndpoint        = "/mcp/session"
+	defaultBindingTTL      = 24 * time.Hour
+	defaultCleanupInterval = time.Minute
+	defaultMaxBindings     = 4096
 )
 
 const SessionInstructions = `This Codebridge endpoint routes one ChatGPT conversation to one workspace.
@@ -51,17 +53,24 @@ type workspaceBinding struct {
 // immutable workspace runtimes. Runtimes are created by the daemon and remain
 // workspace-local; only dispatch selection is shared here.
 type SessionRouter struct {
-	version   string
-	primaryID string
-	ttl       time.Duration
-	now       func() time.Time
+	version         string
+	primaryID       string
+	ttl             time.Duration
+	cleanupInterval time.Duration
+	maxBindings     int
+	now             func() time.Time
 
-	runtimes map[string]*agent.Runtime
-	specs    []agent.ToolSpec
+	runtimes           map[string]*agent.Runtime
+	workspaceIDsCached []string
+	specs              []agent.ToolSpec
 
-	mu       sync.Mutex
-	sessions map[string]string
-	bindings map[string]workspaceBinding
+	mu              sync.Mutex
+	sessions        map[string]string
+	bindingSessions map[string]map[string]struct{}
+	bindings        map[string]workspaceBinding
+	nextCleanup     time.Time
+	expiredCount    uint64
+	evictedCount    uint64
 }
 
 func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Runtime) *SessionRouter {
@@ -86,9 +95,12 @@ func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Run
 		}
 	}
 	router := &SessionRouter{
-		version: version, primaryID: primaryID, ttl: defaultBindingTTL, now: time.Now,
-		runtimes: runtimes, sessions: map[string]string{}, bindings: map[string]workspaceBinding{},
+		version: version, primaryID: primaryID, ttl: defaultBindingTTL,
+		cleanupInterval: defaultCleanupInterval, maxBindings: defaultMaxBindings, now: time.Now,
+		runtimes: runtimes, sessions: map[string]string{}, bindingSessions: map[string]map[string]struct{}{},
+		bindings: map[string]workspaceBinding{},
 	}
+	router.workspaceIDsCached = router.computeWorkspaceIDs()
 	router.specs = router.collectToolSpecs()
 	return router
 }
@@ -241,22 +253,34 @@ func (r *SessionRouter) selectWorkspace(sessionID, rawID string) (workspaceBindi
 	if runtime == nil {
 		return workspaceBinding{}, nil, fmt.Errorf("workspace %q is not available; call workspace_list", strings.TrimSpace(rawID))
 	}
-	now := r.now().UTC()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cleanupLocked(now)
 	token, err := newBindingToken()
 	if err != nil {
 		return workspaceBinding{}, nil, fmt.Errorf("create workspace binding: %w", err)
+	}
+	now := r.now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cleanupDueLocked(now)
+	if sessionID != "" {
+		if previous := r.sessions[sessionID]; previous != "" {
+			r.removeBindingLocked(previous)
+		}
+	}
+	maxBindings := r.maxBindings
+	if maxBindings <= 0 {
+		maxBindings = defaultMaxBindings
+	}
+	for len(r.bindings) >= maxBindings {
+		if !r.evictOldestLocked() {
+			return workspaceBinding{}, nil, errors.New("workspace binding capacity is exhausted")
+		}
 	}
 	binding := workspaceBinding{
 		Token: token, WorkspaceID: id, SessionID: bindingSessionID(id, token),
 		CreatedAt: now, LastUsedAt: now,
 	}
 	r.bindings[token] = binding
-	if sessionID != "" {
-		r.sessions[sessionID] = token
-	}
+	r.bindSessionLocked(sessionID, token)
 	return binding, runtime, nil
 }
 
@@ -264,7 +288,7 @@ func (r *SessionRouter) resolve(sessionID, explicitToken string) (*agent.Runtime
 	now := r.now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cleanupLocked(now)
+	r.cleanupDueLocked(now)
 	token := strings.TrimSpace(explicitToken)
 	if token == "" {
 		token = r.sessions[sessionID]
@@ -276,16 +300,18 @@ func (r *SessionRouter) resolve(sessionID, explicitToken string) (*agent.Runtime
 	if !ok {
 		return nil, workspaceBinding{}, errors.New("workspace binding is invalid or expired; call workspace_select again")
 	}
+	if now.Sub(binding.LastUsedAt) > r.ttl {
+		r.removeBindingLocked(token)
+		r.expiredCount++
+		return nil, workspaceBinding{}, errors.New("workspace binding is invalid or expired; call workspace_select again")
+	}
 	runtime := r.runtimes[binding.WorkspaceID]
 	if runtime == nil {
-		delete(r.bindings, token)
+		r.removeBindingLocked(token)
 		return nil, workspaceBinding{}, fmt.Errorf("workspace %q is no longer available; call workspace_select again", binding.WorkspaceID)
 	}
 	binding.LastUsedAt = now
 	r.bindings[token] = binding
-	if sessionID != "" {
-		r.sessions[sessionID] = token
-	}
 	return runtime, binding, nil
 }
 
@@ -296,21 +322,13 @@ func (r *SessionRouter) clear(sessionID, explicitToken string) bool {
 	if token == "" {
 		token = r.sessions[sessionID]
 	}
-	if sessionID != "" {
-		delete(r.sessions, sessionID)
-	}
 	if token == "" {
 		return false
 	}
 	if _, ok := r.bindings[token]; !ok {
 		return false
 	}
-	delete(r.bindings, token)
-	for id, value := range r.sessions {
-		if value == token {
-			delete(r.sessions, id)
-		}
-	}
+	r.removeBindingLocked(token)
 	return true
 }
 
@@ -318,11 +336,22 @@ func (r *SessionRouter) Stats() map[string]any {
 	now := r.now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cleanupLocked(now)
+	r.cleanupDueLocked(now)
+	cleanupInterval := r.cleanupInterval
+	if cleanupInterval <= 0 {
+		cleanupInterval = defaultCleanupInterval
+	}
+	maxBindings := r.maxBindings
+	if maxBindings <= 0 {
+		maxBindings = defaultMaxBindings
+	}
 	return map[string]any{
 		"endpoint": SessionEndpoint, "binding_ttl_seconds": int64(r.ttl / time.Second),
-		"active_bindings": len(r.bindings), "bound_sessions": len(r.sessions),
-		"workspace_count": len(r.runtimes), "tool_count": len(r.specs) + 4,
+		"cleanup_interval_seconds": int64(cleanupInterval / time.Second),
+		"active_bindings":          len(r.bindings), "max_bindings": maxBindings,
+		"bound_sessions": len(r.sessions), "expired_bindings": r.expiredCount,
+		"evicted_bindings": r.evictedCount,
+		"workspace_count":  len(r.runtimes), "tool_count": len(r.specs) + 4,
 	}
 }
 
@@ -398,13 +427,14 @@ func sameJSON(left, right any) bool {
 
 func (r *SessionRouter) workspaceList(sessionID, explicitToken string) []map[string]any {
 	selected := ""
+	now := r.now().UTC()
 	r.mu.Lock()
-	r.cleanupLocked(r.now().UTC())
+	r.cleanupDueLocked(now)
 	token := strings.TrimSpace(explicitToken)
 	if token == "" {
 		token = r.sessions[sessionID]
 	}
-	if binding, ok := r.bindings[token]; ok {
+	if binding, ok := r.bindings[token]; ok && now.Sub(binding.LastUsedAt) <= r.ttl {
 		selected = binding.WorkspaceID
 	}
 	r.mu.Unlock()
@@ -420,6 +450,10 @@ func (r *SessionRouter) workspaceList(sessionID, explicitToken string) []map[str
 }
 
 func (r *SessionRouter) workspaceIDs() []string {
+	return append([]string(nil), r.workspaceIDsCached...)
+}
+
+func (r *SessionRouter) computeWorkspaceIDs() []string {
 	ids := make([]string, 0, len(r.runtimes))
 	for id := range r.runtimes {
 		ids = append(ids, id)
@@ -448,18 +482,70 @@ func (r *SessionRouter) lookupRuntime(rawID string) (string, *agent.Runtime) {
 	return "", nil
 }
 
-func (r *SessionRouter) cleanupLocked(now time.Time) {
+func (r *SessionRouter) cleanupDueLocked(now time.Time) {
+	cleanupInterval := r.cleanupInterval
+	if cleanupInterval <= 0 {
+		cleanupInterval = defaultCleanupInterval
+	}
+	if !r.nextCleanup.IsZero() && now.Before(r.nextCleanup) {
+		return
+	}
 	for token, binding := range r.bindings {
 		if now.Sub(binding.LastUsedAt) <= r.ttl {
 			continue
 		}
-		delete(r.bindings, token)
-		for sessionID, sessionToken := range r.sessions {
-			if sessionToken == token {
-				delete(r.sessions, sessionID)
+		r.removeBindingLocked(token)
+		r.expiredCount++
+	}
+	r.nextCleanup = now.Add(cleanupInterval)
+}
+
+func (r *SessionRouter) bindSessionLocked(sessionID, token string) {
+	if sessionID == "" || token == "" {
+		return
+	}
+	if previous := r.sessions[sessionID]; previous != "" && previous != token {
+		if sessions := r.bindingSessions[previous]; sessions != nil {
+			delete(sessions, sessionID)
+			if len(sessions) == 0 {
+				delete(r.bindingSessions, previous)
 			}
 		}
 	}
+	r.sessions[sessionID] = token
+	sessions := r.bindingSessions[token]
+	if sessions == nil {
+		sessions = map[string]struct{}{}
+		r.bindingSessions[token] = sessions
+	}
+	sessions[sessionID] = struct{}{}
+}
+
+func (r *SessionRouter) removeBindingLocked(token string) {
+	delete(r.bindings, token)
+	for sessionID := range r.bindingSessions[token] {
+		if r.sessions[sessionID] == token {
+			delete(r.sessions, sessionID)
+		}
+	}
+	delete(r.bindingSessions, token)
+}
+
+func (r *SessionRouter) evictOldestLocked() bool {
+	oldestToken := ""
+	var oldest time.Time
+	for token, binding := range r.bindings {
+		if oldestToken == "" || binding.LastUsedAt.Before(oldest) {
+			oldestToken = token
+			oldest = binding.LastUsedAt
+		}
+	}
+	if oldestToken == "" {
+		return false
+	}
+	r.removeBindingLocked(oldestToken)
+	r.evictedCount++
+	return true
 }
 
 func newBindingToken() (string, error) {

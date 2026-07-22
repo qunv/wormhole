@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,6 +126,36 @@ func TestSharedMemoryWrapperAllowsOptedInConcurrentProviderCalls(t *testing.T) {
 	wg.Wait()
 	if !provider.overlapped.Load() {
 		t.Fatal("concurrency-safe provider calls were serialized")
+	}
+}
+
+func TestSharedServicesReuseAuditWriterByPath(t *testing.T) {
+	shared := NewSharedServices("test")
+	path := filepath.Join(t.TempDir(), "audit.log")
+	first, err := shared.acquireAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := shared.acquireAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := shared.acquireAudit(filepath.Join(t.TempDir(), "audit.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || first == other {
+		t.Fatal("audit writers were not pooled by canonical path")
+	}
+	auditStats := shared.Stats()["audit"].(map[string]any)
+	if auditStats["writers"] != 2 || auditStats["acquires"] != uint64(3) || auditStats["reuses"] != uint64(1) {
+		t.Fatalf("unexpected audit reuse stats: %#v", auditStats)
+	}
+	if err := shared.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Append([]byte("closed\n")); err == nil {
+		t.Fatal("shared close left audit writer accepting records")
 	}
 }
 

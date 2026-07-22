@@ -19,10 +19,10 @@ import (
 	"codebridge/internal/patch"
 )
 
-func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) (any, error) {
+func (r *Runtime) handleFS(ctx context.Context, name string, args map[string]any) (any, error) {
 	switch name {
 	case "list_files":
-		entries, err := r.Workspace.List(stringArg(args, "path", "."), boolArg(args, "recursive", false), intArg(args, "limit", 200))
+		entries, err := r.Workspace.ListContext(ctx, stringArg(args, "path", "."), boolArg(args, "recursive", false), intArg(args, "limit", 200))
 		if err != nil {
 			return nil, err
 		}
@@ -49,8 +49,8 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 			"modified": info.ModTime().UTC(), "mode": info.Mode().String(),
 		}, nil
 	case "search_text":
-		matches, engine, err := r.Workspace.Search(
-			stringArg(args, "path", "."), stringArg(args, "query", ""),
+		matches, engine, err := r.Workspace.SearchContext(
+			ctx, stringArg(args, "path", "."), stringArg(args, "query", ""),
 			boolArg(args, "regex", false), stringArg(args, "glob", ""),
 			intArg(args, "context", 0), intArg(args, "limit", 100),
 		)
@@ -62,7 +62,7 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 			"engine": engine, "count": len(matches), "matches": matches,
 		}, nil
 	case "find_files":
-		files, engine, err := r.Workspace.FindFiles(stringArg(args, "path", "."), stringArg(args, "glob", ""), intArg(args, "limit", 300))
+		files, engine, err := r.Workspace.FindFilesContext(ctx, stringArg(args, "path", "."), stringArg(args, "glob", ""), intArg(args, "limit", 300))
 		if err != nil {
 			return nil, err
 		}
@@ -70,19 +70,20 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 	case "read_many":
 		return r.readMany(args)
 	case "repo_overview":
-		tree, dirs, files, err := r.Workspace.Tree(stringArg(args, "path", "."), intArg(args, "depth", 3), intArg(args, "max_entries", 800))
+		root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
 		if err != nil {
 			return nil, err
 		}
-		var manifests []string
-		for _, entry := range tree {
-			if manifestNames[strings.ToLower(filepath.Base(entry))] {
-				manifests = append(manifests, entry)
-			}
+		index, cached, err := r.buildIndex(ctx, root, intArg(args, "depth", 3), intArg(args, "max_entries", 800), false, false)
+		if err != nil {
+			return nil, err
 		}
+		manifests, _ := index.Profile["manifests"].([]string)
 		return map[string]any{
-			"root": stringArg(args, "path", "."), "depth": intArg(args, "depth", 3),
-			"dirs": dirs, "files": files, "tree": tree, "manifests": manifests,
+			"root": r.Workspace.Relative(root), "depth": index.Depth,
+			"dirs": index.Dirs, "files": index.Files, "tree": index.Tree,
+			"manifests": manifests, "cached": cached,
+			"inventory_truncated": index.InventoryTruncated,
 		}, nil
 	case "write_file":
 		target, err := r.Workspace.Resolve(stringArg(args, "path", ""))
@@ -90,11 +91,12 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 			return nil, err
 		}
 		content := stringArg(args, "content", "")
-		if err := r.Patches.Transaction("write_file", []string{target}, func() error {
+		if err := r.Patches.TransactionContext(ctx, "write_file", []string{target}, func() error {
 			return patch.WriteFileAtomic(target, []byte(content), 0o644)
 		}); err != nil {
 			return nil, err
 		}
+		r.invalidateRepositoryCaches()
 		return map[string]any{"ok": true, "path": r.Workspace.Relative(target), "bytes": len(content)}, nil
 	case "replace_in_file":
 		target, err := r.Workspace.Resolve(stringArg(args, "path", ""))
@@ -104,7 +106,7 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		oldText, newText := stringArg(args, "old_text", ""), stringArg(args, "new_text", "")
 		replaceAll := boolArg(args, "replace_all", false)
 		count := 0
-		if err := r.Patches.Transaction("replace_in_file", []string{target}, func() error {
+		if err := r.Patches.TransactionContext(ctx, "replace_in_file", []string{target}, func() error {
 			raw, err := os.ReadFile(target)
 			if err != nil {
 				return err
@@ -122,19 +124,20 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		}); err != nil {
 			return nil, err
 		}
+		r.invalidateRepositoryCaches()
 		return map[string]any{"ok": true, "path": r.Workspace.Relative(target), "replacements": count}, nil
 	case "apply_patch", "preview_patch", "validate_patch":
 		dryRun := name != "apply_patch"
 		var result map[string]any
 		var err error
 		if diff := stringArg(args, "diff", ""); strings.TrimSpace(diff) != "" {
-			result, err = r.Patches.ApplyDiff(diff, dryRun)
+			result, err = r.Patches.ApplyDiffContext(ctx, diff, dryRun)
 		} else {
 			operations, decodeErr := patch.DecodeOperations(args["operations"])
 			if decodeErr != nil {
 				return nil, decodeErr
 			}
-			result, err = r.Patches.ApplyOperations(operations, dryRun)
+			result, err = r.Patches.ApplyOperationsContext(ctx, operations, dryRun)
 		}
 		if err != nil {
 			return nil, err
@@ -148,17 +151,21 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 			}
 			return map[string]any{"ok": len(conflicts) == 0, "conflicts": conflicts}, nil
 		}
+		if !dryRun {
+			r.invalidateRepositoryCaches()
+		}
 		return result, nil
 	case "make_dir":
 		target, err := r.Workspace.Resolve(stringArg(args, "path", ""))
 		if err != nil {
 			return nil, err
 		}
-		if err := r.Patches.Transaction("make_dir", []string{target}, func() error {
+		if err := r.Patches.TransactionContext(ctx, "make_dir", []string{target}, func() error {
 			return os.MkdirAll(target, 0o755)
 		}); err != nil {
 			return nil, err
 		}
+		r.invalidateRepositoryCaches()
 		return map[string]any{"ok": true, "path": r.Workspace.Relative(target)}, nil
 	case "move_path":
 		source, err := r.Workspace.Resolve(stringArg(args, "from", ""))
@@ -172,7 +179,7 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		if err := r.Patches.Transaction("move_path", []string{source, destination}, func() error {
+		if err := r.Patches.TransactionContext(ctx, "move_path", []string{source, destination}, func() error {
 			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 				return err
 			}
@@ -180,6 +187,7 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		}); err != nil {
 			return nil, err
 		}
+		r.invalidateRepositoryCaches()
 		return map[string]any{"ok": true, "from": r.Workspace.Relative(source), "to": r.Workspace.Relative(destination)}, nil
 	case "delete_path":
 		target, err := r.Workspace.Resolve(stringArg(args, "path", ""))
@@ -190,7 +198,7 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 			return nil, errors.New("refusing to delete a configured root")
 		}
 		recursive := boolArg(args, "recursive", false)
-		if err := r.Patches.Transaction("delete_path", []string{target}, func() error {
+		if err := r.Patches.TransactionContext(ctx, "delete_path", []string{target}, func() error {
 			info, err := os.Stat(target)
 			if err != nil {
 				return err
@@ -205,9 +213,14 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		}); err != nil {
 			return nil, err
 		}
+		r.invalidateRepositoryCaches()
 		return map[string]any{"ok": true, "deleted": r.Workspace.Relative(target)}, nil
 	case "undo_last_patch":
-		return r.Patches.Undo()
+		result, err := r.Patches.UndoContext(ctx)
+		if err == nil {
+			r.invalidateRepositoryCaches()
+		}
+		return result, err
 	default:
 		return nil, fmt.Errorf("unsupported filesystem tool: %s", name)
 	}

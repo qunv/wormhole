@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,6 +150,35 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 	}
 }
 
+func TestHealthDiagnosticsDoNotExposeConfiguredSecrets(t *testing.T) {
+	sensitiveValue := "fixture-" + strings.Repeat("x", 24)
+	t.Setenv("CODEBRIDGE_UPSTREAM_TEST_SECRET", sensitiveValue)
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return testMCPServer() },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(mcpHandler)
+	defer server.Close()
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		HeaderRefs:       map[string]string{"Authorization": "CODEBRIDGE_UPSTREAM_TEST_SECRET"},
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
+		HealthCacheMS: 5_000, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "secret-health", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	raw, err := json.Marshal(client.Health(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), sensitiveValue) || strings.Contains(string(raw), "Authorization") {
+		t.Fatalf("health diagnostics exposed configured secret/header: %s", raw)
+	}
+}
+
 func TestRemoteHTTPRequiresExplicitOptIn(t *testing.T) {
 	cfg := config.MCPServerConfig{URL: "https://example.com/mcp"}
 	if _, _, _, err := buildHTTPConfig(cfg); err == nil || !strings.Contains(err.Error(), "allowRemote=true") {
@@ -249,6 +279,206 @@ func TestConcurrentCallsDoNotSerializeOnClientLifecycleLock(t *testing.T) {
 		if callErr != nil {
 			t.Fatalf("concurrent call failed: %v", callErr)
 		}
+	}
+}
+
+func TestClientLimitsConcurrentCalls(t *testing.T) {
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server {
+			server := mcp.NewServer(&mcp.Implementation{Name: "limit-test", Version: "1"}, nil)
+			server.AddTool(&mcp.Tool{
+				Name: "slow.read", Title: "Slow read",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+				Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+			}, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				current := active.Add(1)
+				for {
+					observed := maxActive.Load()
+					if current <= observed || maxActive.CompareAndSwap(observed, current) {
+						break
+					}
+				}
+				defer active.Add(-1)
+				started <- struct{}{}
+				select {
+				case <-release:
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+			return server
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(mcpHandler)
+	defer server.Close()
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
+		HealthCacheMS: 5_000, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "limit-http", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	errs := make(chan error, 3)
+	for range 3 {
+		go func() {
+			_, callErr := client.Call(context.Background(), "slow.read", nil, true)
+			errs <- callErr
+		}()
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatalf("only %d calls reached the concurrency window", index)
+		}
+	}
+	select {
+	case <-started:
+		close(release)
+		t.Fatal("third call bypassed maxConcurrency=2")
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(release)
+	for range 3 {
+		if callErr := <-errs; callErr != nil {
+			t.Fatal(callErr)
+		}
+	}
+	if maxActive.Load() != 2 {
+		t.Fatalf("server max active = %d, want 2", maxActive.Load())
+	}
+	status := client.status(true, "")
+	if status["max_in_flight_calls"] != int64(2) || status["completed_calls"] != uint64(3) {
+		t.Fatalf("unexpected concurrency metrics: %#v", status)
+	}
+}
+
+func TestHealthUsesSharedCache(t *testing.T) {
+	var requests atomic.Int64
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return testMCPServer() },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		mcpHandler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
+		HealthCacheMS: 5_000, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "health-cache", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	requests.Store(0)
+	first := client.Health(context.Background())
+	firstRequests := requests.Load()
+	second := client.Health(context.Background())
+	if first["available"] != true || second["available"] != true || firstRequests == 0 {
+		t.Fatalf("unexpected health results: first=%#v second=%#v requests=%d", first, second, firstRequests)
+	}
+	if requests.Load() != firstRequests || second["health_cached"] != true {
+		t.Fatalf("second health call was not cached: firstRequests=%d total=%d result=%#v", firstRequests, requests.Load(), second)
+	}
+}
+
+func TestHealthCacheRejectsStaleSessionGeneration(t *testing.T) {
+	oldState := &clientSessionState{}
+	newState := &clientSessionState{}
+	client := &Client{
+		cfg: effectiveClientConfig(config.MCPServerConfig{}), session: newState,
+		stderr: newBoundedCounter(stderrLimit), callSlots: make(chan struct{}, config.DefaultMCPMaxConcurrency),
+	}
+	entry := healthCacheEntry{checkedAt: time.Now().UTC(), available: true, session: oldState}
+	if client.storeHealth(entry, oldState) {
+		t.Fatal("stale health generation was stored")
+	}
+	client.mu.Lock()
+	client.healthCache = entry
+	client.mu.Unlock()
+	if _, ok := client.cachedHealth(); ok {
+		t.Fatal("stale health generation was returned from cache")
+	}
+}
+
+func TestCircuitBreakerIgnoresCallerCancellation(t *testing.T) {
+	cfg := effectiveClientConfig(config.MCPServerConfig{FailureCooldownMS: 500, MaxConcurrency: 1})
+	client := &Client{name: "cancellation", cfg: cfg, stderr: newBoundedCounter(stderrLimit), callSlots: make(chan struct{}, 1)}
+	for range 5 {
+		client.setError(context.Canceled)
+		client.setError(context.DeadlineExceeded)
+	}
+	status := client.status(false, "")
+	if status["consecutive_failures"] != 0 || status["circuit_open"] != false || status["breaker_trips"] != uint64(0) {
+		t.Fatalf("caller cancellation affected circuit state: %#v", status)
+	}
+}
+
+func TestCircuitBreakerRejectsReconnectDuringCooldown(t *testing.T) {
+	cfg := effectiveClientConfig(config.MCPServerConfig{FailureCooldownMS: 500, MaxConcurrency: 1})
+	client := &Client{name: "breaker", cfg: cfg, stderr: newBoundedCounter(stderrLimit), callSlots: make(chan struct{}, 1)}
+	client.mu.Lock()
+	for index := 0; index < circuitFailureThreshold; index++ {
+		client.recordFailureLocked(errors.New("transport failure"))
+	}
+	client.mu.Unlock()
+	if _, err := client.Call(context.Background(), "unavailable", nil, true); err == nil || !strings.Contains(err.Error(), "cooling down") {
+		t.Fatalf("circuit breaker error = %v", err)
+	}
+	status := client.status(false, "")
+	if status["circuit_open"] != true || status["circuit_rejected"] != uint64(1) {
+		t.Fatalf("unexpected circuit metrics: %#v", status)
+	}
+}
+
+func TestInvalidationDefersCloseUntilBorrowersRelease(t *testing.T) {
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return testMCPServer() },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(mcpHandler)
+	defer server.Close()
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
+		HealthCacheMS: 5_000, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "retire-http", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	state, err := client.borrowCurrentSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.invalidateSession(state, errors.New("synthetic transport failure"))
+	if state.session == nil {
+		t.Fatal("active borrowed session was closed during invalidation")
+	}
+	callCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	result, err := state.session.CallTool(callCtx, &mcp.CallToolParams{Name: "echo.read", Arguments: map[string]any{"message": "still-active"}})
+	cancel()
+	if err != nil || result.IsError {
+		t.Fatalf("retired borrowed session stopped early: err=%v result=%#v", err, result)
+	}
+	client.releaseSession(state)
+	if state.session != nil {
+		t.Fatal("retired session remained attached after final borrower released")
 	}
 }
 

@@ -238,7 +238,7 @@ When the user writes `workspace <id>`, the MCP instructions tell ChatGPT to call
 
 All routed coding-tool schemas require `workspace_binding`. Codebridge removes the field before runtime dispatch, so it is never passed to a tool handler or written into audit arguments. The runtime memory/audit session uses a short hash of the binding instead of the raw token. This keeps two chats isolated even if ChatGPT reconnects or reuses an MCP transport.
 
-Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. After an expiry or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding.
+Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. Selecting a new workspace on the same MCP session invalidates its previous binding. The router caps active bindings at 4,096, evicts the least recently used binding only at capacity, and performs full expiry cleanup on a bounded interval instead of scanning all bindings on every tool call. After an expiry, eviction, or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding.
 
 Running `codebridge` derives the primary workspace ID from the Git repository root folder, or from the current folder outside Git. A different repository is automatically registered as a named workspace; `codebridge restart` performs the same check before restarting the daemon. Generated IDs are lowercase ASCII slugs, replace unsupported character runs with `-`, collapse repeated separators, and are limited to 32 characters. Named-workspace collisions receive a stable path hash. An existing registration for the same root is reused and automatically enabled.
 
@@ -273,13 +273,15 @@ Every endpoint owns a separate runtime with its own:
 
 - workspace manager and root confinement;
 - notes, tasks, checkpoints, audit, approvals, backups, and patch history;
-- managed process registry and profile;
+- managed process registry with fixed-capacity circular stdout/stderr tails, plus profile;
 - memory project and workspace-prefixed MCP session identity;
 - policy, tool exposure, request limits, and workspace-local handlers.
 
-`SharedServices` owns daemon-lifetime resources. Compatible runtimes reuse one memory provider and asynchronous recorder. Upstream HTTP clients reuse one MCP session when the server name, transport configuration, resolved secrets, and timeouts match. Stdio clients are also keyed by their resolved `cwd`, so two repositories cannot accidentally share a workspace-relative child process. Tool filtering or approval-policy differences create separate immutable contracts while still reusing the compatible upstream client.
+`SharedServices` owns daemon-lifetime resources. Compatible runtimes reuse one memory provider and asynchronous recorder. Audit records for the same state root share one bounded batching writer with synchronous fallback on queue saturation and size-based log rotation. Upstream HTTP clients reuse one MCP session when the server name, transport configuration, resolved secrets, and timeouts match. Stdio clients are also keyed by their resolved `cwd`, so two repositories cannot accidentally share a workspace-relative child process. Tool filtering or approval-policy differences create separate immutable contracts while still reusing the compatible upstream client.
 
-Built-in tool schemas are constructed once per process. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, upstream-client, contract, acquire, and reuse counts. `runtime_metrics` reports per-workspace call counts, bounded latency summaries, in-flight peaks, policy/cancellation outcomes, audit write failures, memory-observation enqueue/drop counts, and a bounded argument-free recent-call ring.
+Built-in tool schemas are constructed once per process, and each fixed or session-routing MCP server is assembled once when the HTTP daemon starts rather than once per JSON-RPC request. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, audit-writer, upstream-client, contract, acquire, and reuse counts. `runtime_metrics` reports per-workspace call counts, bounded latency summaries, in-flight peaks, policy/cancellation outcomes, audit queue/batch/rotation/write-failure counters, memory-observation enqueue/drop counts, repository-cache generation/cardinality, and a bounded argument-free recent-call ring. Deep module health adds sanitized upstream queue, concurrency, health-cache, reconnect, and circuit counters.
+
+Repository overview tools share one generation-keyed inventory per root for five minutes. Tree depth/limit views, project profile, important files, and symbol results derive from that inventory instead of repeating `WalkDir`; successful Codebridge file, patch, shell, process-start, and mutating-Git operations invalidate the generation. Git status uses one porcelain-v2 process and a 300 ms snapshot cache. `security_scan` and `todo_scan` stream tracked files through `git grep`, stop as soon as their result limit is reached, and use a bounded context-aware fallback when Git is unavailable.
 
 The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for every enabled fixed endpoint.
 
@@ -392,6 +394,9 @@ A `stdio` server may use any executable available in `PATH`, including `npx`, `u
         "DATABASE_URI": "POSTGRES_PROD_MCP_DATABASE_URI"
       },
       "required": false,
+      "maxConcurrency": 8,
+      "healthCacheMs": 5000,
+      "failureCooldownMs": 1000,
       "policy": {
         "default": "approval",
         "readOnlyTools": [
@@ -466,6 +471,8 @@ Important behavior:
 
 - The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`.
 - Tool discovery runs once during Codebridge startup. Compatible workspace runtimes reuse the same upstream MCP client/session; policy or tool-filter differences keep separate contracts while reusing that connection. Stdio pooling additionally requires the same confined resolved `cwd`. Restart Codebridge after an upstream server changes its tool list.
+- `maxConcurrency` defaults to 8 and is limited to 128 concurrent calls per shared upstream client. Calls wait within their caller context and expose queued/in-flight/rejected counters. Session replacement is reference-counted, so a reconnect cannot close a session still borrowed by another call.
+- Deep health checks are single-flight and cached for `healthCacheMs` (default 5,000 ms), preventing multiple workspaces sharing one client from pinging it repeatedly. Repeated transport/reconnect failures open a three-failure circuit for `failureCooldownMs` (default 1,000 ms); calls fail fast during cooldown instead of creating a reconnect storm. Both timing values are limited to 60 seconds.
 - `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
 - `codebridge start` streams `[startup]` phase logs while workspace, memory, and upstream MCP dependencies initialize. The launcher readiness timeout includes every enabled server's `startupTimeoutMs`, so a slow dependency is not killed by the previous fixed 10-second supervisor timeout.
 - `codebridge doctor` requests a deep local health check and reports each configured upstream as `mcp:<name>`, including transport, discovered tool count, reconnect count, and the latest sanitized connection error.
@@ -551,6 +558,7 @@ Authorization: Bearer <secret>
     "required": false,
     "projectStrategy": "git-origin",
     "queueSize": 128,
+    "deliveryWorkers": 4,
     "deliveryTimeoutMs": 2000,
     "retryMaxAttempts": 3,
     "retryBackoffMs": 100,
@@ -564,6 +572,10 @@ Authorization: Bearer <secret>
 
 - `false`: fail open. An offline provider does not prevent Codebridge from starting or running coding tools.
 - `true`: startup fails when the provider health check does not succeed.
+
+### `deliveryWorkers`
+
+Defaults to 4 and is limited to 32. It is used only when the configured provider explicitly opts into concurrent calls; otherwise Codebridge forces one worker. The total `queueSize` is divided across session shards, so increase both values together when one session can produce large bursts.
 
 ### `captureMode`
 
@@ -597,7 +609,7 @@ tool completed
   → delivered / failed / dropped counters
 ```
 
-Compatible workspace runtimes share one daemon-scoped recorder; every queued observation still carries its own project, `cwd`, and workspace-prefixed session ID. Closing one runtime leaves the queue active. During daemon shutdown, `SharedServices` stops acquisitions, drains each recorder, and closes the pooled provider afterward. `memory_status` exposes `scope=daemon`, `enqueued`, `delivered`, `retried`, `failed`, `dropped`, and the current queue depth.
+Compatible workspace runtimes share one daemon-scoped recorder; every queued observation still carries its own project, `cwd`, and workspace-prefixed session ID. Providers that explicitly implement `ConcurrencySafeProvider` use `deliveryWorkers` deterministic session shards: observations from one session remain FIFO on one worker, while different sessions can deliver concurrently. Providers without that opt-in remain single-worker and serialized. Closing one runtime leaves the queue active. During daemon shutdown, `SharedServices` stops acquisitions, drains each recorder, and closes the pooled provider afterward. `memory_status` exposes `scope=daemon`, worker/shard capacity, `enqueued`, `delivered`, `retried`, `failed`, `dropped`, and the current queue depth.
 
 ## Provider options
 

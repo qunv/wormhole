@@ -190,6 +190,9 @@ func (r *Runtime) ToolModule(tool string) (ToolModule, bool) {
 }
 
 func (r *Runtime) ModuleHealth(ctx context.Context) map[string]any {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	r.moduleMu.RLock()
 	names := append([]string(nil), r.moduleOrder...)
 	modules := make(map[string]ToolModule, len(names))
@@ -199,9 +202,36 @@ func (r *Runtime) ModuleHealth(ctx context.Context) map[string]any {
 	r.moduleMu.RUnlock()
 
 	result := make(map[string]any, len(modules))
-	for _, name := range names {
-		result[name] = modules[name].Health(ctx)
+	if len(names) == 0 {
+		return result
 	}
+	workers := min(len(names), 8)
+	jobs := make(chan string)
+	var resultMu sync.Mutex
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for name := range jobs {
+				value := modules[name].Health(ctx)
+				resultMu.Lock()
+				result[name] = value
+				resultMu.Unlock()
+			}
+		}()
+	}
+	for _, name := range names {
+		select {
+		case jobs <- name:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return result
+		}
+	}
+	close(jobs)
+	wg.Wait()
 	return result
 }
 

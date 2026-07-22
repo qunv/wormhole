@@ -1,6 +1,8 @@
 package patch
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,5 +78,22 @@ func TestApplyDiffRenamePreservesSourceMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("destination mode = %o, want 755", got)
+	}
+}
+
+func TestApplyOperationsContextCancellationDoesNotMutate(t *testing.T) {
+	engine, root := newTestEngine(t)
+	path := filepath.Join(root, "cancel.txt")
+	writeTestFile(t, path, "before\n", 0o644)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := engine.ApplyOperationsContext(ctx, []Operation{{
+		Op: "update", Path: "cancel.txt", Edits: []Edit{{OldText: "before", NewText: "after"}},
+	}}, false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled patch error = %v, want context.Canceled", err)
+	}
+	if got := readTestFile(t, path); got != "before\n" {
+		t.Fatalf("canceled patch mutated file: %q", got)
 	}
 }

@@ -108,15 +108,17 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 }
 
 func streamableHandler(runtime *agent.Runtime, workspaceID string) http.Handler {
+	server := mcpserver.NewWorkspace(runtime, workspaceID)
 	return mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return mcpserver.NewWorkspace(runtime, workspaceID) },
+		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
 	)
 }
 
 func sessionStreamableHandler(router *mcpserver.SessionRouter) http.Handler {
+	server := mcpserver.NewSessionGateway(router)
 	return mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return mcpserver.NewSessionGateway(router) },
+		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
 	)
 }

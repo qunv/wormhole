@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,10 +25,9 @@ type Store struct {
 	BackupsDir   string
 	ApprovalsDir string
 	AuditPath    string
-	mu           sync.Mutex
 }
 
-var appendPathLocks sync.Map
+var statePathLocks [256]sync.Mutex
 
 func New(workspace string) (*Store, error) {
 	return NewAt(workspace, config.AppDataDir())
@@ -60,8 +60,9 @@ func NewAt(workspace, dataDir string) (*Store, error) {
 }
 
 func (s *Store) ReadJSON(path string, target any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	pathLock := statePathLock(path)
+	pathLock.Lock()
+	defer pathLock.Unlock()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -70,8 +71,9 @@ func (s *Store) ReadJSON(path string, target any) error {
 }
 
 func (s *Store) WriteJSON(path string, value any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	pathLock := statePathLock(path)
+	pathLock.Lock()
+	defer pathLock.Unlock()
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
@@ -80,11 +82,9 @@ func (s *Store) WriteJSON(path string, value any) error {
 }
 
 func (s *Store) AppendLine(path string, line []byte) error {
-	pathLock := appendPathLock(path)
+	pathLock := statePathLock(path)
 	pathLock.Lock()
 	defer pathLock.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -97,13 +97,13 @@ func (s *Store) AppendLine(path string, line []byte) error {
 	return err
 }
 
-func appendPathLock(path string) *sync.Mutex {
+func statePathLock(path string) *sync.Mutex {
 	if absolute, err := filepath.Abs(path); err == nil {
 		path = absolute
 	}
-	key := comparePath(filepath.Clean(path))
-	value, _ := appendPathLocks.LoadOrStore(key, &sync.Mutex{})
-	return value.(*sync.Mutex)
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(comparePath(filepath.Clean(path))))
+	return &statePathLocks[hash.Sum32()%uint32(len(statePathLocks))]
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
