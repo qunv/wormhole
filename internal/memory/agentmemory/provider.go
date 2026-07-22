@@ -92,7 +92,8 @@ func New(cfg Config) (*Provider, error) {
 	}, nil
 }
 
-func (*Provider) Name() string { return "agentmemory" }
+func (*Provider) Name() string          { return "agentmemory" }
+func (*Provider) ConcurrencySafe() bool { return true }
 
 func (*Provider) Capabilities() memory.Capabilities {
 	return memory.Capabilities{

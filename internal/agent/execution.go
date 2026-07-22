@@ -52,7 +52,7 @@ func (r *Runtime) handleExec(ctx context.Context, name string, args map[string]a
 		if err := r.Processes.Stop(id); err != nil {
 			return nil, err
 		}
-		return map[string]any{"ok": true, "id": id, "status": "stopped"}, nil
+		return map[string]any{"ok": true, "id": id, "status": "stopping"}, nil
 	case "git":
 		return r.rawGit(ctx, args)
 	case "git_status":

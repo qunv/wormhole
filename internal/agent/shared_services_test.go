@@ -72,6 +72,10 @@ func (p *concurrencyProbeProvider) Observe(context.Context, memory.ObservationRe
 	return nil
 }
 
+type concurrencySafeProbeProvider struct{ concurrencyProbeProvider }
+
+func (*concurrencySafeProbeProvider) ConcurrencySafe() bool { return true }
+
 func TestSharedMemoryWrapperPreservesOptionalInterfaces(t *testing.T) {
 	provider := &sharedExportImportProvider{sharedTestMemoryProvider: &sharedTestMemoryProvider{}}
 	wrapped := wrapSharedMemoryProvider(provider)
@@ -101,6 +105,26 @@ func TestSharedMemoryWrapperSerializesProviderCalls(t *testing.T) {
 	wg.Wait()
 	if provider.overlapped.Load() {
 		t.Fatal("pooled provider calls overlapped")
+	}
+}
+
+func TestSharedMemoryWrapperAllowsOptedInConcurrentProviderCalls(t *testing.T) {
+	provider := &concurrencySafeProbeProvider{}
+	wrapped := wrapSharedMemoryProvider(provider)
+	if wrapped != provider {
+		t.Fatal("concurrency-safe provider was unnecessarily wrapped")
+	}
+	var wg sync.WaitGroup
+	for index := 0; index < 12; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = wrapped.Observe(context.Background(), memory.ObservationRequest{})
+		}()
+	}
+	wg.Wait()
+	if !provider.overlapped.Load() {
+		t.Fatal("concurrency-safe provider calls were serialized")
 	}
 }
 

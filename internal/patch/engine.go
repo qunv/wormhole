@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"codebridge/internal/state"
@@ -35,6 +39,7 @@ type Operation struct {
 type backupFile struct {
 	Path       string `json:"path"`
 	BackupFile string `json:"backup_file,omitempty"`
+	LinkTarget string `json:"link_target,omitempty"`
 	HadContent bool   `json:"had_content"`
 	Kind       string `json:"kind"`
 	Mode       uint32 `json:"mode,omitempty"`
@@ -51,100 +56,220 @@ type backupBatch struct {
 type Engine struct {
 	Workspace *workspace.Manager
 	Store     *state.Store
+
+	mu sync.Mutex
 }
 
+// Backup creates one undo batch without mutating workspace content.
 func (e *Engine) Backup(tool string, paths []string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, err := e.backupLocked(tool, paths)
+	return err
+}
+
+// Transaction serializes a backup and mutation as one operation. The callback
+// must not call another Engine method. A failed callback is rolled back using
+// the exact batch created for this transaction.
+func (e *Engine) Transaction(tool string, paths []string, mutate func() error) error {
+	if mutate == nil {
+		return errors.New("mutation callback is required")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	batch, err := e.backupLocked(tool, paths)
+	if err != nil {
+		return err
+	}
+	if err := mutate(); err != nil {
+		_, rollbackErr := e.undoBatchLocked(batch.ID)
+		if rollbackErr != nil {
+			return fmt.Errorf("%s failed: %v; rollback batch %s failed: %w", tool, err, batch.ID, rollbackErr)
+		}
+		return fmt.Errorf("%s failed and was rolled back: %w", tool, err)
+	}
+	return nil
+}
+
+func (e *Engine) backupLocked(tool string, paths []string) (backupBatch, error) {
+	if e == nil || e.Workspace == nil || e.Store == nil {
+		return backupBatch{}, errors.New("patch engine is not initialized")
+	}
+	resolved, err := e.resolveBackupPaths(paths)
+	if err != nil {
+		return backupBatch{}, err
+	}
 	batch := backupBatch{
 		ID: fmt.Sprintf("%d", time.Now().UnixNano()), TS: time.Now().UTC().Format(time.RFC3339Nano),
 		Tool: tool,
 	}
 	batch.BatchDir = filepath.Join(e.Store.BackupsDir, batch.ID)
 	if err := os.MkdirAll(batch.BatchDir, 0o700); err != nil {
-		return err
+		return backupBatch{}, err
 	}
-	for i, candidate := range paths {
-		target, err := e.Workspace.Resolve(candidate)
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(batch.BatchDir)
+		}
+	}()
+
+	for index, target := range resolved {
+		item, err := backupPath(target, filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", index, filepath.Base(target))))
 		if err != nil {
-			continue
-		}
-		item := backupFile{Path: target, Kind: "missing"}
-		info, err := os.Stat(target)
-		if errors.Is(err, os.ErrNotExist) {
-			batch.Files = append(batch.Files, item)
-			continue
-		}
-		if err != nil {
-			continue
-		}
-		item.HadContent = true
-		item.Mode = uint32(info.Mode().Perm())
-		item.BackupFile = filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", i, filepath.Base(target)))
-		if info.IsDir() {
-			item.Kind = "directory"
-			err = copyTree(target, item.BackupFile)
-		} else {
-			item.Kind = "file"
-			err = copyFile(target, item.BackupFile, info.Mode())
-		}
-		if err != nil {
-			return err
+			return backupBatch{}, fmt.Errorf("backup %s: %w", e.Workspace.Relative(target), err)
 		}
 		batch.Files = append(batch.Files, item)
 	}
-	var history []backupBatch
-	_ = e.Store.ReadJSON(e.Store.PatchHistory, &history)
+
+	history, err := e.readHistoryLocked()
+	if err != nil {
+		return backupBatch{}, err
+	}
 	history = append(history, batch)
+	var expired []backupBatch
 	if len(history) > 50 {
-		for _, old := range history[:len(history)-50] {
-			_ = os.RemoveAll(old.BatchDir)
-		}
+		expired = append(expired, history[:len(history)-50]...)
 		history = history[len(history)-50:]
 	}
-	return e.Store.WriteJSON(e.Store.PatchHistory, history)
+	if err := e.Store.WriteJSON(e.Store.PatchHistory, history); err != nil {
+		return backupBatch{}, err
+	}
+	cleanup = false
+	for _, old := range expired {
+		_ = os.RemoveAll(old.BatchDir)
+	}
+	return batch, nil
+}
+
+func (e *Engine) resolveBackupPaths(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("at least one backup path is required")
+	}
+	seen := map[string]bool{}
+	resolved := make([]string, 0, len(paths))
+	for _, candidate := range paths {
+		if strings.TrimSpace(candidate) == "" {
+			return nil, errors.New("backup path must not be empty")
+		}
+		target, err := e.Workspace.Resolve(candidate)
+		if err != nil {
+			return nil, err
+		}
+		key := filepath.Clean(target)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		resolved = append(resolved, target)
+	}
+	return resolved, nil
+}
+
+func backupPath(target, destination string) (backupFile, error) {
+	item := backupFile{Path: target, Kind: "missing"}
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return item, nil
+	}
+	if err != nil {
+		return backupFile{}, err
+	}
+	item.HadContent = true
+	item.Mode = uint32(info.Mode().Perm())
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		item.Kind = "symlink"
+		item.LinkTarget, err = os.Readlink(target)
+	case info.IsDir():
+		item.Kind = "directory"
+		item.BackupFile = destination
+		err = copyTree(target, destination)
+	case info.Mode().IsRegular():
+		item.Kind = "file"
+		item.BackupFile = destination
+		err = copyFile(target, destination, info.Mode())
+	default:
+		err = fmt.Errorf("unsupported file type %s", info.Mode())
+	}
+	return item, err
 }
 
 func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[string]any, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if len(operations) == 0 {
 		return nil, errors.New("operations must not be empty")
 	}
+	if err := e.validateOperations(operations); err != nil {
+		return nil, err
+	}
+	var batch backupBatch
 	if !dryRun {
-		var paths []string
+		paths := make([]string, 0, len(operations)*2)
 		for _, op := range operations {
 			paths = append(paths, op.Path)
 			if op.RenameTo != "" {
 				paths = append(paths, op.RenameTo)
 			}
 		}
-		if err := e.Backup("apply_patch_ops", paths); err != nil {
+		var err error
+		batch, err = e.backupLocked("apply_patch_ops", paths)
+		if err != nil {
 			return nil, err
 		}
 	}
-	var results []map[string]any
+
+	results := make([]map[string]any, 0, len(operations))
 	for _, op := range operations {
 		result, err := e.applyOne(op, dryRun)
-		if err != nil {
-			results = append(results, map[string]any{"op": op.Op, "path": op.Path, "ok": false, "conflict": err.Error()})
-			if !dryRun {
-				rollback, rollbackErr := e.Undo()
-				if rollbackErr != nil {
-					return nil, fmt.Errorf("apply failed: %v; rollback failed: %w", err, rollbackErr)
-				}
-				return map[string]any{"ok": false, "mode": "operations", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
-			}
+		if err == nil {
+			results = append(results, result)
 			continue
 		}
-		results = append(results, result)
+		results = append(results, map[string]any{"op": op.Op, "path": op.Path, "ok": false, "conflict": err.Error()})
+		if dryRun {
+			continue
+		}
+		rollback, rollbackErr := e.undoBatchLocked(batch.ID)
+		if rollbackErr != nil {
+			return nil, fmt.Errorf("apply failed: %v; rollback batch %s failed: %w", err, batch.ID, rollbackErr)
+		}
+		return failedPatchResult("operations", results, rollback), nil
 	}
-	ok := true
-	applied := 0
-	for _, result := range results {
-		if valid, _ := result["ok"].(bool); valid {
-			applied++
-		} else {
-			ok = false
+	return patchResult("operations", results), nil
+}
+
+func (e *Engine) validateOperations(operations []Operation) error {
+	for index, op := range operations {
+		if strings.TrimSpace(op.Path) == "" {
+			return fmt.Errorf("operations[%d].path is required", index)
+		}
+		target, err := e.Workspace.Resolve(op.Path)
+		if err != nil {
+			return fmt.Errorf("operations[%d]: %w", index, err)
+		}
+		switch op.Op {
+		case "create", "update":
+		case "delete":
+			if e.Workspace.IsRoot(target) {
+				return errors.New("refusing to delete a configured root")
+			}
+		case "rename":
+			if e.Workspace.IsRoot(target) {
+				return errors.New("refusing to rename a configured root")
+			}
+			if strings.TrimSpace(op.RenameTo) == "" {
+				return errors.New("rename requires rename_to")
+			}
+			if _, err := e.Workspace.Resolve(op.RenameTo); err != nil {
+				return fmt.Errorf("operations[%d].rename_to: %w", index, err)
+			}
+		default:
+			return fmt.Errorf("unknown operation: %s", op.Op)
 		}
 	}
-	return map[string]any{"ok": ok, "mode": "operations", "applied": applied, "files": results, "results": results}, nil
+	return nil
 }
 
 func (e *Engine) applyOne(op Operation, dryRun bool) (map[string]any, error) {
@@ -155,10 +280,7 @@ func (e *Engine) applyOne(op Operation, dryRun bool) (map[string]any, error) {
 	switch op.Op {
 	case "create":
 		if !dryRun {
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return nil, err
-			}
-			if err := os.WriteFile(target, []byte(op.Content), 0o644); err != nil {
+			if err := WriteFileAtomic(target, []byte(op.Content), 0o644); err != nil {
 				return nil, err
 			}
 		}
@@ -183,15 +305,12 @@ func (e *Engine) applyOne(op Operation, dryRun bool) (map[string]any, error) {
 			}
 		}
 		if !dryRun {
-			if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+			if err := WriteFileAtomic(target, []byte(content), 0o644); err != nil {
 				return nil, err
 			}
 		}
 		return map[string]any{"op": op.Op, "path": e.Workspace.Relative(target), "ok": true, "replacements": count}, nil
 	case "delete":
-		if e.Workspace.IsRoot(target) {
-			return nil, errors.New("refusing to delete a configured root")
-		}
 		info, err := os.Stat(target)
 		if err != nil {
 			return nil, err
@@ -206,25 +325,19 @@ func (e *Engine) applyOne(op Operation, dryRun bool) (map[string]any, error) {
 		}
 		return map[string]any{"op": op.Op, "path": e.Workspace.Relative(target), "ok": true}, nil
 	case "rename":
-		if e.Workspace.IsRoot(target) {
-			return nil, errors.New("refusing to rename a configured root")
-		}
-		if op.RenameTo == "" {
-			return nil, errors.New("rename requires rename_to")
-		}
-		dst, err := e.Workspace.Resolve(op.RenameTo)
+		destination, err := e.Workspace.Resolve(op.RenameTo)
 		if err != nil {
 			return nil, err
 		}
 		if !dryRun {
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 				return nil, err
 			}
-			if err := os.Rename(target, dst); err != nil {
+			if err := os.Rename(target, destination); err != nil {
 				return nil, err
 			}
 		}
-		return map[string]any{"op": op.Op, "path": e.Workspace.Relative(target), "to": e.Workspace.Relative(dst), "ok": true}, nil
+		return map[string]any{"op": op.Op, "path": e.Workspace.Relative(target), "to": e.Workspace.Relative(destination), "ok": true}, nil
 	default:
 		return nil, fmt.Errorf("unknown operation: %s", op.Op)
 	}
@@ -235,37 +348,47 @@ type diffFile struct {
 	Plus  string
 	Hunks []diffHunk
 }
-type diffHunk struct{ Before, After []string }
+
+type diffHunk struct {
+	OldStart int
+	OldCount int
+	NewStart int
+	NewCount int
+	Before   []string
+	After    []string
+}
+
+var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
 func ParseUnifiedDiff(text string) ([]diffFile, error) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	var files []diffFile
 	var current *diffFile
 	var hunk *diffHunk
-	clean := func(value string) string {
-		value = strings.TrimSpace(strings.Trim(value, `"'`))
-		value = strings.TrimPrefix(value, "a/")
-		value = strings.TrimPrefix(value, "b/")
-		return value
-	}
 	for index := 0; index < len(lines); index++ {
 		line := lines[index]
 		if strings.HasPrefix(line, "--- ") {
-			next := ""
-			if index+1 < len(lines) && strings.HasPrefix(lines[index+1], "+++ ") {
-				next = clean(strings.TrimPrefix(lines[index+1], "+++ "))
-				index++
+			if index+1 >= len(lines) || !strings.HasPrefix(lines[index+1], "+++ ") {
+				return nil, errors.New("diff file header requires consecutive --- and +++ lines")
 			}
-			files = append(files, diffFile{Minus: clean(strings.TrimPrefix(line, "--- ")), Plus: next})
+			files = append(files, diffFile{
+				Minus: cleanDiffPath(strings.TrimPrefix(line, "--- ")),
+				Plus:  cleanDiffPath(strings.TrimPrefix(lines[index+1], "+++ ")),
+			})
 			current = &files[len(files)-1]
 			hunk = nil
+			index++
 			continue
 		}
 		if current == nil {
 			continue
 		}
 		if strings.HasPrefix(line, "@@") {
-			current.Hunks = append(current.Hunks, diffHunk{})
+			parsed, err := parseHunkHeader(line)
+			if err != nil {
+				return nil, err
+			}
+			current.Hunks = append(current.Hunks, parsed)
 			hunk = &current.Hunks[len(current.Hunks)-1]
 			continue
 		}
@@ -280,126 +403,272 @@ func ParseUnifiedDiff(text string) ([]diffFile, error) {
 			hunk.Before = append(hunk.Before, line[1:])
 		case '+':
 			hunk.After = append(hunk.After, line[1:])
+		default:
+			return nil, fmt.Errorf("invalid diff hunk line %q", line)
+		}
+		if len(hunk.Before) > hunk.OldCount || len(hunk.After) > hunk.NewCount {
+			return nil, fmt.Errorf("hunk count mismatch for %s", diffPath(*current))
+		}
+		if len(hunk.Before) == hunk.OldCount && len(hunk.After) == hunk.NewCount {
+			hunk = nil
 		}
 	}
 	if len(files) == 0 {
 		return nil, errors.New("no file sections found in diff (need ---/+++ headers)")
 	}
+	for _, file := range files {
+		for _, hunk := range file.Hunks {
+			if len(hunk.Before) != hunk.OldCount || len(hunk.After) != hunk.NewCount {
+				return nil, fmt.Errorf("hunk count mismatch for %s", diffPath(file))
+			}
+		}
+	}
 	return files, nil
 }
 
+func parseHunkHeader(line string) (diffHunk, error) {
+	match := hunkHeader.FindStringSubmatch(line)
+	if len(match) == 0 {
+		return diffHunk{}, fmt.Errorf("invalid unified diff hunk header %q", line)
+	}
+	oldStart, _ := strconv.Atoi(match[1])
+	newStart, _ := strconv.Atoi(match[3])
+	oldCount, newCount := 1, 1
+	if match[2] != "" {
+		oldCount, _ = strconv.Atoi(match[2])
+	}
+	if match[4] != "" {
+		newCount, _ = strconv.Atoi(match[4])
+	}
+	return diffHunk{OldStart: oldStart, OldCount: oldCount, NewStart: newStart, NewCount: newCount}, nil
+}
+
+func cleanDiffPath(value string) string {
+	value = strings.TrimSpace(strings.Trim(value, `"'`))
+	value = strings.TrimPrefix(value, "a/")
+	value = strings.TrimPrefix(value, "b/")
+	return value
+}
+
+func diffPath(file diffFile) string {
+	if file.Minus == "/dev/null" {
+		return file.Plus
+	}
+	return file.Minus
+}
+
 func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	files, err := ParseUnifiedDiff(text)
 	if err != nil {
 		return nil, err
 	}
+	paths, err := e.validateDiffPaths(files)
+	if err != nil {
+		return nil, err
+	}
+	var batch backupBatch
 	if !dryRun {
-		var paths []string
-		for _, file := range files {
-			path := file.Minus
-			if path == "/dev/null" {
-				path = file.Plus
-			}
-			paths = append(paths, path)
-		}
-		if err := e.Backup("apply_patch_diff", paths); err != nil {
+		batch, err = e.backupLocked("apply_patch_diff", paths)
+		if err != nil {
 			return nil, err
 		}
 	}
-	var results []map[string]any
+
+	results := make([]map[string]any, 0, len(files))
 	for _, file := range files {
-		path := file.Minus
-		action := "update"
-		if path == "/dev/null" {
-			path, action = file.Plus, "create"
-		} else if file.Plus == "/dev/null" {
-			action = "delete"
-		}
-		target, resolveErr := e.Workspace.Resolve(path)
-		if resolveErr != nil {
-			results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": resolveErr.Error()})
+		result, applyErr := e.applyDiffFile(file, dryRun)
+		if applyErr == nil {
+			results = append(results, result)
 			continue
 		}
-		if action == "delete" {
-			if e.Workspace.IsRoot(target) {
-				results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": "refusing to delete a configured root"})
-				continue
-			}
-			_, statErr := os.Stat(target)
-			if statErr != nil {
-				results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": "file not found"})
-				continue
-			}
-			if !dryRun {
-				if err := os.RemoveAll(target); err != nil {
-					results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": err.Error()})
-					rollback, rollbackErr := e.Undo()
-					if rollbackErr != nil {
-						return nil, fmt.Errorf("delete failed: %v; rollback failed: %w", err, rollbackErr)
-					}
-					return map[string]any{"ok": false, "mode": "diff", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
-				}
-			}
-			results = append(results, map[string]any{"path": path, "action": action, "ok": true})
+		results = append(results, map[string]any{
+			"path": diffPath(file), "action": diffAction(file), "ok": false, "conflict": applyErr.Error(),
+		})
+		if dryRun {
 			continue
 		}
-		if action == "create" {
-			var lines []string
-			for _, hunk := range file.Hunks {
-				lines = append(lines, hunk.After...)
-			}
-			content := strings.Join(lines, "\n") + "\n"
-			if !dryRun {
-				_ = os.MkdirAll(filepath.Dir(target), 0o755)
-				if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
-					results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": err.Error()})
-					continue
-				}
-			}
-			results = append(results, map[string]any{"path": path, "action": action, "ok": true, "preview_chars": len(content)})
-			continue
+		rollback, rollbackErr := e.undoBatchLocked(batch.ID)
+		if rollbackErr != nil {
+			return nil, fmt.Errorf("patch failed: %v; rollback batch %s failed: %w", applyErr, batch.ID, rollbackErr)
 		}
-		raw, readErr := os.ReadFile(target)
-		if readErr != nil {
-			results = append(results, map[string]any{"path": path, "action": action, "ok": false, "conflict": readErr.Error()})
-			continue
+		return failedPatchResult("diff", results, rollback), nil
+	}
+	return patchResult("diff", results), nil
+}
+
+func (e *Engine) validateDiffPaths(files []diffFile) ([]string, error) {
+	paths := make([]string, 0, len(files)*2)
+	for _, file := range files {
+		if file.Minus == "" || file.Plus == "" {
+			return nil, errors.New("diff paths must not be empty")
 		}
-		content, matched := string(raw), true
-		for _, hunk := range file.Hunks {
-			before, after := strings.Join(hunk.Before, "\n"), strings.Join(hunk.After, "\n")
-			if before == after {
-				continue
+		if file.Minus != "/dev/null" {
+			target, err := e.Workspace.Resolve(file.Minus)
+			if err != nil {
+				return nil, err
 			}
-			if before == "" {
-				if content != "" && !strings.HasSuffix(content, "\n") {
-					content += "\n"
-				}
-				content += after
-			} else if strings.Contains(content, before) {
-				content = strings.Replace(content, before, after, 1)
-			} else {
-				matched = false
-				break
+			if file.Plus == "/dev/null" && e.Workspace.IsRoot(target) {
+				return nil, errors.New("refusing to delete a configured root")
 			}
+			paths = append(paths, file.Minus)
 		}
-		if matched && !dryRun {
-			if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
-				matched = false
+		if file.Plus != "/dev/null" {
+			if _, err := e.Workspace.Resolve(file.Plus); err != nil {
+				return nil, err
 			}
-		}
-		result := map[string]any{"path": path, "action": action, "ok": matched}
-		if !matched {
-			result["conflict"] = "one or more hunks did not match"
-		}
-		results = append(results, result)
-		if !matched && !dryRun {
-			rollback, rollbackErr := e.Undo()
-			if rollbackErr != nil {
-				return nil, fmt.Errorf("patch conflict; rollback failed: %w", rollbackErr)
-			}
-			return map[string]any{"ok": false, "mode": "diff", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
+			paths = append(paths, file.Plus)
 		}
 	}
+	return paths, nil
+}
+
+func diffAction(file diffFile) string {
+	switch {
+	case file.Minus == "/dev/null":
+		return "create"
+	case file.Plus == "/dev/null":
+		return "delete"
+	case file.Minus != file.Plus:
+		return "rename"
+	default:
+		return "update"
+	}
+}
+
+func (e *Engine) applyDiffFile(file diffFile, dryRun bool) (map[string]any, error) {
+	action := diffAction(file)
+	switch action {
+	case "create":
+		target, err := e.Workspace.Resolve(file.Plus)
+		if err != nil {
+			return nil, err
+		}
+		content, err := applyHunks("", file.Hunks, true)
+		if err != nil {
+			return nil, err
+		}
+		if !dryRun {
+			if err := WriteFileAtomic(target, []byte(content), 0o644); err != nil {
+				return nil, err
+			}
+		}
+		return map[string]any{"path": file.Plus, "action": action, "ok": true, "preview_chars": len(content)}, nil
+	case "delete":
+		target, err := e.Workspace.Resolve(file.Minus)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(target); err != nil {
+			return nil, err
+		}
+		if !dryRun {
+			if err := os.RemoveAll(target); err != nil {
+				return nil, err
+			}
+		}
+		return map[string]any{"path": file.Minus, "action": action, "ok": true}, nil
+	case "update", "rename":
+		source, err := e.Workspace.Resolve(file.Minus)
+		if err != nil {
+			return nil, err
+		}
+		sourceInfo, err := os.Stat(source)
+		if err != nil {
+			return nil, err
+		}
+		if !sourceInfo.Mode().IsRegular() {
+			return nil, fmt.Errorf("path is not a regular file: %s", file.Minus)
+		}
+		raw, err := os.ReadFile(source)
+		if err != nil {
+			return nil, err
+		}
+		content, err := applyHunks(string(raw), file.Hunks, false)
+		if err != nil {
+			return nil, err
+		}
+		destination := source
+		if action == "rename" {
+			destination, err = e.Workspace.Resolve(file.Plus)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !dryRun {
+			if action == "rename" {
+				err = atomicWriteFile(destination, []byte(content), sourceInfo.Mode().Perm())
+			} else {
+				err = WriteFileAtomic(destination, []byte(content), 0o644)
+			}
+			if err != nil {
+				return nil, err
+			}
+			if action == "rename" {
+				if err := os.RemoveAll(source); err != nil {
+					return nil, err
+				}
+			}
+		}
+		result := map[string]any{"path": file.Minus, "action": action, "ok": true}
+		if action == "rename" {
+			result["to"] = file.Plus
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported diff action %s", action)
+	}
+}
+
+func applyHunks(content string, hunks []diffHunk, create bool) (string, error) {
+	newline := "\n"
+	if strings.Contains(content, "\r\n") {
+		newline = "\r\n"
+	}
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	hadFinalNewline := strings.HasSuffix(normalized, "\n")
+	if hadFinalNewline {
+		normalized = strings.TrimSuffix(normalized, "\n")
+	}
+	var lines []string
+	if normalized != "" {
+		lines = strings.Split(normalized, "\n")
+	}
+	offset := 0
+	for _, hunk := range hunks {
+		index := hunk.OldStart - 1
+		if hunk.OldCount == 0 {
+			index = hunk.OldStart
+		}
+		if hunk.OldStart == 0 {
+			index = 0
+		}
+		index += offset
+		if index < 0 || index+len(hunk.Before) > len(lines) {
+			return "", fmt.Errorf("hunk at old line %d is outside the file", hunk.OldStart)
+		}
+		for lineIndex, expected := range hunk.Before {
+			if lines[index+lineIndex] != expected {
+				return "", fmt.Errorf("hunk at old line %d did not match", hunk.OldStart)
+			}
+		}
+		replacement := append([]string(nil), hunk.After...)
+		updated := make([]string, 0, len(lines)-len(hunk.Before)+len(replacement))
+		updated = append(updated, lines[:index]...)
+		updated = append(updated, replacement...)
+		updated = append(updated, lines[index+len(hunk.Before):]...)
+		lines = updated
+		offset += len(replacement) - len(hunk.Before)
+	}
+	result := strings.Join(lines, newline)
+	if len(lines) > 0 && (create || hadFinalNewline) {
+		result += newline
+	}
+	return result, nil
+}
+
+func patchResult(mode string, results []map[string]any) map[string]any {
 	ok, applied := true, 0
 	for _, result := range results {
 		if result["ok"] == true {
@@ -408,84 +677,205 @@ func (e *Engine) ApplyDiff(text string, dryRun bool) (map[string]any, error) {
 			ok = false
 		}
 	}
-	if !ok && !dryRun {
-		rollback, rollbackErr := e.Undo()
-		if rollbackErr != nil {
-			return nil, fmt.Errorf("patch failed; rollback failed: %w", rollbackErr)
-		}
-		return map[string]any{"ok": false, "mode": "diff", "applied": 0, "rolled_back": true, "rollback": rollback, "files": results, "results": results}, nil
+	return map[string]any{"ok": ok, "mode": mode, "applied": applied, "files": results, "results": results}
+}
+
+func failedPatchResult(mode string, results []map[string]any, rollback map[string]any) map[string]any {
+	return map[string]any{
+		"ok": false, "mode": mode, "applied": 0, "rolled_back": true,
+		"rollback": rollback, "files": results, "results": results,
 	}
-	return map[string]any{"ok": ok, "mode": "diff", "applied": applied, "files": results, "results": results}, nil
 }
 
 func (e *Engine) Undo() (map[string]any, error) {
-	var history []backupBatch
-	if err := e.Store.ReadJSON(e.Store.PatchHistory, &history); err != nil || len(history) == 0 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	history, err := e.readHistoryLocked()
+	if err != nil || len(history) == 0 {
 		return nil, errors.New("no patch history to undo")
 	}
-	batch := history[len(history)-1]
+	return e.undoBatchLocked(history[len(history)-1].ID)
+}
+
+func (e *Engine) undoBatchLocked(batchID string) (map[string]any, error) {
+	history, err := e.readHistoryLocked()
+	if err != nil {
+		return nil, err
+	}
+	index := -1
+	for current := range history {
+		if history[current].ID == batchID {
+			index = current
+			break
+		}
+	}
+	if index < 0 {
+		return nil, fmt.Errorf("patch backup batch %s was not found", batchID)
+	}
+	batch := history[index]
+	restored, failures := restoreBatch(batch)
+	if len(failures) > 0 {
+		return map[string]any{"ok": false, "batch_id": batch.ID, "restored": restored, "errors": failures}, errors.New("one or more backup paths could not be restored")
+	}
+	history = append(history[:index], history[index+1:]...)
+	if err := e.Store.WriteJSON(e.Store.PatchHistory, history); err != nil {
+		return nil, err
+	}
+	if err := os.RemoveAll(batch.BatchDir); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "batch_id": batch.ID, "restored": restored, "errors": failures}, nil
+}
+
+func (e *Engine) readHistoryLocked() ([]backupBatch, error) {
+	var history []backupBatch
+	if err := e.Store.ReadJSON(e.Store.PatchHistory, &history); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return history, nil
+}
+
+func restoreBatch(batch backupBatch) ([]string, []map[string]string) {
 	var restored []string
 	var failures []map[string]string
 	for _, item := range batch.Files {
-		if !item.HadContent {
-			if err := os.RemoveAll(item.Path); err != nil {
-				failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
-			} else {
-				restored = append(restored, item.Path)
-			}
-			continue
-		}
-		if err := os.RemoveAll(item.Path); err != nil {
-			failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
-			continue
-		}
-		var err error
-		if item.Kind == "directory" {
-			err = copyTree(item.BackupFile, item.Path)
-		} else {
-			mode := fs.FileMode(item.Mode)
-			if mode == 0 {
-				mode = 0o644
-			}
-			err = copyFile(item.BackupFile, item.Path, mode)
-		}
-		if err != nil {
+		if err := restoreBackupFile(item); err != nil {
 			failures = append(failures, map[string]string{"path": item.Path, "error": err.Error()})
 		} else {
 			restored = append(restored, item.Path)
 		}
 	}
-	if len(failures) == 0 {
-		history = history[:len(history)-1]
-		if err := e.Store.WriteJSON(e.Store.PatchHistory, history); err != nil {
-			return nil, err
-		}
-	}
-	return map[string]any{"ok": len(failures) == 0, "batch_id": batch.ID, "restored": restored, "errors": failures}, nil
+	return restored, failures
 }
 
-func copyFile(src, dst string, mode fs.FileMode) error {
-	raw, err := os.ReadFile(src)
+func restoreBackupFile(item backupFile) error {
+	if !item.HadContent {
+		return os.RemoveAll(item.Path)
+	}
+	if err := os.RemoveAll(item.Path); err != nil {
+		return err
+	}
+	switch item.Kind {
+	case "directory":
+		return copyTree(item.BackupFile, item.Path)
+	case "file":
+		mode := fs.FileMode(item.Mode)
+		if mode == 0 {
+			mode = 0o644
+		}
+		return copyFile(item.BackupFile, item.Path, mode)
+	case "symlink":
+		if err := os.MkdirAll(filepath.Dir(item.Path), 0o755); err != nil {
+			return err
+		}
+		return os.Symlink(item.LinkTarget, item.Path)
+	default:
+		return fmt.Errorf("unsupported backup kind %q", item.Kind)
+	}
+}
+
+// WriteFileAtomic replaces a regular file through a temporary sibling and
+// preserves the existing permission bits. New files use defaultMode.
+func WriteFileAtomic(path string, data []byte, defaultMode fs.FileMode) error {
+	mode := defaultMode
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path is not a regular file: %s", path)
+		}
+		mode = info.Mode().Perm()
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	}
+	if mode == 0 {
+		mode = 0o644
+	}
+	return atomicWriteFile(path, data, mode)
+}
+
+func atomicWriteFile(path string, data []byte, mode fs.FileMode) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(directory, ".codebridge-write-*")
 	if err != nil {
 		return err
 	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err := temp.Chmod(mode); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+func copyFile(src, dst string, mode fs.FileMode) error {
+	input, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, raw, mode)
+	output, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = output.Close()
+		if !ok {
+			_ = os.Remove(dst)
+		}
+	}()
+	if _, err := io.Copy(output, input); err != nil {
+		return err
+	}
+	if err := output.Sync(); err != nil {
+		return err
+	}
+	if err := output.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dst, rel)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o755)
+		target := filepath.Join(dst, relative)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
 			link, err := os.Readlink(path)
 			if err != nil {
 				return err
@@ -494,12 +884,16 @@ func copyTree(src, dst string) error {
 				return err
 			}
 			return os.Symlink(link, target)
+		case info.IsDir():
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(target, info.Mode().Perm())
+		case info.Mode().IsRegular():
+			return copyFile(path, target, info.Mode())
+		default:
+			return fmt.Errorf("unsupported file type %s", info.Mode())
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		return copyFile(path, target, info.Mode())
 	})
 }
 

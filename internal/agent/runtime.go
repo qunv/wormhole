@@ -57,6 +57,7 @@ type Runtime struct {
 
 	profileMu         sync.RWMutex
 	profile           map[string]any
+	repoIndexMu       sync.Mutex
 	memoryHealthMu    sync.Mutex
 	memoryHealthValue memory.HealthResult
 	memoryHealthAt    time.Time

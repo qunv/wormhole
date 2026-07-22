@@ -58,10 +58,15 @@ func (m *ApprovalManager) Request(actions []string, reason string, ttl time.Dura
 	if ttl <= 0 {
 		ttl = m.TTL
 	}
+	id, err := uuid4()
+	if err != nil {
+		return nil, fmt.Errorf("create approval id: %w", err)
+	}
+	now := time.Now().UTC()
 	record := &ApprovalRecord{
-		ID: uuid4(), Action: actions[0], Actions: actions, Reason: reason,
-		Status: "pending", Created: time.Now().UTC().Format(time.RFC3339Nano),
-		ExpiresAt: time.Now().Add(ttl).UTC().Format(time.RFC3339Nano),
+		ID: id, Action: actions[0], Actions: actions, Reason: reason,
+		Status: "pending", Created: now.Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(ttl).Format(time.RFC3339Nano),
 	}
 	if len(actions) > 1 {
 		record.Action = fmt.Sprintf("batch:%d", len(actions))
@@ -166,16 +171,18 @@ func (m *ApprovalManager) write(record *ApprovalRecord) error {
 
 func expired(record *ApprovalRecord) bool {
 	value, err := time.Parse(time.RFC3339Nano, record.ExpiresAt)
-	return err == nil && !value.After(time.Now())
+	return err != nil || !value.After(time.Now())
 }
 
-func uuid4() string {
+func uuid4() (string, error) {
 	raw := make([]byte, 16)
-	_, _ = rand.Read(raw)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
 	raw[6] = (raw[6] & 0x0f) | 0x40
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	text := hex.EncodeToString(raw)
-	return text[:8] + "-" + text[8:12] + "-" + text[12:16] + "-" + text[16:20] + "-" + text[20:]
+	return text[:8] + "-" + text[8:12] + "-" + text[12:16] + "-" + text[16:20] + "-" + text[20:], nil
 }
 
 func unique(items []string) []string {

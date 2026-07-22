@@ -21,15 +21,21 @@ import (
 )
 
 type repoIndex struct {
-	TS             time.Time        `json:"ts"`
-	Root           string           `json:"root"`
-	Profile        map[string]any   `json:"profile"`
-	Tree           []string         `json:"tree"`
-	Dirs           int              `json:"dirs"`
-	Files          int              `json:"files"`
-	ImportantFiles []map[string]any `json:"important_files"`
-	Symbols        []map[string]any `json:"symbols,omitempty"`
+	SchemaVersion   int              `json:"schema_version"`
+	TS              time.Time        `json:"ts"`
+	Root            string           `json:"root"`
+	Depth           int              `json:"depth"`
+	Limit           int              `json:"limit"`
+	SymbolsIncluded bool             `json:"symbols_included"`
+	Profile         map[string]any   `json:"profile"`
+	Tree            []string         `json:"tree"`
+	Dirs            int              `json:"dirs"`
+	Files           int              `json:"files"`
+	ImportantFiles  []map[string]any `json:"important_files"`
+	Symbols         []map[string]any `json:"symbols,omitempty"`
 }
+
+const repoIndexSchemaVersion = 2
 
 func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]any) (any, error) {
 	switch name {
@@ -73,8 +79,10 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 		return map[string]any{
 			"cached": true, "fresh": age < 5*time.Minute, "ts": index.TS,
 			"age_seconds": int(age.Seconds()), "ttl_seconds": 300,
+			"schema_version": index.SchemaVersion, "depth": index.Depth, "limit": index.Limit,
+			"symbols_included":  index.SymbolsIncluded,
 			"profile_languages": index.Profile["languages"], "profile_frameworks": index.Profile["frameworks"],
-			"symbols_cached": index.Symbols != nil, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
+			"symbols_cached": index.SymbolsIncluded, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
 		}, nil
 	case "detect_test_commands":
 		root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
@@ -219,10 +227,15 @@ func (r *Runtime) importantFiles(root string) []map[string]any {
 }
 
 func (r *Runtime) buildIndex(root string, depth, limit int, symbols, refresh bool) (repoIndex, bool, error) {
+	depth, limit = normalizeRepoIndexParams(depth, limit)
+	r.repoIndexMu.Lock()
+	defer r.repoIndexMu.Unlock()
+
 	var cached repoIndex
 	if !refresh && r.Store.ReadJSON(r.Store.IndexPath, &cached) == nil &&
-		cached.Root == root && time.Since(cached.TS) < 5*time.Minute &&
-		(!symbols || cached.Symbols != nil) {
+		cached.SchemaVersion == repoIndexSchemaVersion &&
+		cached.Root == root && cached.Depth == depth && cached.Limit == limit &&
+		(!symbols || cached.SymbolsIncluded) && time.Since(cached.TS) < 5*time.Minute {
 		return cached, true, nil
 	}
 	tree, dirs, files, err := r.Workspace.Tree(root, depth, limit)
@@ -234,14 +247,26 @@ func (r *Runtime) buildIndex(root string, depth, limit int, symbols, refresh boo
 		return repoIndex{}, false, err
 	}
 	index := repoIndex{
-		TS: time.Now().UTC(), Root: root, Profile: profile, Tree: tree, Dirs: dirs,
-		Files: files, ImportantFiles: r.importantFiles(root),
+		SchemaVersion: repoIndexSchemaVersion, TS: time.Now().UTC(), Root: root,
+		Depth: depth, Limit: limit, SymbolsIncluded: symbols,
+		Profile: profile, Tree: tree, Dirs: dirs, Files: files,
+		ImportantFiles: r.importantFiles(root),
 	}
 	if symbols {
 		index.Symbols, _ = r.scanSymbols(root, 500, 2000, "")
 	}
 	_ = r.Store.WriteJSON(r.Store.IndexPath, index)
 	return index, false, nil
+}
+
+func normalizeRepoIndexParams(depth, limit int) (int, int) {
+	if depth <= 0 {
+		depth = 3
+	}
+	if limit <= 0 {
+		limit = 800
+	}
+	return depth, limit
 }
 
 func (r *Runtime) repoMap(args map[string]any) (any, error) {
@@ -254,8 +279,8 @@ func (r *Runtime) repoMap(args map[string]any) (any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"root": r.Workspace.Relative(root), "depth": intArg(args, "depth", 3), "engine": "scan",
-		"dirs": index.Dirs, "files": index.Files, "tree": index.Tree, "profile": index.Profile,
+		"root": r.Workspace.Relative(root), "depth": index.Depth, "max_entries": index.Limit,
+		"engine": "scan", "dirs": index.Dirs, "files": index.Files, "tree": index.Tree, "profile": index.Profile,
 		"cached": cached, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
 	}, nil
 }
@@ -274,7 +299,7 @@ func (r *Runtime) workspaceSnapshot(ctx context.Context, args map[string]any) (a
 		"kind": "workspace_snapshot", "pro": true, "version": r.Version, "tier": r.Tier,
 		"ts": time.Now().UTC(), "root": r.Workspace.Relative(root), "roots": r.Workspace.Roots,
 		"mode": r.Config.Mode, "policy": r.Config.Policy, "profile": index.Profile, "git": git,
-		"tree":            map[string]any{"depth": intArg(args, "depth", 3), "dirs": index.Dirs, "files": index.Files, "entries": index.Tree},
+		"tree":            map[string]any{"depth": index.Depth, "max_entries": index.Limit, "dirs": index.Dirs, "files": index.Files, "entries": index.Tree},
 		"important_files": index.ImportantFiles, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
 		"cache":             map[string]any{"hit": cached, "generated_at": index.TS, "ttl_seconds": 300},
 		"memory":            r.memoryStatus(ctx),

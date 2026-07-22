@@ -5,6 +5,7 @@ package workspace
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -213,20 +214,23 @@ func (m *Manager) FindFiles(start, glob string, limit int) ([]string, string, er
 		limit = 300
 	}
 	if m.RGBin != "" {
-		args := []string{"--files", "-g", glob}
-		cmd := exec.Command(m.RGBin, args...)
-		cmd.Dir = root
-		result, err := cmd.Output()
-		if err == nil {
-			lines := nonEmptyLines(string(result))
-			out := make([]string, 0, min(limit, len(lines)))
-			for _, line := range lines {
+		args := []string{"--files", "--color", "never"}
+		if glob != "" {
+			args = append(args, "-g", glob)
+		}
+		out := make([]string, 0, limit)
+		exit, _, runErr := streamCommandLines(root, m.RGBin, args, func(line string) bool {
+			line = strings.TrimSpace(line)
+			if line != "" {
 				out = append(out, m.Relative(filepath.Join(root, line)))
-				if len(out) >= limit {
-					break
-				}
 			}
+			return len(out) < limit
+		})
+		if runErr == nil && (exit == 0 || exit == 1) {
 			return out, "ripgrep", nil
+		}
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			return nil, "ripgrep", runErr
 		}
 	}
 	var out []string
@@ -268,7 +272,7 @@ func (m *Manager) Search(start, query string, regex bool, glob string, contextLi
 		limit = 100
 	}
 	if m.RGBin != "" {
-		args := []string{"--no-heading", "--with-filename", "-n", "-S", "--color", "never"}
+		args := []string{"--no-heading", "--with-filename", "-n", "-S", "--color", "never", "--no-messages"}
 		if !regex {
 			args = append(args, "-F")
 		}
@@ -276,15 +280,21 @@ func (m *Manager) Search(start, query string, regex bool, glob string, contextLi
 			args = append(args, "-g", glob)
 		}
 		args = append(args, "-e", query, "--", ".")
-		cmd := exec.Command(m.RGBin, args...)
-		cmd.Dir = root
-		raw, runErr := cmd.Output()
-		if runErr == nil || exitCode(runErr) == 1 {
-			matches := parseGrep(string(raw), root, m, limit)
+		matches := make([]Match, 0, limit)
+		exit, _, runErr := streamCommandLines(root, m.RGBin, args, func(line string) bool {
+			if match, ok := parseGrepLine(line, root, m); ok {
+				matches = append(matches, match)
+			}
+			return len(matches) < limit
+		})
+		if runErr == nil && (exit == 0 || exit == 1) {
 			if contextLines > 0 {
 				m.attachContext(matches, contextLines)
 			}
 			return matches, "ripgrep", nil
+		}
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			return nil, "ripgrep", runErr
 		}
 	}
 	matches, err := m.searchScan(root, query, regex, glob, limit)
@@ -397,37 +407,25 @@ func samePath(a, b string) bool {
 	return a == b
 }
 
-func parseGrep(raw, root string, manager *Manager, limit int) []Match {
-	var matches []Match
-	scanner := bufio.NewScanner(strings.NewReader(raw))
-	for scanner.Scan() {
-		line := scanner.Text()
-		first := strings.IndexByte(line, ':')
-		if first < 0 {
-			continue
-		}
-		secondOffset := strings.IndexByte(line[first+1:], ':')
-		if secondOffset < 0 {
-			continue
-		}
-		second := first + 1 + secondOffset
-		number, err := strconv.Atoi(line[first+1 : second])
-		if err != nil {
-			continue
-		}
-		text := line[second+1:]
-		if len(text) > 500 {
-			text = text[:500]
-		}
-		matches = append(matches, Match{
-			Path: manager.Relative(filepath.Join(root, line[:first])),
-			Line: number, Text: text,
-		})
-		if len(matches) >= limit {
-			break
-		}
+func parseGrepLine(line, root string, manager *Manager) (Match, bool) {
+	first := strings.IndexByte(line, ':')
+	if first < 0 {
+		return Match{}, false
 	}
-	return matches
+	secondOffset := strings.IndexByte(line[first+1:], ':')
+	if secondOffset < 0 {
+		return Match{}, false
+	}
+	second := first + 1 + secondOffset
+	number, err := strconv.Atoi(line[first+1 : second])
+	if err != nil {
+		return Match{}, false
+	}
+	text := line[second+1:]
+	if len(text) > 500 {
+		text = text[:500]
+	}
+	return Match{Path: manager.Relative(filepath.Join(root, line[:first])), Line: number, Text: text}, true
 }
 
 func (m *Manager) searchScan(root, query string, useRegex bool, glob string, limit int) ([]Match, error) {
@@ -467,6 +465,7 @@ func (m *Manager) searchScan(root, query string, useRegex bool, glob string, lim
 			return nil
 		}
 		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 64<<10), maxRipgrepLineBytes)
 		lineNumber := 0
 		for scanner.Scan() {
 			lineNumber++
@@ -487,6 +486,10 @@ func (m *Manager) searchScan(root, query string, useRegex bool, glob string, lim
 				}
 			}
 		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			file.Close()
+			return scanErr
+		}
 		file.Close()
 		return nil
 	})
@@ -497,32 +500,102 @@ func (m *Manager) searchScan(root, query string, useRegex bool, glob string, lim
 }
 
 func (m *Manager) attachContext(matches []Match, count int) {
-	cache := map[string][]string{}
-	for i := range matches {
-		path, err := m.Resolve(matches[i].Path)
+	type contextGroup struct {
+		indices []int
+		lines   map[int]string
+		maxLine int
+	}
+	groups := map[string]*contextGroup{}
+	for index := range matches {
+		path, err := m.Resolve(matches[index].Path)
 		if err != nil {
 			continue
 		}
-		lines, ok := cache[path]
-		if !ok {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				continue
+		group := groups[path]
+		if group == nil {
+			group = &contextGroup{lines: map[int]string{}}
+			groups[path] = group
+		}
+		group.indices = append(group.indices, index)
+		group.maxLine = max(group.maxLine, matches[index].Line+count)
+	}
+	for path, group := range groups {
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 64<<10), maxRipgrepLineBytes)
+		lineNumber := 0
+		for lineNumber < group.maxLine && scanner.Scan() {
+			lineNumber++
+			for _, index := range group.indices {
+				if lineNumber >= matches[index].Line-count && lineNumber <= matches[index].Line+count {
+					group.lines[lineNumber] = scanner.Text()
+					break
+				}
 			}
-			lines = strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
-			cache[path] = lines
 		}
-		from := max(1, matches[i].Line-count)
-		to := min(len(lines), matches[i].Line+count)
-		var snippet []string
-		for line := from; line <= to; line++ {
-			snippet = append(snippet, fmt.Sprintf("%d| %s", line, lines[line-1]))
+		_ = file.Close()
+		for _, index := range group.indices {
+			from := max(1, matches[index].Line-count)
+			to := matches[index].Line + count
+			var snippet []string
+			for line := from; line <= to; line++ {
+				if text, ok := group.lines[line]; ok {
+					snippet = append(snippet, fmt.Sprintf("%d| %s", line, text))
+				}
+			}
+			matches[index].Snippet = strings.Join(snippet, "\n")
 		}
-		matches[i].Snippet = strings.Join(snippet, "\n")
 	}
 }
 
+const maxRipgrepLineBytes = 1 << 20
+
 var errStopWalk = errors.New("stop walk")
+
+func streamCommandLines(root, executable string, args []string, visit func(string) bool) (int, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Dir = root
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return -1, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return -1, false, err
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64<<10), maxRipgrepLineBytes)
+	stopped := false
+	for scanner.Scan() {
+		if !visit(scanner.Text()) {
+			stopped = true
+			cancel()
+			break
+		}
+	}
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if stopped {
+		return 0, true, nil
+	}
+	if ctx.Err() != nil {
+		return -1, false, ctx.Err()
+	}
+	if scanErr != nil {
+		return -1, false, scanErr
+	}
+	if waitErr != nil {
+		return exitCode(waitErr), false, waitErr
+	}
+	return 0, false, nil
+}
 
 func dedupe(items []string) []string {
 	seen := map[string]bool{}

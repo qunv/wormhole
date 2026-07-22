@@ -31,8 +31,8 @@ type Client struct {
 	version string
 	cwd     string
 
-	callMu sync.Mutex
-	mu     sync.RWMutex
+	connectMu sync.Mutex
+	mu        sync.RWMutex
 
 	session         *mcp.ClientSession
 	tools           []*mcp.Tool
@@ -60,8 +60,8 @@ func New(ctx context.Context, name string, cfg config.MCPServerConfig, version, 
 		name: name, cfg: cfg, version: version, cwd: cwd,
 		stderr: newBoundedCounter(stderrLimit),
 	}
-	client.callMu.Lock()
-	defer client.callMu.Unlock()
+	client.connectMu.Lock()
+	defer client.connectMu.Unlock()
 	startupCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.StartupTimeoutMS)*time.Millisecond)
 	defer cancel()
 	if err := client.connectLocked(startupCtx, true); err != nil {
@@ -81,36 +81,38 @@ func (c *Client) Tools() []*mcp.Tool {
 }
 
 func (c *Client) Call(ctx context.Context, tool string, args map[string]any, retryReadOnly bool) (*mcp.CallToolResult, error) {
-	c.callMu.Lock()
-	defer c.callMu.Unlock()
-	if err := c.ensureConnectedLocked(ctx); err != nil {
+	session, err := c.sessionOrReconnect(ctx)
+	if err != nil {
 		return nil, err
 	}
-	result, err := c.callLocked(ctx, tool, args)
+	result, err := c.callSession(ctx, session, tool, args)
 	if err == nil {
-		c.clearError()
+		c.clearErrorFor(session)
 		return result, nil
 	}
-	c.invalidateLocked(err)
+	if !shouldInvalidateSession(err) {
+		return nil, c.sanitizedError(err)
+	}
+	c.invalidateSession(session, err)
 	if !retryReadOnly {
 		return nil, c.sanitizedError(err)
 	}
-	if err := c.reconnectLocked(ctx); err != nil {
+	session, err = c.sessionOrReconnect(ctx)
+	if err != nil {
 		return nil, err
 	}
-	result, err = c.callLocked(ctx, tool, args)
+	result, err = c.callSession(ctx, session, tool, args)
 	if err != nil {
-		c.invalidateLocked(err)
+		if shouldInvalidateSession(err) {
+			c.invalidateSession(session, err)
+		}
 		return nil, c.sanitizedError(err)
 	}
-	c.clearError()
+	c.clearErrorFor(session)
 	return result, nil
 }
 
 func (c *Client) Health(ctx context.Context) map[string]any {
-	c.callMu.Lock()
-	defer c.callMu.Unlock()
-
 	c.mu.RLock()
 	closed, session := c.closed, c.session
 	c.mu.RUnlock()
@@ -124,16 +126,21 @@ func (c *Client) Health(ctx context.Context) map[string]any {
 	healthCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := session.Ping(healthCtx, nil); err != nil {
-		c.invalidateLocked(err)
+		if healthCtx.Err() != nil {
+			err = healthCtx.Err()
+		}
+		if shouldInvalidateSession(err) {
+			c.invalidateSession(session, err)
+		}
 		return c.status(false, c.sanitizedError(err).Error())
 	}
-	c.clearError()
+	c.clearErrorFor(session)
 	return c.status(true, "")
 }
 
 func (c *Client) Close() error {
-	c.callMu.Lock()
-	defer c.callMu.Unlock()
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -214,17 +221,38 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 	return nil
 }
 
-func (c *Client) ensureConnectedLocked(ctx context.Context) error {
+func (c *Client) sessionOrReconnect(ctx context.Context) (*mcp.ClientSession, error) {
 	c.mu.RLock()
 	closed, session := c.closed, c.session
 	c.mu.RUnlock()
 	if closed {
-		return errors.New("upstream MCP client is closed")
+		return nil, errors.New("upstream MCP client is closed")
 	}
 	if session != nil {
-		return nil
+		return session, nil
 	}
-	return c.reconnectLocked(ctx)
+
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+	c.mu.RLock()
+	closed, session = c.closed, c.session
+	c.mu.RUnlock()
+	if closed {
+		return nil, errors.New("upstream MCP client is closed")
+	}
+	if session != nil {
+		return session, nil
+	}
+	if err := c.reconnectLocked(ctx); err != nil {
+		return nil, err
+	}
+	c.mu.RLock()
+	session = c.session
+	c.mu.RUnlock()
+	if session == nil {
+		return nil, errors.New("upstream MCP session is disconnected")
+	}
+	return session, nil
 }
 
 func (c *Client) reconnectLocked(ctx context.Context) error {
@@ -239,27 +267,31 @@ func (c *Client) reconnectLocked(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) callLocked(ctx context.Context, tool string, args map[string]any) (*mcp.CallToolResult, error) {
-	c.mu.RLock()
-	session := c.session
-	c.mu.RUnlock()
+func (c *Client) callSession(ctx context.Context, session *mcp.ClientSession, tool string, args map[string]any) (*mcp.CallToolResult, error) {
 	if session == nil {
 		return nil, errors.New("upstream MCP session is disconnected")
 	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(c.cfg.CallTimeoutMS)*time.Millisecond)
 	defer cancel()
-	return session.CallTool(callCtx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	result, err := session.CallTool(callCtx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil && callCtx.Err() != nil {
+		return nil, callCtx.Err()
+	}
+	return result, err
 }
 
-func (c *Client) invalidateLocked(callErr error) {
+func (c *Client) invalidateSession(failed *mcp.ClientSession, callErr error) {
+	detached := false
 	c.mu.Lock()
-	session := c.session
-	c.session = nil
-	c.processID = 0
-	c.lastError = c.sanitize(callErr.Error())
+	if c.session == failed {
+		c.session = nil
+		c.processID = 0
+		c.lastError = c.sanitizeLocked(callErr.Error())
+		detached = true
+	}
 	c.mu.Unlock()
-	if session != nil {
-		_ = session.Close()
+	if detached && failed != nil {
+		_ = failed.Close()
 	}
 }
 
@@ -351,9 +383,15 @@ func (c *Client) setError(err error) {
 	c.mu.Unlock()
 }
 
-func (c *Client) clearError() {
+func shouldInvalidateSession(err error) bool {
+	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+func (c *Client) clearErrorFor(session *mcp.ClientSession) {
 	c.mu.Lock()
-	c.lastError = ""
+	if c.session == session {
+		c.lastError = ""
+	}
 	c.mu.Unlock()
 }
 
@@ -369,6 +407,12 @@ func (c *Client) currentError(fallback string) string {
 func (c *Client) sanitizedError(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
 	}
 	return errors.New(c.sanitize(err.Error()))
 }

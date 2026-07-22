@@ -21,6 +21,10 @@ type synchronizedMemoryProvider struct {
 }
 
 func wrapSharedMemoryProvider(provider memory.Provider) memory.Provider {
+	if safe, ok := provider.(memory.ConcurrencySafeProvider); ok && safe.ConcurrencySafe() {
+		return provider
+	}
+
 	base := &synchronizedMemoryProvider{provider: provider}
 	_, exporter := provider.(memory.Exporter)
 	_, importer := provider.(memory.Importer)

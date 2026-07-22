@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"codebridge/internal/patch"
 )
@@ -88,14 +89,10 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		if err := r.Patches.Backup("write_file", []string{target}); err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return nil, err
-		}
 		content := stringArg(args, "content", "")
-		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		if err := r.Patches.Transaction("write_file", []string{target}, func() error {
+			return patch.WriteFileAtomic(target, []byte(content), 0o644)
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "path": r.Workspace.Relative(target), "bytes": len(content)}, nil
@@ -104,24 +101,25 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		raw, err := os.ReadFile(target)
-		if err != nil {
-			return nil, err
-		}
 		oldText, newText := stringArg(args, "old_text", ""), stringArg(args, "new_text", "")
-		if oldText == "" || !strings.Contains(string(raw), oldText) {
-			return nil, fmt.Errorf("old_text not found in %s", r.Workspace.Relative(target))
-		}
-		if err := r.Patches.Backup("replace_in_file", []string{target}); err != nil {
-			return nil, err
-		}
-		count := 1
-		content := strings.Replace(string(raw), oldText, newText, 1)
-		if boolArg(args, "replace_all", false) {
-			count = strings.Count(string(raw), oldText)
-			content = strings.ReplaceAll(string(raw), oldText, newText)
-		}
-		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		replaceAll := boolArg(args, "replace_all", false)
+		count := 0
+		if err := r.Patches.Transaction("replace_in_file", []string{target}, func() error {
+			raw, err := os.ReadFile(target)
+			if err != nil {
+				return err
+			}
+			if oldText == "" || !strings.Contains(string(raw), oldText) {
+				return fmt.Errorf("old_text not found in %s", r.Workspace.Relative(target))
+			}
+			count = 1
+			content := strings.Replace(string(raw), oldText, newText, 1)
+			if replaceAll {
+				count = strings.Count(string(raw), oldText)
+				content = strings.ReplaceAll(string(raw), oldText, newText)
+			}
+			return patch.WriteFileAtomic(target, []byte(content), 0o644)
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "path": r.Workspace.Relative(target), "replacements": count}, nil
@@ -156,7 +154,9 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		if err := os.MkdirAll(target, 0o755); err != nil {
+		if err := r.Patches.Transaction("make_dir", []string{target}, func() error {
+			return os.MkdirAll(target, 0o755)
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "path": r.Workspace.Relative(target)}, nil
@@ -172,13 +172,12 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		if err := r.Patches.Backup("move_path", []string{source, destination}); err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(source, destination); err != nil {
+		if err := r.Patches.Transaction("move_path", []string{source, destination}, func() error {
+			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+				return err
+			}
+			return os.Rename(source, destination)
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "from": r.Workspace.Relative(source), "to": r.Workspace.Relative(destination)}, nil
@@ -190,22 +189,20 @@ func (r *Runtime) handleFS(_ context.Context, name string, args map[string]any) 
 		if r.Workspace.IsRoot(target) {
 			return nil, errors.New("refusing to delete a configured root")
 		}
-		info, err := os.Stat(target)
-		if err != nil {
-			return nil, err
-		}
-		if info.IsDir() && !boolArg(args, "recursive", false) {
-			return nil, errors.New("path is a directory; pass recursive=true")
-		}
-		if err := r.Patches.Backup("delete_path", []string{target}); err != nil {
-			return nil, err
-		}
-		if info.IsDir() {
-			err = os.RemoveAll(target)
-		} else {
-			err = os.Remove(target)
-		}
-		if err != nil {
+		recursive := boolArg(args, "recursive", false)
+		if err := r.Patches.Transaction("delete_path", []string{target}, func() error {
+			info, err := os.Stat(target)
+			if err != nil {
+				return err
+			}
+			if info.IsDir() && !recursive {
+				return errors.New("path is a directory; pass recursive=true")
+			}
+			if info.IsDir() {
+				return os.RemoveAll(target)
+			}
+			return os.Remove(target)
+		}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "deleted": r.Workspace.Relative(target)}, nil
@@ -232,7 +229,7 @@ func (r *Runtime) readOne(args map[string]any) (map[string]any, error) {
 	}
 	maxChars := min(max(intArg(args, "max_chars", r.Config.ReadDefault), 1), r.Config.MaxReadChars)
 	start, count := intArg(args, "start_line", 0), intArg(args, "line_count", 0)
-	content, totalLines, returnedLines, truncated, err := readTextSelection(file, start, count, maxChars)
+	content, linesScanned, returnedLines, truncated, reachedEOF, err := readTextSelection(file, start, count, maxChars)
 	if err != nil {
 		return nil, err
 	}
@@ -241,48 +238,78 @@ func (r *Runtime) readOne(args map[string]any) (map[string]any, error) {
 			start = 1
 		}
 		return map[string]any{
-			"path": r.Workspace.Relative(target), "total_lines": totalLines, "start_line": start,
-			"returned_lines": returnedLines, "content": content, "truncated": truncated,
+			"path": r.Workspace.Relative(target), "total_lines": linesScanned, "total_lines_exact": reachedEOF,
+			"lines_scanned": linesScanned, "start_line": start, "returned_lines": returnedLines,
+			"content": content, "truncated": truncated,
 		}, nil
 	}
 	return map[string]any{
-		"path": r.Workspace.Relative(target), "total_lines": totalLines, "chars": info.Size(),
-		"content": content, "truncated": truncated,
+		"path": r.Workspace.Relative(target), "total_lines": linesScanned, "total_lines_exact": reachedEOF,
+		"lines_scanned": linesScanned, "chars": info.Size(), "content": content, "truncated": truncated,
 	}, nil
 }
 
-func readTextSelection(reader io.Reader, start, count, maxChars int) (string, int, int, bool, error) {
+func readTextSelection(reader io.Reader, start, count, maxChars int) (string, int, int, bool, bool, error) {
 	if start <= 0 {
 		start = 1
 	}
-	buffered := bufio.NewReader(reader)
-	var out strings.Builder
-	total, returned := 0, 0
+	if maxChars <= 0 {
+		maxChars = 1
+	}
+	buffered := bufio.NewReaderSize(reader, 16<<10)
+	out := make([]byte, 0, min(maxChars, 8<<10))
+	lineNumber, linesScanned, returned := 1, 0, 0
+	selectedLine := false
 	truncated := false
+
+	finish := func(reachedEOF bool) (string, int, int, bool, bool, error) {
+		for len(out) > 0 && !utf8.Valid(out) {
+			out = out[:len(out)-1]
+		}
+		return strings.TrimSuffix(string(out), "\n"), linesScanned, returned, truncated, reachedEOF, nil
+	}
+
 	for {
-		line, readErr := buffered.ReadString('\n')
-		if len(line) > 0 {
-			total++
-			selected := total >= start && (count <= 0 || returned < count)
-			if selected {
+		fragment, readErr := buffered.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if !selectedLine && lineNumber >= start && (count <= 0 || returned < count) {
+				selectedLine = true
 				returned++
-				remaining := maxChars - out.Len()
+			}
+			if selectedLine {
+				remaining := maxChars - len(out)
 				if remaining > 0 {
-					out.WriteString(line[:min(remaining, len(line))])
+					out = append(out, fragment[:min(remaining, len(fragment))]...)
 				}
-				if len(line) > remaining {
+				if len(fragment) > remaining {
 					truncated = true
+					linesScanned = lineNumber
+					return finish(false)
 				}
 			}
+			if fragment[len(fragment)-1] == '\n' {
+				linesScanned = lineNumber
+				if count > 0 && returned >= count && lineNumber >= start {
+					return finish(false)
+				}
+				lineNumber++
+				selectedLine = false
+			}
 		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return "", 0, 0, false, readErr
+		switch {
+		case readErr == nil:
+			continue
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(readErr, io.EOF):
+			if len(fragment) > 0 && fragment[len(fragment)-1] != '\n' {
+				linesScanned = lineNumber
+			}
+			return finish(true)
+		default:
+			return "", 0, 0, false, false, readErr
 		}
 	}
-	return strings.TrimSuffix(out.String(), "\n"), total, returned, truncated, nil
 }
 
 func (r *Runtime) readMany(args map[string]any) (any, error) {
@@ -301,6 +328,8 @@ func (r *Runtime) readMany(args map[string]any) (any, error) {
 	}
 	concurrency := min(max(intArg(args, "concurrency", 8), 1), 16)
 	defaultMax := min(max(intArg(args, "max_chars_per_file", 40_000), 1), r.Config.MaxReadChars)
+	batchPerFile := max(1, r.Config.MaxBatchReadChars/len(requests))
+	batchLimited := make([]bool, len(requests))
 	results := make([]map[string]any, len(requests))
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -309,18 +338,26 @@ func (r *Runtime) readMany(args map[string]any) (any, error) {
 		go func() {
 			defer wg.Done()
 			for index := range jobs {
-				request, _ := requests[index].(map[string]any)
-				if request == nil {
+				original, _ := requests[index].(map[string]any)
+				if original == nil {
 					results[index] = map[string]any{"error": "read request must be an object"}
 					continue
 				}
-				if _, ok := request["max_chars"]; !ok {
-					request["max_chars"] = defaultMax
+				request := make(map[string]any, len(original)+1)
+				for key, value := range original {
+					request[key] = value
 				}
+				requestedMax := min(max(intArg(request, "max_chars", defaultMax), 1), r.Config.MaxReadChars)
+				effectiveMax := min(requestedMax, batchPerFile)
+				batchLimited[index] = effectiveMax < requestedMax
+				request["max_chars"] = effectiveMax
 				value, err := r.readOne(request)
 				if err != nil {
 					results[index] = map[string]any{"path": stringArg(request, "path", ""), "error": err.Error()}
 				} else {
+					if batchLimited[index] && value["truncated"] == true {
+						value["batch_truncated"] = true
+					}
 					results[index] = value
 				}
 			}
@@ -338,13 +375,22 @@ func (r *Runtime) readMany(args map[string]any) (any, error) {
 			failed++
 			continue
 		}
+		if result["batch_truncated"] == true {
+			batchTruncated = true
+		}
 		content, _ := result["content"].(string)
-		if len(content) > remaining {
-			result["content"] = content[:max(remaining, 0)]
+		returned := content
+		if len(returned) > remaining {
+			if remaining <= 0 {
+				returned = ""
+			} else {
+				returned = truncateUTF8(returned, remaining)
+			}
+			result["content"] = returned
 			result["truncated"], result["batch_truncated"] = true, true
 			batchTruncated = true
 		}
-		remaining = max(0, remaining-len(content))
+		remaining = max(0, remaining-len(returned))
 	}
 	return map[string]any{
 		"count": len(results), "failed": failed, "files": results,

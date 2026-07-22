@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+const (
+	processRunning  = "running"
+	processStopping = "stopping"
+	processStopped  = "stopped"
+	processExited   = "exited"
+)
+
 type Result struct {
 	ExitCode        int    `json:"exit_code"`
 	TimedOut        bool   `json:"timed_out"`
@@ -23,73 +30,72 @@ type Result struct {
 	StderrTruncated bool   `json:"stderr_truncated"`
 }
 
-func (b *lockedBuffer) Truncated() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.truncated
+func Run(ctx context.Context, command, cwd, shell string, timeout time.Duration, maxOutput int) Result {
+	name, args := ShellCommand(command, shell)
+	return execute(ctx, name, args, cwd, timeout, maxOutput)
 }
 
-func Run(ctx context.Context, command, cwd, shell string, timeout time.Duration, maxOutput int) Result {
+func Capture(ctx context.Context, name string, args []string, cwd string, timeout time.Duration) Result {
+	return execute(ctx, name, args, cwd, timeout, 2_000_000)
+}
+
+func execute(ctx context.Context, name string, args []string, cwd string, timeout time.Duration, maxOutput int) Result {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	name, args := ShellCommand(command, shell)
-	cmd := exec.CommandContext(runCtx, name, args...)
+	if err := runCtx.Err(); err != nil {
+		return Result{ExitCode: -1, TimedOut: errors.Is(err, context.DeadlineExceeded), Stderr: err.Error()}
+	}
+
+	cmd := exec.Command(name, args...)
 	cmd.Dir = cwd
-	stdout, stderr := &lockedBuffer{limit: maxOutput, keepHead: true}, &lockedBuffer{limit: maxOutput, keepHead: true}
+	prepareBackground(cmd)
+	stdout := &lockedBuffer{limit: maxOutput, keepHead: true}
+	stderr := &lockedBuffer{limit: maxOutput, keepHead: true}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), StdoutTruncated: stdout.Truncated(), StderrTruncated: stderr.Truncated()}
-	if runCtx.Err() == context.DeadlineExceeded {
+	if err := cmd.Start(); err != nil {
+		return Result{ExitCode: -1, Stderr: err.Error()}
+	}
+
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	var runErr error
+	select {
+	case runErr = <-wait:
+	case <-runCtx.Done():
+		_ = killBackground(cmd)
+		select {
+		case runErr = <-wait:
+		case <-time.After(500 * time.Millisecond):
+			_ = forceKillBackground(cmd)
+			runErr = <-wait
+		}
+	}
+
+	result := Result{
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
+	}
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		result.ExitCode = -1
 		result.TimedOut = true
 		return result
 	}
-	if err == nil {
+	if runErr == nil {
 		return result
 	}
 	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if errors.As(runErr, &exit) {
 		result.ExitCode = exit.ExitCode()
 	} else {
 		result.ExitCode = -1
 		if result.Stderr == "" {
-			result.Stderr = err.Error()
-		}
-	}
-	return result
-}
-
-func Capture(ctx context.Context, name string, args []string, cwd string, timeout time.Duration) Result {
-	if timeout <= 0 {
-		timeout = 120 * time.Second
-	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	cmd := exec.CommandContext(runCtx, name, args...)
-	cmd.Dir = cwd
-	stdout, stderr := &lockedBuffer{limit: 2_000_000, keepHead: true}, &lockedBuffer{limit: 2_000_000, keepHead: true}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	err := cmd.Run()
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String(), StdoutTruncated: stdout.Truncated(), StderrTruncated: stderr.Truncated()}
-	if runCtx.Err() == context.DeadlineExceeded {
-		result.ExitCode, result.TimedOut = -1, true
-		return result
-	}
-	if err == nil {
-		return result
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		result.ExitCode = exit.ExitCode()
-	} else {
-		result.ExitCode = -1
-		if result.Stderr == "" {
-			result.Stderr = err.Error()
+			result.Stderr = runErr.Error()
 		}
 	}
 	return result
@@ -138,85 +144,172 @@ type Process struct {
 	Command   string `json:"command"`
 	CWD       string `json:"cwd"`
 	PID       int    `json:"pid"`
-	Status    string `json:"status"`
-	ExitCode  *int   `json:"exit_code"`
 	StartedAt string `json:"started_at"`
 
-	cmd    *exec.Cmd
-	stdout *lockedBuffer
-	stderr *lockedBuffer
+	mu       sync.RWMutex
+	status   string
+	exitCode *int
+	cmd      *exec.Cmd
+	stdout   *lockedBuffer
+	stderr   *lockedBuffer
+}
+
+func (p *Process) state() (string, *int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var exitCode *int
+	if p.exitCode != nil {
+		value := *p.exitCode
+		exitCode = &value
+	}
+	return p.status, exitCode
+}
+
+func (p *Process) beginStop() (*exec.Cmd, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.status != processRunning {
+		return nil, false
+	}
+	p.status = processStopping
+	return p.cmd, true
+}
+
+func (p *Process) stopFailed() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.status == processStopping {
+		p.status = processRunning
+	}
+}
+
+func (p *Process) finish(exitCode int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.status == processStopping || p.status == processStopped {
+		p.status = processStopped
+	} else {
+		p.status = processExited
+	}
+	p.exitCode = &exitCode
 }
 
 type Registry struct {
-	Max   int
-	mu    sync.RWMutex
-	items map[string]*Process
+	Max int
+
+	mu        sync.RWMutex
+	items     map[string]*Process
+	order     []string
+	starting  int
+	running   int
+	retention int
+	closed    bool
 }
 
-func NewRegistry(max int) *Registry {
-	if max <= 0 {
-		max = 24
+func NewRegistry(maxProcesses int) *Registry {
+	if maxProcesses <= 0 {
+		maxProcesses = 24
 	}
-	return &Registry{Max: max, items: map[string]*Process{}}
+	return &Registry{
+		Max:       maxProcesses,
+		items:     map[string]*Process{},
+		retention: max(64, maxProcesses*4),
+	}
 }
 
 func (r *Registry) Start(command, cwd, shell, displayName string) (*Process, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	running := 0
-	for _, proc := range r.items {
-		if proc.Status == "running" {
-			running++
-		}
+	if r.closed {
+		r.mu.Unlock()
+		return nil, errors.New("process registry is closed")
 	}
-	if running >= r.Max {
+	if r.starting+r.running >= r.Max {
+		r.mu.Unlock()
 		return nil, fmt.Errorf("too many running processes (max %d)", r.Max)
 	}
+	r.starting++
+	r.mu.Unlock()
+
 	name, args := ShellCommand(command, shell)
 	cmd := exec.Command(name, args...)
 	cmd.Dir = cwd
 	prepareBackground(cmd)
-	stdout, stderr := &lockedBuffer{limit: 200_000}, &lockedBuffer{limit: 200_000}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
+	stdout := &lockedBuffer{limit: 200_000}
+	stderr := &lockedBuffer{limit: 200_000}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
+		r.mu.Lock()
+		r.starting--
+		r.mu.Unlock()
 		return nil, err
 	}
+
 	id := fmt.Sprintf("proc-%d-%d", time.Now().UnixMilli(), cmd.Process.Pid)
 	if displayName == "" {
 		displayName = id
 	}
 	proc := &Process{
 		ID: id, Name: displayName, Command: command, CWD: cwd, PID: cmd.Process.Pid,
-		Status: "running", StartedAt: time.Now().UTC().Format(time.RFC3339), cmd: cmd,
+		StartedAt: time.Now().UTC().Format(time.RFC3339), status: processRunning, cmd: cmd,
 		stdout: stdout, stderr: stderr,
 	}
-	r.items[id] = proc
-	go func() {
-		err := cmd.Wait()
-		code := 0
-		if err != nil {
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				code = exit.ExitCode()
-			} else {
-				code = -1
-			}
-		}
-		r.mu.Lock()
-		proc.Status, proc.ExitCode = "exited", &code
+
+	r.mu.Lock()
+	r.starting--
+	if r.closed {
 		r.mu.Unlock()
-	}()
+		_ = forceKillBackground(cmd)
+		_ = cmd.Wait()
+		return nil, errors.New("process registry is closed")
+	}
+	r.items[id] = proc
+	r.order = append(r.order, id)
+	r.running++
+	r.pruneLocked()
+	r.mu.Unlock()
+
+	go r.wait(proc)
 	return proc, nil
+}
+
+func (r *Registry) wait(proc *Process) {
+	err := proc.cmd.Wait()
+	code := 0
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			code = exit.ExitCode()
+		} else {
+			code = -1
+		}
+	}
+	proc.finish(code)
+
+	r.mu.Lock()
+	if r.running > 0 {
+		r.running--
+	}
+	r.pruneLocked()
+	r.mu.Unlock()
 }
 
 func (r *Registry) List() []map[string]any {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]map[string]any, 0, len(r.items))
-	for _, proc := range r.items {
+	processes := make([]*Process, 0, len(r.order))
+	for _, id := range r.order {
+		if proc := r.items[id]; proc != nil {
+			processes = append(processes, proc)
+		}
+	}
+	r.mu.RUnlock()
+
+	out := make([]map[string]any, 0, len(processes))
+	for _, proc := range processes {
+		status, exitCode := proc.state()
 		out = append(out, map[string]any{
 			"id": proc.ID, "name": proc.Name, "command": proc.Command, "cwd": proc.CWD,
-			"pid": proc.PID, "status": proc.Status, "exit_code": proc.ExitCode, "started_at": proc.StartedAt,
+			"pid": proc.PID, "status": status, "exit_code": exitCode, "started_at": proc.StartedAt,
 		})
 	}
 	return out
@@ -238,7 +331,11 @@ func (r *Registry) Output(id string, tail int) (map[string]any, error) {
 			stderr = stderr[len(stderr)-tail:]
 		}
 	}
-	return map[string]any{"id": id, "status": proc.Status, "exit_code": proc.ExitCode, "stdout": stdout, "stderr": stderr}, nil
+	status, exitCode := proc.state()
+	return map[string]any{
+		"id": id, "status": status, "exit_code": exitCode,
+		"stdout": stdout, "stderr": stderr,
+	}, nil
 }
 
 func (r *Registry) Stop(id string) error {
@@ -248,28 +345,45 @@ func (r *Registry) Stop(id string) error {
 	if proc == nil {
 		return fmt.Errorf("no process with id %s", id)
 	}
-	if proc.Status != "running" {
+	cmd, shouldStop := proc.beginStop()
+	if !shouldStop {
 		return nil
 	}
-	if err := killBackground(proc.cmd); err != nil {
+	if err := killBackground(cmd); err != nil {
+		proc.stopFailed()
 		return err
 	}
-	r.mu.Lock()
-	proc.Status = "stopped"
-	r.mu.Unlock()
 	return nil
 }
 
 func (r *Registry) StopAll() {
-	r.mu.RLock()
-	ids := make([]string, 0, len(r.items))
-	for id := range r.items {
-		ids = append(ids, id)
-	}
-	r.mu.RUnlock()
+	r.mu.Lock()
+	r.closed = true
+	ids := append([]string(nil), r.order...)
+	r.mu.Unlock()
 	for _, id := range ids {
 		_ = r.Stop(id)
 	}
+}
+
+func (r *Registry) pruneLocked() {
+	if len(r.items) <= r.retention {
+		return
+	}
+	kept := r.order[:0]
+	for _, id := range r.order {
+		proc := r.items[id]
+		if proc == nil {
+			continue
+		}
+		status, _ := proc.state()
+		if len(r.items) > r.retention && status != processRunning && status != processStopping {
+			delete(r.items, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	r.order = kept
 }
 
 type lockedBuffer struct {
@@ -283,18 +397,29 @@ type lockedBuffer struct {
 func (b *lockedBuffer) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.limit > 0 && len(b.data)+len(data) > b.limit {
-		b.truncated = true
-		if b.keepHead {
-			remaining := max(0, b.limit-len(b.data))
-			b.data = append(b.data, data[:min(remaining, len(data))]...)
-			return len(data), nil
+	if b.limit <= 0 {
+		b.data = append(b.data, data...)
+		return len(data), nil
+	}
+	if b.keepHead {
+		remaining := max(0, b.limit-len(b.data))
+		if len(data) > remaining {
+			b.truncated = true
 		}
+		b.data = append(b.data, data[:min(remaining, len(data))]...)
+		return len(data), nil
+	}
+	if len(data) >= b.limit {
+		b.truncated = b.truncated || len(b.data) > 0 || len(data) > b.limit
+		b.data = append(b.data[:0], data[len(data)-b.limit:]...)
+		return len(data), nil
+	}
+	if overflow := len(b.data) + len(data) - b.limit; overflow > 0 {
+		b.truncated = true
+		copy(b.data, b.data[overflow:])
+		b.data = b.data[:len(b.data)-overflow]
 	}
 	b.data = append(b.data, data...)
-	if b.limit > 0 && len(b.data) > b.limit {
-		b.data = append([]byte(nil), b.data[len(b.data)-b.limit:]...)
-	}
 	return len(data), nil
 }
 
@@ -302,4 +427,10 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(append([]byte(nil), b.data...))
+}
+
+func (b *lockedBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
 }

@@ -3,11 +3,13 @@ package upstreammcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,5 +180,129 @@ func TestCloseIsIdempotent(t *testing.T) {
 	defer cancel()
 	if _, err := client.Call(ctx, "echo.read", nil, true); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("call after close error = %v", err)
+	}
+}
+
+func TestConcurrentCallsDoNotSerializeOnClientLifecycleLock(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCalls := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseCalls()
+
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server {
+			server := mcp.NewServer(&mcp.Implementation{Name: "concurrency-test", Version: "1"}, nil)
+			server.AddTool(&mcp.Tool{
+				Name: "slow.read", Title: "Slow read",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+				Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+			}, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				started <- struct{}{}
+				select {
+				case <-release:
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+			return server
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(mcpHandler)
+	defer server.Close()
+
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "concurrent-http", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, callErr := client.Call(context.Background(), "slow.read", nil, true)
+			errs <- callErr
+		}()
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			releaseCalls()
+			wg.Wait()
+			t.Fatalf("only %d concurrent calls reached the server", index)
+		}
+	}
+	releaseCalls()
+	wg.Wait()
+	close(errs)
+	for callErr := range errs {
+		if callErr != nil {
+			t.Fatalf("concurrent call failed: %v", callErr)
+		}
+	}
+}
+
+func TestCallDeadlineDoesNotInvalidateSharedSession(t *testing.T) {
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server {
+			server := mcp.NewServer(&mcp.Implementation{Name: "deadline-test", Version: "1"}, nil)
+			server.AddTool(&mcp.Tool{
+				Name: "slow.read", Title: "Slow read",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+				Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+			}, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				select {
+				case <-time.After(100 * time.Millisecond):
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "late"}}}, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			})
+			server.AddTool(&mcp.Tool{
+				Name: "fast.read", Title: "Fast read",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+				Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+			}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+			})
+			return server
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(mcpHandler)
+	defer server.Close()
+
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "deadline-http", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	_, err = client.Call(ctx, "slow.read", nil, true)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow call error = %v, want deadline exceeded", err)
+	}
+	result, err := client.Call(context.Background(), "fast.read", nil, true)
+	if err != nil || result.IsError {
+		t.Fatalf("session was not usable after call deadline: err=%v result=%#v", err, result)
+	}
+	if reconnects := client.status(true, "")["reconnect_count"]; reconnects != 0 {
+		t.Fatalf("call deadline caused reconnect count %v", reconnects)
 	}
 }

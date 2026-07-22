@@ -15,6 +15,7 @@ type Provider struct{}
 func New() *Provider { return &Provider{} }
 
 func (*Provider) Name() string                      { return "none" }
+func (*Provider) ConcurrencySafe() bool             { return true }
 func (*Provider) Capabilities() memory.Capabilities { return memory.Capabilities{} }
 func (*Provider) Health(context.Context) memory.HealthResult {
 	return memory.HealthResult{Provider: "none", Enabled: false, Available: false}

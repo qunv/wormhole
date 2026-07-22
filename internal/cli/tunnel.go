@@ -21,7 +21,9 @@ import (
 	"codebridge/internal/config"
 )
 
-const tunnelReleaseBase = "https://github.com/openai/tunnel-client/releases/download"
+const maxTunnelDownloadBytes = 200 << 20
+
+var tunnelReleaseBase = "https://github.com/openai/tunnel-client/releases/download"
 
 func (a App) tunnelCommand(ctx context.Context, cfg config.Config, opts options) error {
 	sub := "status"
@@ -51,9 +53,6 @@ func (a App) tunnelCommand(ctx context.Context, cfg config.Config, opts options)
 
 func downloadTunnelClient(ctx context.Context, destination string) (string, error) {
 	tunnelOS := runtime.GOOS
-	if tunnelOS == "windows" {
-		tunnelOS = "windows"
-	}
 	arch := runtime.GOARCH
 	if arch != "amd64" && arch != "arm64" {
 		return "", fmt.Errorf("unsupported tunnel-client architecture: %s", arch)
@@ -63,21 +62,21 @@ func downloadTunnelClient(ctx context.Context, destination string) (string, erro
 		version = config.DefaultTunnelVersion
 	}
 	asset := fmt.Sprintf("tunnel-client-%s-%s-%s.zip", version, tunnelOS, arch)
-	url := fmt.Sprintf("%s/%s/%s", tunnelReleaseBase, version, asset)
+	baseURL := fmt.Sprintf("%s/%s", strings.TrimRight(tunnelReleaseBase, "/"), version)
 	client := &http.Client{Timeout: 2 * time.Minute}
-	data, err := fetch(ctx, client, url)
+
+	sums, err := fetch(ctx, client, baseURL+"/SHA256SUMS.txt")
+	if err != nil {
+		return "", fmt.Errorf("download tunnel-client checksums: %w", err)
+	}
+	data, err := fetch(ctx, client, baseURL+"/"+asset)
 	if err != nil {
 		return "", err
 	}
-	if sums, sumErr := fetch(ctx, client, fmt.Sprintf("%s/%s/SHA256SUMS.txt", tunnelReleaseBase, version)); sumErr == nil {
-		expected := checksumFor(string(sums), asset)
-		if expected != "" {
-			actual := sha256.Sum256(data)
-			if hex.EncodeToString(actual[:]) != expected {
-				return "", fmt.Errorf("SHA256 mismatch for %s", asset)
-			}
-		}
+	if err := verifyChecksum(data, string(sums), asset); err != nil {
+		return "", err
 	}
+
 	tempDir, err := os.MkdirTemp("", "codebridge-tunnel-*")
 	if err != nil {
 		return "", err
@@ -112,21 +111,57 @@ func downloadTunnelClient(ctx context.Context, destination string) (string, erro
 		return "", err
 	}
 	defer input.Close()
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return "", err
-	}
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-	if err != nil {
-		return "", err
-	}
-	if _, err := io.Copy(output, input); err != nil {
-		output.Close()
-		return "", err
-	}
-	if err := output.Close(); err != nil {
+	if err := installTunnelBinary(destination, input); err != nil {
 		return "", err
 	}
 	return destination, nil
+}
+
+func verifyChecksum(data []byte, checksumText, asset string) error {
+	expected := checksumFor(checksumText, asset)
+	if expected == "" {
+		return fmt.Errorf("checksum entry not found for %s", asset)
+	}
+	if len(expected) != sha256.Size*2 {
+		return fmt.Errorf("invalid SHA256 checksum for %s", asset)
+	}
+	if _, err := hex.DecodeString(expected); err != nil {
+		return fmt.Errorf("invalid SHA256 checksum for %s: %w", asset, err)
+	}
+	actual := sha256.Sum256(data)
+	if !strings.EqualFold(hex.EncodeToString(actual[:]), expected) {
+		return fmt.Errorf("SHA256 mismatch for %s", asset)
+	}
+	return nil
+}
+
+func installTunnelBinary(destination string, input io.Reader) error {
+	directory := filepath.Dir(destination)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(directory, ".tunnel-client-*")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if err := temp.Chmod(0o755); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := io.Copy(temp, input); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, destination)
 }
 
 func fetch(ctx context.Context, client *http.Client, url string) ([]byte, error) {
@@ -143,7 +178,14 @@ func fetch(ctx context.Context, client *http.Client, url string) ([]byte, error)
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s failed: HTTP %d", url, response.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(response.Body, 200<<20))
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxTunnelDownloadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxTunnelDownloadBytes {
+		return nil, fmt.Errorf("GET %s exceeded %d bytes", url, maxTunnelDownloadBytes)
+	}
+	return data, nil
 }
 
 func checksumFor(text, asset string) string {

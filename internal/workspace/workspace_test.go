@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveBlocksTraversalAndSymlinkEscape(t *testing.T) {
@@ -68,5 +70,62 @@ func TestOwningRootUsesMostSpecificConfiguredRoot(t *testing.T) {
 	}
 	if got != nested {
 		t.Fatalf("owning root = %q, want %q", got, nested)
+	}
+}
+
+func TestRipgrepPathsAndMatchesStopAtGlobalLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell helper")
+	}
+	root := t.TempDir()
+	manager, err := New(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "fake-rg")
+	content := `#!/bin/sh
+case " $* " in
+  *" --files "*)
+    i=1
+    while [ "$i" -le 100000 ]; do echo "file-$i.go"; i=$((i+1)); done
+    ;;
+  *)
+    i=1
+    while [ "$i" -le 100000 ]; do echo "file.go:$i:match-$i"; i=$((i+1)); done
+    ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager.RGBin = script
+
+	started := time.Now()
+	files, engine, err := manager.FindFiles(".", "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine != "ripgrep" || len(files) != 5 {
+		t.Fatalf("engine=%q files=%d, want ripgrep/5", engine, len(files))
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("bounded file search took %s", elapsed)
+	}
+
+	started = time.Now()
+	matches, engine, err := manager.Search(".", "match", false, "", 0, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine != "ripgrep" || len(matches) != 7 {
+		t.Fatalf("engine=%q matches=%d, want ripgrep/7", engine, len(matches))
+	}
+	for index, match := range matches {
+		if match.Line != index+1 || match.Text != "match-"+strconv.Itoa(index+1) {
+			t.Fatalf("match[%d] = %#v", index, match)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("bounded text search took %s", elapsed)
 	}
 }

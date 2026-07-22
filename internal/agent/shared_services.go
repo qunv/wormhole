@@ -296,8 +296,25 @@ func (s *SharedServices) Close() error {
 				errs = append(errs, fmt.Errorf("close shared upstream MCP client: %w", err))
 			}
 		}
-		for _, recorder := range recorders {
-			recorder.Close()
+		if len(recorders) > 0 {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			recorderErrors := make(chan error, len(recorders))
+			var recorderWG sync.WaitGroup
+			for _, recorder := range recorders {
+				recorderWG.Add(1)
+				go func(recorder *memory.Recorder) {
+					defer recorderWG.Done()
+					if err := recorder.CloseContext(closeCtx); err != nil {
+						recorderErrors <- fmt.Errorf("close shared memory recorder: %w", err)
+					}
+				}(recorder)
+			}
+			recorderWG.Wait()
+			cancel()
+			close(recorderErrors)
+			for err := range recorderErrors {
+				errs = append(errs, err)
+			}
 		}
 		for _, provider := range providers {
 			if err := provider.Close(); err != nil {

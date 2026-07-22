@@ -168,6 +168,13 @@ type Provider interface {
 	Close() error
 }
 
+// ConcurrencySafeProvider is an optional marker for providers that support
+// concurrent method calls. Providers without this marker are serialized when
+// shared across workspace runtimes.
+type ConcurrencySafeProvider interface {
+	ConcurrencySafe() bool
+}
+
 type Exporter interface {
 	Export(context.Context, ExportRequest) (ExportResult, error)
 }
