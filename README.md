@@ -685,6 +685,10 @@ internal/assets/      embedded MCP Apps widget
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed design.
 
+# Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, architecture boundaries, security requirements, testing expectations, and pull request guidelines.
+
 # Verification
 
 ```bash
