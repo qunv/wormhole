@@ -285,18 +285,27 @@ Repository overview tools share one generation-keyed inventory per root for five
 
 The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for every enabled fixed endpoint.
 
-Linux defaults are:
+The unified default layout on every operating system is:
 
 ```text
-~/.config/codebridge/workspaces.json
-~/.config/codebridge/workspaces/<id>/config.json
-~/.local/state/codebridge/instances/<id>/audit.log
-~/.local/state/codebridge/instances/<id>/workspaces/<path-hash>/...
+~/.codebridge/
+  config.json
+  .env
+  workspaces.json
+  workspaces/<id>/config.json
+  state/
+    processes.json
+    launcher.log
+    profiles/
+    instances/<id>/audit.log
+    instances/<id>/workspaces/<path-hash>/...
 ```
+
+Set `CODEBRIDGE_HOME` to relocate the complete layout. The existing granular overrides (`CODEBRIDGE_CONFIG_PATH`, `CODEBRIDGE_DATA_DIR`, and `CODEBRIDGE_WORKSPACE_REGISTRY_PATH`) remain supported for advanced deployments.
 
 The shared `.env` remains the source for the Runtime API key and referenced memory or upstream MCP secrets, so credentials are not copied into workspace configs. Workspace IDs must match `[a-z0-9][a-z0-9_-]{0,31}`; `default` is reserved. Registry validation also rejects shared config paths or data directories between two IDs.
 
-Registry version 1 from the multi-process implementation is read automatically and migrated to enabled shared-daemon endpoints. Stop any legacy per-workspace server or tunnel processes before starting the upgraded daemon.
+On the first run with the default layout, Codebridge copies missing files from the former OS-specific config and state directories into `~/.codebridge` without overwriting new files or deleting the legacy copies. Registry versions 1 and 2 are upgraded in memory, including default absolute workspace paths. Stop any legacy per-workspace server or tunnel processes before starting the upgraded daemon.
 
 ## ChatGPT Web tunnel
 
@@ -349,20 +358,17 @@ defaults
   → CLI options for the current invocation
 ```
 
-Configuration locations:
-
-| Operating system | Config directory |
-|---|---|
-| Linux | `$XDG_CONFIG_HOME/codebridge` or `~/.config/codebridge` |
-| macOS | `~/Library/Application Support/Codebridge` |
-| Windows | `%APPDATA%\Codebridge` |
-
-Main files:
+All persistent files now live below one root:
 
 ```text
-config.json   non-secret configuration
-.env          Runtime API key and optional memory secret
+~/.codebridge/                 default root on Linux, macOS, and Windows
+~/.codebridge/config.json      non-secret configuration
+~/.codebridge/.env             Runtime API key and optional provider secrets
+~/.codebridge/workspaces.json  named-workspace registry
+~/.codebridge/state/           process, log, audit, backup, and workspace state
 ```
+
+Set `CODEBRIDGE_HOME=/custom/path` before launching Codebridge to relocate the whole tree. Project-specific command conventions and ignored directories use `<workspace>/.codebridge/profile.json`; the former `<workspace>/.agent/profile.json` remains a read-only fallback during migration.
 
 On Unix, `config.json` and `.env` are written with `0600` permissions. Codebridge does not serialize the MCP bearer token or approval token into `config.json`.
 
@@ -474,7 +480,7 @@ Important behavior:
 - `maxConcurrency` defaults to 8 and is limited to 128 concurrent calls per shared upstream client. Calls wait within their caller context and expose queued/in-flight/rejected counters. Session replacement is reference-counted, so a reconnect cannot close a session still borrowed by another call.
 - Deep health checks are single-flight and cached for `healthCacheMs` (default 5,000 ms), preventing multiple workspaces sharing one client from pinging it repeatedly. Repeated transport/reconnect failures open a three-failure circuit for `failureCooldownMs` (default 1,000 ms); calls fail fast during cooldown instead of creating a reconnect storm. Both timing values are limited to 60 seconds.
 - `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
-- `codebridge start` streams `[startup]` phase logs while workspace, memory, and upstream MCP dependencies initialize. The launcher readiness timeout includes every enabled server's `startupTimeoutMs`, so a slow dependency is not killed by the previous fixed 10-second supervisor timeout.
+- `codebridge start` streams `[startup]` phase logs while workspace, memory, and upstream MCP dependencies initialize. The launcher readiness timeout includes every enabled server's `startupTimeoutMs` and the bounded subprocess cleanup time for stdio servers, so slow or unavailable dependencies are not killed by the supervisor while they are shutting down.
 - `codebridge doctor` requests a deep local health check and reports each configured upstream as `mcp:<name>`, including transport, discovered tool count, reconnect count, and the latest sanitized connection error.
 - Community tool annotations are untrusted by default. Unknown tools require approval under `balanced`; `alwaysApproveTools` still requires exact approval under `policy=full`.
 - `strict` blocks every upstream tool not explicitly classified as read-only.

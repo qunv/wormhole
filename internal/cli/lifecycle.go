@@ -24,6 +24,7 @@ import (
 	"codebridge/internal/config"
 	"codebridge/internal/mcpserver"
 	memoryfactory "codebridge/internal/memory/factory"
+	"codebridge/internal/upstreammcp"
 	"codebridge/internal/workspaceregistry"
 
 	"golang.org/x/term"
@@ -406,7 +407,7 @@ func startupDependencyTimeout(cfg config.Config) time.Duration {
 	}
 	for _, serverConfig := range cfg.MCPServers {
 		if serverConfig.IsEnabled() {
-			timeout += time.Duration(serverConfig.StartupTimeoutMS) * time.Millisecond
+			timeout += upstreammcp.StartupWaitTimeout(serverConfig)
 		}
 	}
 	return timeout

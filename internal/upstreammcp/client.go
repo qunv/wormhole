@@ -25,8 +25,10 @@ import (
 )
 
 const (
-	stderrLimit             = 32 << 10
-	circuitFailureThreshold = 3
+	stderrLimit              = 32 << 10
+	circuitFailureThreshold  = 3
+	commandTerminateDuration = 5 * time.Second
+	commandShutdownPhases    = 3
 )
 
 type clientSessionState struct {
@@ -110,6 +112,18 @@ func effectiveClientConfig(cfg config.MCPServerConfig) config.MCPServerConfig {
 		cfg.MaxTools = config.DefaultMCPMaxTools
 	}
 	return cfg
+}
+
+// StartupWaitTimeout returns the supervisor budget for one connection attempt.
+// CommandTransport.Close can wait before SIGTERM, after SIGTERM, and after
+// SIGKILL, so stdio startup failures need cleanup time beyond StartupTimeoutMS.
+func StartupWaitTimeout(cfg config.MCPServerConfig) time.Duration {
+	cfg = effectiveClientConfig(cfg)
+	timeout := time.Duration(cfg.StartupTimeoutMS) * time.Millisecond
+	if cfg.EffectiveTransport() == "stdio" {
+		timeout += commandShutdownPhases * commandTerminateDuration
+	}
+	return timeout
 }
 
 func New(ctx context.Context, name string, cfg config.MCPServerConfig, version, cwd string) (*Client, error) {
@@ -453,7 +467,7 @@ func (c *Client) buildTransport() (transportBuild, error) {
 		cmd.Env = environment
 		cmd.Stderr = c.stderr
 		return transportBuild{
-			transport: &mcp.CommandTransport{Command: cmd, TerminateDuration: 5 * time.Second},
+			transport: &mcp.CommandTransport{Command: cmd, TerminateDuration: commandTerminateDuration},
 			command:   cmd, resolvedCommand: resolved, secrets: secrets,
 		}, nil
 	case "streamable-http":

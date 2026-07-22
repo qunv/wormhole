@@ -179,19 +179,27 @@ Default()
 
 ### Configuration locations
 
-| Operating system | Config directory |
-|---|---|
-| Linux | `$XDG_CONFIG_HOME/codebridge`, falling back to `~/.config/codebridge` |
-| macOS | `~/Library/Application Support/Codebridge` |
-| Windows | `%APPDATA%\Codebridge` |
+All persistent Codebridge files use one canonical root on every operating system:
 
-Runtime state uses the application data/state directory:
+```text
+~/.codebridge/
+  config.json
+  .env
+  workspaces.json
+  workspaces/<id>/config.json
+  state/
+    processes.json
+    launcher.log
+    profiles/
+    instances/<id>/...
+    workspaces/<workspace-path-hash>/...
+```
 
-| Operating system | State directory |
-|---|---|
-| Linux | `$XDG_STATE_HOME/codebridge`, falling back to `~/.local/state/codebridge` |
-| macOS | `~/Library/Application Support/Codebridge` |
-| Windows | `%LOCALAPPDATA%\Codebridge` |
+`CODEBRIDGE_HOME` relocates the entire tree. The older granular overrides remain available: `CODEBRIDGE_CONFIG_PATH` changes the primary config file, `CODEBRIDGE_DATA_DIR` changes the state root, and `CODEBRIDGE_WORKSPACE_REGISTRY_PATH` changes the registry file.
+
+With the default layout, startup performs an idempotent copy migration from the former XDG, Application Support, or AppData locations. Existing canonical files are never overwritten and legacy files are retained. Registry schema version 3 also rewrites default absolute paths from the previous layout while preserving explicitly customized paths.
+
+Workspace-specific command conventions, ignored directories, and profile metadata live in `<workspace>/.codebridge/profile.json`. `<workspace>/.agent/profile.json` remains a compatibility fallback when the canonical profile does not exist.
 
 ### Secret ownership
 
@@ -244,7 +252,7 @@ shared daemon
     → Runtime[id]
 ```
 
-`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, version-1 migration, and the registry/config fingerprint used by the supervisor. The ID `default` remains reserved for named registrations, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named configs are loaded without ambient environment overrides, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the primary config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint.
+`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, schema migrations through version 3, and the registry/config fingerprint used by the supervisor. The ID `default` remains reserved for named registrations, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named configs are loaded without ambient environment overrides, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the primary config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint.
 
 Each runtime owns a separate workspace manager, state store, approval manager, patch engine, managed-process registry, profile, memory project, workspace-prefixed session identity, policy, request limits, and workspace-local handlers. The primary runtime uses the application state directory; named runtimes use `instances/<id>` as their state root. This keeps notes, tasks, audit, approvals, backups, patch history, and managed processes isolated even when two registrations point at repositories with similar contents.
 
@@ -649,8 +657,11 @@ Trade-offs:
 Per-workspace state is stored under:
 
 ```text
-default runtime state root
+~/.codebridge/state/
   audit.log
+  processes.json
+  launcher.log
+  profiles/
   workspaces/<workspace-path-hash>/
     notes.json
     checkpoint.json
@@ -661,10 +672,10 @@ default runtime state root
     backups/
     approvals/
 
-instances/<workspace-id>/
-  audit.log
-  workspaces/<workspace-path-hash>/
-    ...same isolated state files...
+  instances/<workspace-id>/
+    audit.log
+    workspaces/<workspace-path-hash>/
+      ...same isolated state files...
 ```
 
 The inner workspace path hash is derived from the canonical primary workspace path. The outer named instance directory prevents state overlap across endpoint identities and supports replacing a registration without mixing the old repository's state with the new root. Memory-provider data is not stored in the local state directory, except for audit records and counters associated with tool calls.
@@ -713,7 +724,7 @@ Contract tests lock down:
 - generic stdio and Streamable HTTP upstream MCP discovery and calls;
 - environment isolation, header forwarding, remote opt-in, and idempotent shutdown;
 - upstream namespace collisions, schema validation, policy mapping, audit minimization, memory exclusion, and downstream gateway round trips.
-- registry version-1 migration, atomic persistence, endpoint enable/disable state, and ConfigID sensitivity to named secrets;
+- registry schema migration through version 3, legacy layout copying, atomic persistence, endpoint enable/disable state, and ConfigID sensitivity to named secrets;
 - real Streamable HTTP routing for default and named endpoints;
 - cross-workspace file, state, audit, approval, and memory-session isolation;
 - per-runtime request limits and shared-daemon health summaries;

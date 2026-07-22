@@ -71,14 +71,7 @@ func TestForegroundChildKeepsLogWriterOpen(t *testing.T) {
 
 func TestSaveMemorySecretKeepsOrClearsExistingValue(t *testing.T) {
 	base := t.TempDir()
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("APPDATA", base)
-	case "darwin":
-		t.Setenv("HOME", base)
-	default:
-		t.Setenv("XDG_CONFIG_HOME", base)
-	}
+	t.Setenv("CODEBRIDGE_HOME", base)
 	path := config.DotEnvPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -199,12 +192,12 @@ func TestStartupWaitTimeoutIncludesConfiguredDependencies(t *testing.T) {
 	cfg.Memory.Enabled = true
 	cfg.Memory.Required = true
 	cfg.Memory.TimeoutMS = 2_000
-	cfg.MCPServers["one"] = config.MCPServerConfig{StartupTimeoutMS: 3_000}
+	cfg.MCPServers["one"] = config.MCPServerConfig{Command: "mcp-one", StartupTimeoutMS: 3_000}
 	cfg.MCPServers["two"] = config.MCPServerConfig{StartupTimeoutMS: 4_000}
 	disabled := false
 	cfg.MCPServers["disabled"] = config.MCPServerConfig{Enabled: &disabled, StartupTimeoutMS: 30_000}
 
-	if got, want := startupWaitTimeout(cfg), 19*time.Second; got != want {
+	if got, want := startupWaitTimeout(cfg), 34*time.Second; got != want {
 		t.Fatalf("startupWaitTimeout() = %s, want %s", got, want)
 	}
 }
@@ -251,14 +244,7 @@ func TestWaitForHealthProgressDetectsProcessExit(t *testing.T) {
 
 func TestSaveMemorySecretStoresOnlySecret(t *testing.T) {
 	base := t.TempDir()
-	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("APPDATA", base)
-	case "darwin":
-		t.Setenv("HOME", base)
-	default:
-		t.Setenv("XDG_CONFIG_HOME", base)
-	}
+	t.Setenv("CODEBRIDGE_HOME", base)
 	path := config.DotEnvPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)

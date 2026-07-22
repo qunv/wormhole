@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -148,13 +149,35 @@ func Default() Config {
 }
 
 func ConfigPath() string {
-	if value := os.Getenv("CODEBRIDGE_CONFIG_PATH"); value != "" {
-		return value
+	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_CONFIG_PATH")); value != "" {
+		return filepath.Clean(value)
 	}
 	return filepath.Join(AppConfigDir(), "config.json")
 }
 
-func AppConfigDir() string {
+// AppHomeDir is the canonical root for persistent Codebridge files. Keeping
+// configuration and runtime state below one directory makes installations
+// easier to inspect, back up, and relocate.
+func AppHomeDir() string {
+	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_HOME")); value != "" {
+		return filepath.Clean(value)
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codebridge")
+}
+
+func AppConfigDir() string { return AppHomeDir() }
+
+func AppDataDir() string {
+	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_DATA_DIR")); value != "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Join(AppHomeDir(), "state")
+}
+
+// LegacyConfigDir and LegacyDataDir describe the pre-.codebridge defaults.
+// They are exported for schema migrations that contain absolute legacy paths.
+func LegacyConfigDir() string {
 	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "windows":
@@ -174,10 +197,7 @@ func AppConfigDir() string {
 	}
 }
 
-func AppDataDir() string {
-	if value := os.Getenv("CODEBRIDGE_DATA_DIR"); value != "" {
-		return value
-	}
+func LegacyDataDir() string {
 	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "windows":
@@ -201,7 +221,178 @@ func DotEnvPath() string { return filepath.Join(AppConfigDir(), ".env") }
 func PIDPath() string    { return filepath.Join(AppDataDir(), "processes.json") }
 func LogPath() string    { return filepath.Join(AppDataDir(), "launcher.log") }
 
+// MigrateLegacyLayout copies files from the former OS-specific config/state
+// directories into ~/.codebridge. Existing destinations are never replaced
+// and legacy files are intentionally retained as a rollback-safe backup.
+func MigrateLegacyLayout() error {
+	if customLayoutConfigured() {
+		return nil
+	}
+	legacyConfig, legacyData := LegacyConfigDir(), LegacyDataDir()
+	if samePath(legacyConfig, AppConfigDir()) && samePath(legacyData, AppDataDir()) {
+		return nil
+	}
+
+	for _, name := range []string{"config.json", ".env", "workspaces.json"} {
+		if err := copyPathMissing(filepath.Join(legacyConfig, name), filepath.Join(AppConfigDir(), name)); err != nil {
+			return fmt.Errorf("migrate legacy config %s: %w", name, err)
+		}
+	}
+	if err := copyLegacyWorkspaceDirs(filepath.Join(legacyConfig, "workspaces"), filepath.Join(AppConfigDir(), "workspaces"), true); err != nil {
+		return fmt.Errorf("migrate legacy workspace configs: %w", err)
+	}
+	for _, name := range []string{
+		"processes.json", "launcher.log", "audit.log", "profiles", "instances", tunnelExecutable(),
+	} {
+		if err := copyPathMissing(filepath.Join(legacyData, name), filepath.Join(AppDataDir(), name)); err != nil {
+			return fmt.Errorf("migrate legacy state %s: %w", name, err)
+		}
+	}
+	if err := copyLegacyWorkspaceDirs(filepath.Join(legacyData, "workspaces"), filepath.Join(AppDataDir(), "workspaces"), false); err != nil {
+		return fmt.Errorf("migrate legacy workspace state: %w", err)
+	}
+	return nil
+}
+
+func customLayoutConfigured() bool {
+	for _, name := range []string{
+		"CODEBRIDGE_HOME", "CODEBRIDGE_CONFIG_PATH", "CODEBRIDGE_DATA_DIR", "CODEBRIDGE_WORKSPACE_REGISTRY_PATH",
+	} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func copyLegacyWorkspaceDirs(source, destination string, wantConfig bool) error {
+	entries, err := os.ReadDir(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		_, configErr := os.Stat(filepath.Join(source, entry.Name(), "config.json"))
+		if configErr != nil && !errors.Is(configErr, os.ErrNotExist) {
+			return configErr
+		}
+		hasConfig := configErr == nil
+		if wantConfig != hasConfig {
+			continue
+		}
+		if err := copyPathMissing(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyPathMissing(source, destination string) error {
+	info, err := os.Lstat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o700
+		}
+		if err := os.MkdirAll(destination, mode); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyPathMissing(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		if _, err := os.Lstat(destination); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		target, err := os.Readlink(source)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			return err
+		}
+		return os.Symlink(target, destination)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if _, err := os.Stat(destination); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	mode := info.Mode().Perm()
+	if mode == 0 {
+		mode = 0o600
+	}
+	destinationFile, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = destinationFile.Close()
+		if !ok {
+			_ = os.Remove(destination)
+		}
+	}()
+	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
+		return err
+	}
+	if err := destinationFile.Sync(); err != nil {
+		return err
+	}
+	if err := destinationFile.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func samePath(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
 func Load() (Config, error) {
+	if err := MigrateLegacyLayout(); err != nil {
+		return Default(), err
+	}
 	cfg, err := loadFile(ConfigPath(), true)
 	return cfg, err
 }
@@ -224,11 +415,23 @@ func loadFile(path string, useEnvironment bool) (Config, error) {
 			return cfg, fmt.Errorf("parse config %s: %w", path, err)
 		}
 	}
+	migrateLegacyConfigPaths(&cfg)
 	if useEnvironment {
 		applyEnvironment(&cfg)
 	}
 	normalize(&cfg)
 	return cfg, cfg.Validate(false)
+}
+
+func migrateLegacyConfigPaths(cfg *Config) {
+	legacyProfileDir := filepath.Join(LegacyDataDir(), "profiles")
+	legacyTunnelBin := filepath.Join(LegacyDataDir(), tunnelExecutable())
+	if cfg.ProfileDir != "" && samePath(cfg.ProfileDir, legacyProfileDir) {
+		cfg.ProfileDir = filepath.Join(AppDataDir(), "profiles")
+	}
+	if cfg.TunnelBin != "" && samePath(cfg.TunnelBin, legacyTunnelBin) {
+		cfg.TunnelBin = filepath.Join(AppDataDir(), tunnelExecutable())
+	}
 }
 
 func Save(cfg Config) error {

@@ -49,7 +49,7 @@ func basicToolSpecs() []ToolSpec {
 		rwSpec("request_approval_batch", "Request batch approval", "Create an expiring request for 2-20 exact actions.", object(map[string]any{"actions": array(str("")), "reason": str("Reason."), "expires_in_minutes": integer()}, "actions", "reason"), false),
 		rwSpec("approve_request", "Approve request", "Approve a pending request with the local operator token.", object(map[string]any{"id": str("Request ID."), "approval_token": str("Operator token.")}, "id", "approval_token"), false),
 		rwSpec("deny_request", "Deny request", "Deny a pending request with the local operator token.", object(map[string]any{"id": str("Request ID."), "approval_token": str("Operator token.")}, "id", "approval_token"), false),
-		roSpec("profile_status", "Profile status", "Return the loaded .agent/profile.json.", empty),
-		rwSpec("reload_profile", "Reload profile", "Reload .agent/profile.json from disk.", empty, false),
+		roSpec("profile_status", "Profile status", "Return the loaded .codebridge/profile.json.", empty),
+		rwSpec("reload_profile", "Reload profile", "Reload .codebridge/profile.json from disk.", empty, false),
 	}
 }

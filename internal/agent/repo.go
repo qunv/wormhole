@@ -457,7 +457,7 @@ func (r *Runtime) runQualityCommand(ctx context.Context, tool string, args map[s
 		command = commands[kind]
 	}
 	if command == "" {
-		return nil, fmt.Errorf("no %s command detected; provide command explicitly or configure .agent/profile.json", kind)
+		return nil, fmt.Errorf("no %s command detected; provide command explicitly or configure .codebridge/profile.json", kind)
 	}
 	entry := map[string]any{
 		"command": command, "cwd": r.Workspace.Relative(root),

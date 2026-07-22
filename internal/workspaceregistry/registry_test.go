@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"codebridge/internal/config"
 )
 
 func TestLoadMigratesPhaseOneRegistry(t *testing.T) {
@@ -66,6 +68,48 @@ func TestFingerprintChangesWithConfig(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("fingerprint did not change with workspace config")
+	}
+}
+
+func TestLoadMigratesLegacyDefaultPathsToCodebridgeLayout(t *testing.T) {
+	base := t.TempDir()
+	newHome := filepath.Join(base, "new-home")
+	t.Setenv("CODEBRIDGE_HOME", newHome)
+	t.Setenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry.json"))
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", filepath.Join(base, "home"))
+		t.Setenv("APPDATA", filepath.Join(base, "legacy-config"))
+		t.Setenv("LOCALAPPDATA", filepath.Join(base, "legacy-state"))
+	default:
+		t.Setenv("HOME", filepath.Join(base, "home"))
+		if runtime.GOOS != "darwin" {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(base, "legacy-config"))
+			t.Setenv("XDG_STATE_HOME", filepath.Join(base, "legacy-state"))
+		}
+	}
+
+	legacy := Registry{Version: 2, Workspaces: map[string]Registration{
+		"api": {
+			ID: "api", Workspace: t.TempDir(), Enabled: true,
+			ConfigPath: filepath.Join(config.LegacyConfigDir(), "workspaces", "api", "config.json"),
+			DataDir:    filepath.Join(config.LegacyDataDir(), "instances", "api"),
+		},
+	}}
+	raw, _ := json.Marshal(legacy)
+	if err := os.WriteFile(Path(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := registry.Workspaces["api"]
+	if entry.ConfigPath != ConfigPath("api") || entry.DataDir != DataDir("api") {
+		t.Fatalf("legacy paths were not migrated: %#v", entry)
+	}
+	if registry.Version != CurrentVersion {
+		t.Fatalf("registry version = %d, want %d", registry.Version, CurrentVersion)
 	}
 }
 

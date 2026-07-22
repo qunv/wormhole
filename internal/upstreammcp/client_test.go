@@ -19,6 +19,17 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestStartupWaitTimeoutIncludesCommandCleanup(t *testing.T) {
+	stdio := config.MCPServerConfig{Command: "example", StartupTimeoutMS: 3_000}
+	if got, want := StartupWaitTimeout(stdio), 18*time.Second; got != want {
+		t.Fatalf("StartupWaitTimeout(stdio) = %s, want %s", got, want)
+	}
+	http := config.MCPServerConfig{URL: "http://127.0.0.1:9000/mcp", StartupTimeoutMS: 3_000}
+	if got, want := StartupWaitTimeout(http), 3*time.Second; got != want {
+		t.Fatalf("StartupWaitTimeout(http) = %s, want %s", got, want)
+	}
+}
+
 func testMCPServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "upstream-test", Version: "1"}, nil)
 	server.AddTool(&mcp.Tool{

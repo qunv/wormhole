@@ -20,7 +20,7 @@ import (
 	"codebridge/internal/config"
 )
 
-const CurrentVersion = 2
+const CurrentVersion = 3
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
@@ -114,6 +114,16 @@ func Load() (Registry, error) {
 		}
 		if previousVersion < 2 {
 			entry.Enabled = true
+		}
+		if previousVersion < 3 {
+			legacyConfigPath := filepath.Join(config.LegacyConfigDir(), "workspaces", id, "config.json")
+			legacyDataDir := filepath.Join(config.LegacyDataDir(), "instances", id)
+			if comparablePath(entry.ConfigPath) == comparablePath(legacyConfigPath) {
+				entry.ConfigPath = ConfigPath(id)
+			}
+			if comparablePath(entry.DataDir) == comparablePath(legacyDataDir) {
+				entry.DataDir = DataDir(id)
+			}
 		}
 		migrated[id] = entry
 	}

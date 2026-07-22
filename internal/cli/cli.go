@@ -65,6 +65,9 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	if a.Stdin == nil {
 		a.Stdin = os.Stdin
 	}
+	if err := config.MigrateLegacyLayout(); err != nil {
+		return fmt.Errorf("migrate legacy Codebridge layout: %w", err)
+	}
 	_ = config.LoadDotEnv(config.DotEnvPath(), false)
 	opts, err := parse(argv)
 	if err != nil {

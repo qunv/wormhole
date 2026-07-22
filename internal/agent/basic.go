@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -134,7 +133,7 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 		return r.Approvals.Decide(stringArg(args, "id", ""), stringArg(args, "approval_token", ""), decision)
 	case "profile_status":
 		profile := r.currentProfile()
-		path := filepath.Join(r.Workspace.Primary, ".agent", "profile.json")
+		path := activeWorkspaceProfilePath(r.Workspace.Primary)
 		if profile == nil {
 			return map[string]any{
 				"loaded": false, "path": path,

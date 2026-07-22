@@ -226,11 +226,12 @@ func TestStartupWaitTimeoutIncludesNamedWorkspaceDependencies(t *testing.T) {
 	namedConfig.Memory.Provider = "agentmemory"
 	namedConfig.Memory.Required = true
 	namedConfig.Memory.TimeoutMS = 2_000
+	namedConfig.MCPServers["slow"] = config.MCPServerConfig{Command: "mcp-slow", StartupTimeoutMS: 3_000}
 	if err := config.SaveFile(entry.ConfigPath, namedConfig); err != nil {
 		t.Fatal(err)
 	}
 
-	if got, want := startupWaitTimeout(cfg), 12*time.Second; got != want {
+	if got, want := startupWaitTimeout(cfg), 30*time.Second; got != want {
 		t.Fatalf("startupWaitTimeout() = %s, want %s", got, want)
 	}
 }

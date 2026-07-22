@@ -467,8 +467,28 @@ func approvalAction(tool string, args map[string]any) string {
 	return ""
 }
 
+func workspaceProfilePath(root string) string {
+	return filepath.Join(root, ".codebridge", "profile.json")
+}
+
+func legacyWorkspaceProfilePath(root string) string {
+	return filepath.Join(root, ".agent", "profile.json")
+}
+
+func activeWorkspaceProfilePath(root string) string {
+	canonical := workspaceProfilePath(root)
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	legacy := legacyWorkspaceProfilePath(root)
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return canonical
+}
+
 func loadProfileFile(root string) map[string]any {
-	raw, err := os.ReadFile(filepath.Join(root, ".agent", "profile.json"))
+	raw, err := os.ReadFile(activeWorkspaceProfilePath(root))
 	if err != nil {
 		return nil
 	}
