@@ -26,6 +26,10 @@ Environment variables:
   CODEBRIDGE_VERSION            Release tag to install
   CODEBRIDGE_INSTALL_DIR        Installation directory
   CODEBRIDGE_DOWNLOAD_BASE_URL  Override the release asset base URL
+
+Download behavior:
+  Uses an authenticated GitHub CLI session when available, which is required
+  for private repositories. Otherwise, downloads release assets with curl.
 EOF
 }
 
@@ -50,6 +54,24 @@ sha256_file() {
     fi
 
     fail "sha256sum or shasum is required to verify the download"
+}
+
+github_cli_authenticated() {
+    command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1
+}
+
+download_asset() {
+    asset="$1"
+    if [ "$USE_GH" = "true" ]; then
+        gh release download "$VERSION" \
+            --repo "$REPOSITORY" \
+            --pattern "$asset" \
+            --dir "$TMP_DIR" \
+            --clobber >/dev/null
+        return
+    fi
+    curl -fsSL "${DOWNLOAD_BASE_URL}/${asset}" -o "$TMP_DIR/$asset" ||
+        fail "download failed; authenticate GitHub CLI for a private repository or set CODEBRIDGE_DOWNLOAD_BASE_URL"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -79,7 +101,6 @@ case "$VERSION" in
     *) VERSION="v$VERSION" ;;
 esac
 
-need_command curl
 need_command tar
 need_command awk
 need_command mktemp
@@ -100,16 +121,22 @@ esac
 RELEASE_VERSION="${VERSION#v}"
 ARCHIVE="codebridge_${RELEASE_VERSION}_${OS}_${ARCH}.tar.gz"
 
-if [ -z "$DOWNLOAD_BASE_URL" ]; then
-    DOWNLOAD_BASE_URL="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
+USE_GH="false"
+if [ -z "$DOWNLOAD_BASE_URL" ] && github_cli_authenticated; then
+    USE_GH="true"
+else
+    need_command curl
+    if [ -z "$DOWNLOAD_BASE_URL" ]; then
+        DOWNLOAD_BASE_URL="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
+    fi
 fi
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 printf 'Downloading Codebridge %s for %s/%s...\n' "$VERSION" "$OS" "$ARCH"
-curl -fsSL "${DOWNLOAD_BASE_URL}/${ARCHIVE}" -o "$TMP_DIR/$ARCHIVE"
-curl -fsSL "${DOWNLOAD_BASE_URL}/checksums.txt" -o "$TMP_DIR/checksums.txt"
+download_asset "$ARCHIVE"
+download_asset "checksums.txt"
 
 EXPECTED_CHECKSUM="$(awk -v archive="$ARCHIVE" '$2 == archive { print $1; exit }' "$TMP_DIR/checksums.txt")"
 [ -n "$EXPECTED_CHECKSUM" ] || fail "checksum entry not found for $ARCHIVE"
