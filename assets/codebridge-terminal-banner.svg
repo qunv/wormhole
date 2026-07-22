@@ -1,0 +1,185 @@
+<svg width="1280" height="420" viewBox="0 0 1280 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Codebridge terminal banner</title>
+  <desc id="desc">Animated developer terminal introducing Codebridge as a local multi-workspace MCP coding agent.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#050816"/>
+      <stop offset="0.55" stop-color="#0A1020"/>
+      <stop offset="1" stop-color="#071A20"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="95" y1="0" x2="1185" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#60A5FA"/>
+      <stop offset="0.5" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#34D399"/>
+    </linearGradient>
+    <linearGradient id="terminalBar" x1="90" y1="66" x2="820" y2="66" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="1" stop-color="#0D1727"/>
+    </linearGradient>
+    <radialGradient id="glowLeft" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(180 350) rotate(-35) scale(260 190)">
+      <stop stop-color="#2563EB" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowRight" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1110 95) rotate(135) scale(250 180)">
+      <stop stop-color="#14B8A6" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#14B8A6" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" stroke="#94A3B8" stroke-opacity="0.045"/>
+    </pattern>
+    <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <filter id="tinyGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+    <clipPath id="terminalBodyClip">
+      <rect x="72" y="100" width="770" height="242" rx="0"/>
+    </clipPath>
+
+    <style>
+      .ui { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+      .brand { font: 800 42px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #F8FAFC; letter-spacing: -0.02em; }
+      .tagline { font: 500 15px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #AFC2DF; }
+      .term { font-size: 14px; fill: #C7D2E5; }
+      .termDim { font-size: 13px; fill: #64748B; }
+      .green { fill: #4ADE80; }
+      .cyan { fill: #22D3EE; }
+      .blue { fill: #60A5FA; }
+      .amber { fill: #FBBF24; }
+      .white { fill: #F8FAFC; }
+      .panelTitle { font-size: 13px; font-weight: 700; fill: #E2E8F0; }
+      .panelText { font-size: 12px; fill: #8FA3BF; }
+      .tiny { font-size: 10px; fill: #64748B; letter-spacing: 0.08em; }
+      .floatA { animation: floatA 6s ease-in-out infinite; transform-origin: center; }
+      .floatB { animation: floatB 7.5s ease-in-out infinite; transform-origin: center; }
+      .cursor { animation: blink 1s steps(1,end) infinite; }
+      .packetA { animation: packetA 4.8s linear infinite; }
+      .packetB { animation: packetB 5.8s linear 1.1s infinite; }
+      .dash { animation: dash 7s linear infinite; }
+      .pulse { animation: pulse 2.5s ease-in-out infinite; transform-origin: center; }
+      .pulseDelay { animation: pulse 2.5s ease-in-out 1.2s infinite; transform-origin: center; }
+      .log1 { animation: log1 8s steps(1,end) infinite; }
+      .log2 { animation: log2 8s steps(1,end) infinite; }
+      .log3 { animation: log3 8s steps(1,end) infinite; }
+      .log4 { animation: log4 8s steps(1,end) infinite; }
+      .scan { animation: scan 4.2s ease-in-out infinite; }
+      @keyframes blink { 0%,48% { opacity: 1; } 49%,100% { opacity: 0; } }
+      @keyframes floatA { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+      @keyframes floatB { 0%,100% { transform: translateY(0); } 50% { transform: translateY(7px); } }
+      @keyframes pulse { 0%,100% { opacity: .65; transform: scale(1); } 50% { opacity: 1; transform: scale(1.12); } }
+      @keyframes dash { to { stroke-dashoffset: -120; } }
+      @keyframes packetA { 0% { offset-distance: 0%; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
+      @keyframes packetB { 0% { offset-distance: 0%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
+      @keyframes log1 { 0%,12% { opacity: 0; } 13%,100% { opacity: 1; } }
+      @keyframes log2 { 0%,28% { opacity: 0; } 29%,100% { opacity: 1; } }
+      @keyframes log3 { 0%,45% { opacity: 0; } 46%,100% { opacity: 1; } }
+      @keyframes log4 { 0%,62% { opacity: 0; } 63%,100% { opacity: 1; } }
+      @keyframes scan { 0%,100% { transform: translateX(0); opacity: 0; } 15% { opacity: .55; } 70% { opacity: .4; } 100% { transform: translateX(610px); opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) {
+        .floatA,.floatB,.cursor,.packetA,.packetB,.dash,.pulse,.pulseDelay,.log1,.log2,.log3,.log4,.scan { animation: none !important; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1280" height="420" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="420" rx="28" fill="url(#grid)"/>
+  <ellipse cx="180" cy="350" rx="260" ry="190" fill="url(#glowLeft)"/>
+  <ellipse cx="1110" cy="95" rx="250" ry="180" fill="url(#glowRight)"/>
+
+  <g transform="translate(72 38)">
+    <text x="0" y="0" dominant-baseline="hanging" class="brand">Codebridge</text>
+    <text x="264" y="9" dominant-baseline="hanging" class="tagline">local coding agent · multi-workspace MCP gateway</text>
+    <rect x="948" y="0" width="188" height="28" rx="14" fill="#0F172A" stroke="#1E293B"/>
+    <circle cx="966" cy="14" r="5" fill="#34D399" class="pulse"/>
+    <text x="980" y="18" class="ui panelText">daemon online · v1.0.0</text>
+  </g>
+
+  <!-- main terminal -->
+  <g>
+    <rect x="72" y="76" width="770" height="286" rx="18" fill="#070B13" stroke="#1E293B" stroke-width="1.5"/>
+    <rect x="72" y="76" width="770" height="38" rx="18" fill="url(#terminalBar)"/>
+    <rect x="72" y="96" width="770" height="18" fill="url(#terminalBar)"/>
+    <circle cx="94" cy="95" r="5" fill="#FB7185"/>
+    <circle cx="111" cy="95" r="5" fill="#FBBF24"/>
+    <circle cx="128" cy="95" r="5" fill="#4ADE80"/>
+    <text x="155" y="100" class="ui termDim">~/projects/codebridge</text>
+    <rect x="630" y="84" width="96" height="22" rx="6" fill="#111827" stroke="#263449"/>
+    <text x="644" y="99" class="ui termDim">main</text>
+    <circle cx="708" cy="95" r="4" fill="#4ADE80" class="pulseDelay"/>
+    <text x="742" y="99" class="ui termDim">UTF-8</text>
+
+    <g clip-path="url(#terminalBodyClip)">
+      <rect x="84" y="118" width="734" height="212" rx="10" fill="#080D16"/>
+      <g class="scan">
+        <rect x="92" y="122" width="78" height="198" rx="8" fill="url(#accent)" opacity="0.05"/>
+      </g>
+
+      <text x="98" y="146" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  codebridge</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan class="white"> codebridge start --workspace ./api</tspan></text>
+
+      <g class="log1">
+        <text x="98" y="174" class="ui term"><tspan class="cyan">[router]</tspan><tspan> session endpoint ready at </tspan><tspan class="blue">/mcp/session</tspan></text>
+      </g>
+      <g class="log2">
+        <text x="98" y="198" class="ui term"><tspan class="cyan">[workspace]</tspan><tspan> bound chat </tspan><tspan class="amber">9f31c7</tspan><tspan> → </tspan><tspan class="green">api</tspan></text>
+      </g>
+      <g class="log3">
+        <text x="98" y="222" class="ui term"><tspan class="cyan">[tools]</tspan><tspan> loaded </tspan><tspan class="green">75 built-in</tspan><tspan> + </tspan><tspan class="blue">8 upstream</tspan></text>
+      </g>
+      <g class="log4">
+        <text x="98" y="246" class="ui term"><tspan class="cyan">[memory]</tspan><tspan> project scope </tspan><tspan class="blue">git:github.com/qunv/codebridge</tspan></text>
+      </g>
+
+      <text x="98" y="286" class="ui term"><tspan class="green">✓</tspan><tspan> Codebridge is ready </tspan><tspan class="termDim">(localhost:8789)</tspan></text>
+      <text x="98" y="316" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  codebridge</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan> </tspan></text>
+      <rect x="326" y="304" width="8" height="16" rx="1" fill="#E2E8F0" class="cursor"/>
+    </g>
+  </g>
+
+  <!-- right developer panels -->
+  <g class="floatA">
+    <rect x="878" y="76" width="330" height="82" rx="16" fill="#0A111D" stroke="#1E3A5F"/>
+    <rect x="894" y="91" width="34" height="34" rx="9" fill="#0F2440" stroke="#1D4ED8"/>
+    <path d="M902 108H920M911 99V117" stroke="#60A5FA" stroke-width="2" stroke-linecap="round"/>
+    <text x="942" y="106" class="ui panelTitle">workspace router</text>
+    <text x="942" y="127" class="ui panelText">chat → binding → isolated runtime</text>
+    <rect x="1098" y="91" width="90" height="22" rx="11" fill="#052E2B" stroke="#0F766E"/>
+    <circle cx="1112" cy="102" r="4" fill="#34D399" class="pulse"/>
+    <text x="1122" y="106" class="ui tiny">READY</text>
+  </g>
+
+  <g class="floatB">
+    <rect x="878" y="174" width="330" height="82" rx="16" fill="#0A111D" stroke="#164E63"/>
+    <rect x="894" y="189" width="34" height="34" rx="9" fill="#082F49" stroke="#0891B2"/>
+    <path d="M902 206L908 212L920 200" stroke="#22D3EE" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="942" y="204" class="ui panelTitle">tool contracts</text>
+    <text x="942" y="225" class="ui panelText">policy · approvals · audit · upstream MCP</text>
+    <text x="1115" y="211" class="ui cyan" font-size="18" font-weight="700">83</text>
+    <text x="1145" y="211" class="ui tiny">TOOLS</text>
+  </g>
+
+  <g class="floatA">
+    <rect x="878" y="272" width="330" height="82" rx="16" fill="#0A111D" stroke="#14532D"/>
+    <rect x="894" y="287" width="34" height="34" rx="9" fill="#052E1B" stroke="#15803D"/>
+    <path d="M902 303C902 298 920 298 920 303V313C920 318 902 318 902 313V303Z" stroke="#4ADE80" stroke-width="2"/>
+    <path d="M902 303C902 308 920 308 920 303" stroke="#4ADE80" stroke-width="2"/>
+    <text x="942" y="302" class="ui panelTitle">project memory</text>
+    <text x="942" y="323" class="ui panelText">decisions · failures · procedures · handoff</text>
+    <rect x="1094" y="286" width="94" height="22" rx="11" fill="#052E1B" stroke="#166534"/>
+    <text x="1108" y="301" class="ui tiny">ASYNC CAPTURE</text>
+  </g>
+
+  <!-- data paths -->
+  <path id="pathA" d="M842 147C860 147 863 117 878 117" stroke="#60A5FA" stroke-opacity="0.42" stroke-width="2" stroke-dasharray="5 7" class="dash"/>
+  <path id="pathB" d="M842 215C858 215 863 215 878 215" stroke="#22D3EE" stroke-opacity="0.42" stroke-width="2" stroke-dasharray="5 7" class="dash"/>
+  <path id="pathC" d="M842 287C858 287 863 313 878 313" stroke="#34D399" stroke-opacity="0.42" stroke-width="2" stroke-dasharray="5 7" class="dash"/>
+
+  <circle r="5" fill="#60A5FA" filter="url(#tinyGlow)" class="packetA" style="offset-path:path('M842 147C860 147 863 117 878 117')"/>
+  <circle r="5" fill="#22D3EE" filter="url(#tinyGlow)" class="packetB" style="offset-path:path('M842 215C858 215 863 215 878 215')"/>
+  <circle r="5" fill="#34D399" filter="url(#tinyGlow)" class="packetA" style="offset-path:path('M842 287C858 287 863 313 878 313');animation-delay:1.6s"/>
+
+  <path d="M72 384H1208" stroke="#1E293B"/>
+  <text x="72" y="404" class="ui tiny">LOCAL-FIRST · GO · MCP · MULTI-WORKSPACE · CODEGRAPH · MEMORY · OBSERVABILITY</text>
+  <text x="1208" y="404" text-anchor="end" class="ui tiny">github.com/qunv/codebridge</text>
+</svg>

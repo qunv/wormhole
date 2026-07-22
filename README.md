@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/codebridge-terminal-banner.svg" alt="Codebridge terminal banner" width="100%" />
+</p>
+
 # Codebridge
 
 Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **75 built-in MCP tools plus tools discovered from configured community MCP servers**.
