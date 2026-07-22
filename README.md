@@ -18,32 +18,20 @@ Codebridge is a local coding agent written in Go and distributed as a single bin
 
 ## Quick install
 
-The repository is private, so authenticate GitHub CLI before downloading release files:
-
-```bash
-gh auth login
-```
-
 ### Linux and macOS
 
-Fetch the installer through the authenticated GitHub API, then install the current stable release:
+Install the current stable release with one command:
 
 ```bash
-gh api \
-  -H "Accept: application/vnd.github.raw+json" \
-  repos/qunv/codebridge/contents/install.sh > install.sh
-sh install.sh
-rm install.sh
+curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh | sh
 ```
 
-The installer detects Linux/macOS and `amd64`/`arm64`, downloads private release assets through the authenticated `gh` session, verifies the checksum, and installs into `~/.local/bin`.
+The installer detects Linux/macOS and `amd64`/`arm64`, verifies the release checksum, and installs into `~/.local/bin`.
 
 Install a specific release or directory:
 
 ```bash
-gh api \
-  -H "Accept: application/vnd.github.raw+json" \
-  repos/qunv/codebridge/contents/install.sh > install.sh
+curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh -o install.sh
 sh install.sh --version v1.0.0 --install-dir "$HOME/.local/bin"
 rm install.sh
 ```
@@ -51,8 +39,6 @@ rm install.sh
 ### Windows PowerShell
 
 ```powershell
-gh auth login
-
 $Version = "v1.0.0"
 $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $Arch = switch ($Architecture) {
@@ -62,18 +48,13 @@ $Arch = switch ($Architecture) {
 }
 
 $Archive = "codebridge_$($Version.Substring(1))_windows_$Arch.zip"
+$BaseUrl = "https://github.com/qunv/codebridge/releases/download/$Version"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Codebridge\bin"
-$TempDir = Join-Path $env:TEMP "codebridge-$($Version.Substring(1))"
-$TempArchive = Join-Path $TempDir $Archive
-$TempChecksums = Join-Path $TempDir "checksums.txt"
+$TempArchive = Join-Path $env:TEMP $Archive
+$TempChecksums = Join-Path $env:TEMP "codebridge-checksums.txt"
 
-New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-gh release download $Version `
-    --repo qunv/codebridge `
-    --pattern $Archive `
-    --pattern checksums.txt `
-    --dir $TempDir `
-    --clobber
+Invoke-WebRequest -Uri "$BaseUrl/$Archive" -OutFile $TempArchive
+Invoke-WebRequest -Uri "$BaseUrl/checksums.txt" -OutFile $TempChecksums
 
 $Expected = (Get-Content $TempChecksums | Where-Object { $_ -match "\s+$([regex]::Escape($Archive))$" } | ForEach-Object { ($_ -split '\s+')[0] })
 if (-not $Expected) {
@@ -87,7 +68,7 @@ if ($Actual -ne $Expected.ToLowerInvariant()) {
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Expand-Archive -Path $TempArchive -DestinationPath $InstallDir -Force
-Remove-Item $TempDir -Recurse -Force
+Remove-Item $TempArchive, $TempChecksums
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (($UserPath -split ";") -notcontains $InstallDir) {
