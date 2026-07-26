@@ -99,7 +99,10 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	var serverCmd *exec.Cmd
 	var serverExit <-chan error
 	if health == nil {
-		logOffset := fileSize(config.LogPath())
+		logOffset := fileSize(config.ServerLogPath())
+		if logOffset >= childLogMaxBytes {
+			logOffset = 0
+		}
 		fmt.Fprintf(a.Stdout, "[server] starting Codebridge for %s\n", cfg.Workspace)
 		serverCmd, err = a.spawnServer(executable, cfg, opts.Background)
 		if err != nil {
@@ -112,11 +115,11 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 		fmt.Fprintf(a.Stdout, "[server] PID %d; waiting for readiness (timeout %s)\n", serverCmd.Process.Pid, waitTimeout.Round(time.Second))
 		var waitErr error
 		health, waitErr = waitForHealthProgress(ctx, cfg.Port, waitTimeout, serverExit, opts.Background, &startupLogFollower{
-			path: config.LogPath(), offset: logOffset,
+			path: config.ServerLogPath(), offset: logOffset,
 		}, a.Stdout)
 		if waitErr != nil {
 			_ = stopPID(serverCmd.Process.Pid)
-			return fmt.Errorf("MCP server startup failed: %w; see %s", waitErr, config.LogPath())
+			return fmt.Errorf("MCP server startup failed: %w; see %s", waitErr, config.ServerLogPath())
 		}
 		state.ServerPID = numberValue(healthValue(health, "pid"))
 		if state.ServerPID == 0 {
@@ -250,27 +253,35 @@ func (a App) spawnTunnel(cfg config.Config, opts options, background bool) (*exe
 }
 
 func (a App) startChild(label string, cmd *exec.Cmd, background bool) (*exec.Cmd, error) {
-	if err := os.MkdirAll(filepath.Dir(config.LogPath()), 0o700); err != nil {
-		return nil, err
+	logPath := childLogPath(label)
+	if background {
+		executable, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		args := []string{"__child", label, logPath, cmd.Dir, cmd.Path}
+		args = append(args, cmd.Args[1:]...)
+		wrapper := exec.Command(executable, args...)
+		wrapper.Env = cmd.Env
+		wrapper.Stdin = nil
+		prepareDetached(wrapper)
+		if err := wrapper.Start(); err != nil {
+			return nil, err
+		}
+		return wrapper, nil
 	}
-	logFile, err := os.OpenFile(config.LogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+
+	logFile, err := newRotatingLogWriter(logPath, childLogMaxBytes, childLogMaxFiles)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(logFile, "[%s] [%s] %s\n", time.Now().UTC().Format(time.RFC3339), label, strings.Join(cmd.Args, " "))
-	if background {
-		cmd.Stdin = nil
-		cmd.Stdout, cmd.Stderr = logFile, logFile
-		prepareDetached(cmd)
-	} else {
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = a.Stdin, io.MultiWriter(a.Stdout, logFile), io.MultiWriter(a.Stderr, logFile)
-	}
+	_, _ = fmt.Fprintf(logFile, "[%s] [%s] %s\n", time.Now().UTC().Format(time.RFC3339), label, strings.Join(cmd.Args, " "))
+	cmd.Stdin = a.Stdin
+	cmd.Stdout = io.MultiWriter(a.Stdout, logFile)
+	cmd.Stderr = io.MultiWriter(a.Stderr, logFile)
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		return nil, err
-	}
-	if background {
 		_ = logFile.Close()
+		return nil, err
 	}
 	return cmd, nil
 }
@@ -299,7 +310,8 @@ func (a App) status(cfg config.Config, opts options) error {
 	state, health := readState(), readHealth(cfg.Port)
 	value := map[string]any{
 		"workspace":   cfg.Workspace,
-		"config_path": config.ConfigPath(), "pid_path": config.PIDPath(), "log_path": config.LogPath(),
+		"config_path": config.ConfigPath(), "pid_path": config.PIDPath(), "log_path": config.ServerLogPath(),
+		"log_paths":            map[string]string{"server": config.ServerLogPath(), "tunnel": config.TunnelLogPath()},
 		"mcp_url":              fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
 		"session_mcp_url":      fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint),
 		"session_fast_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionFastEndpoint), "server": health,
@@ -504,18 +516,26 @@ func fileSize(path string) int64 {
 }
 
 func (a App) logs() error {
-	raw, err := os.ReadFile(config.LogPath())
-	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintln(a.Stdout, config.LogPath())
-		return nil
+	paths := []string{config.ServerLogPath(), config.TunnelLogPath(), config.LogPath()}
+	printed := false
+	for _, path := range paths {
+		raw, err := readFileTail(path, 100_000)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if printed {
+			fmt.Fprintln(a.Stdout)
+		}
+		fmt.Fprintf(a.Stdout, "%s\n%s", path, raw)
+		printed = true
 	}
-	if err != nil {
-		return err
+	if !printed {
+		fmt.Fprintln(a.Stdout, config.ServerLogPath())
+		fmt.Fprintln(a.Stdout, config.TunnelLogPath())
 	}
-	if len(raw) > 200_000 {
-		raw = raw[len(raw)-200_000:]
-	}
-	fmt.Fprintf(a.Stdout, "%s\n%s", config.LogPath(), raw)
 	return nil
 }
 

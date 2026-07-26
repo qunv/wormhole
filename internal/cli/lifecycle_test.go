@@ -33,6 +33,79 @@ func TestLifecycleCommandBackgroundDefaults(t *testing.T) {
 	}
 }
 
+func TestRotatingLogWriterRetainsBoundedFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "child.log")
+	writer, err := newRotatingLogWriter(path, 32, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 12; index++ {
+		if _, err := writer.Write([]byte(strings.Repeat(string(rune('a'+index)), 11))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := writer.Write([]byte("latest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{path, path + ".1", path + ".2"} {
+		info, err := os.Stat(candidate)
+		if err != nil {
+			t.Fatalf("missing retained log %s: %v", candidate, err)
+		}
+		if info.Size() > 32 {
+			t.Fatalf("log %s grew to %d bytes", candidate, info.Size())
+		}
+	}
+	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
+		t.Fatalf("rotation exceeded retention: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "latest") {
+		t.Fatalf("active log lost newest output: %q", raw)
+	}
+}
+
+func TestReadFileTailBoundsLargeLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.log")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := readFileTail(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "6789" {
+		t.Fatalf("tail = %q", raw)
+	}
+}
+
+func TestLoggedChildRejectsUnexpectedLogPath(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	err := (App{}).runLoggedChild(context.Background(), []string{"server", filepath.Join(t.TempDir(), "other.log"), "", os.Args[0]})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("unexpected validation result: %v", err)
+	}
+}
+
+func TestChildLogPathSeparatesServerAndTunnel(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	if childLogPath("server") != config.ServerLogPath() {
+		t.Fatalf("server log path = %s", childLogPath("server"))
+	}
+	if childLogPath("tunnel") != config.TunnelLogPath() {
+		t.Fatalf("tunnel log path = %s", childLogPath("tunnel"))
+	}
+	if childLogPath("test") != config.LogPath() {
+		t.Fatalf("fallback log path = %s", childLogPath("test"))
+	}
+}
+
 func TestForegroundChildKeepsLogWriterOpen(t *testing.T) {
 	if os.Getenv("CODEBRIDGE_TEST_FOREGROUND_CHILD") == "1" {
 		_, _ = os.Stdout.WriteString("first line\n")

@@ -306,7 +306,10 @@ The unified default layout on every operating system is:
   workspaces/<id>/config.json
   state/
     processes.json
-    launcher.log
+    server.log
+    server.log.1 ... server.log.4
+    tunnel.log
+    tunnel.log.1 ... tunnel.log.4
     profiles/
     instances/<id>/audit.log
     instances/<id>/workspaces/<path-hash>/...

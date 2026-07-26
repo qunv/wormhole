@@ -65,6 +65,9 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	if a.Stdin == nil {
 		a.Stdin = os.Stdin
 	}
+	if len(argv) > 0 && argv[0] == "__child" {
+		return a.runLoggedChild(ctx, argv[1:])
+	}
 	if err := config.MigrateLegacyLayout(); err != nil {
 		return fmt.Errorf("migrate legacy Codebridge layout: %w", err)
 	}
@@ -259,7 +262,7 @@ Usage:
   codebridge tunnel [status|install]
   codebridge keys                Print Tunnel/API-key setup URLs
   codebridge profile            Write the tunnel-client YAML profile
-  codebridge logs               Print launcher log
+  codebridge logs               Print bounded server and tunnel logs
   codebridge config get|set|path
   codebridge key set|delete     Manage the runtime key in the local env file
   codebridge install-cli        Install this binary in the user bin directory

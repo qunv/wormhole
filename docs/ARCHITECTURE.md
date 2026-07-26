@@ -189,7 +189,8 @@ All persistent Codebridge files use one canonical root on every operating system
   workspaces/<id>/config.json
   state/
     processes.json
-    launcher.log
+    server.log
+    tunnel.log
     profiles/
     instances/<id>/...
     workspaces/<workspace-path-hash>/...
@@ -340,6 +341,8 @@ beginToolCall (correlation ID + in-flight counters)
 ```
 
 The tracker stores only registered tool/module names, timestamps, counts, durations, outcome classes, and generated call IDs. It never stores session IDs, arguments, results, or error text. Unknown names collapse into one `_unknown` metric key, and the recent-call ring is capped at 64 entries. `runtime_metrics` can omit per-tool and recent data, while `workspace_info`, `session_report`, `workspace_doctor`, and loopback `/internal/healthz` expose progressively richer bounded views.
+
+Detached server and tunnel processes run behind an internal output wrapper. The wrapper owns their stdout/stderr pipes, writes separate `server.log` and `tunnel.log` files, rotates each at 32 MiB, and retains four previous generations. Because children write to pipes rather than directly opened log files, rotation can close, rename, and reopen files without leaving a long-running child attached to a stale inode.
 
 Audit records include the same `call_id`, tool module, outcome status, and execution duration. Runtime dispatch redacts and encodes the bounded record, then enqueues it to the shared audit writer instead of opening the file on the tool-call critical path. The writer drains bounded batches, rotates `audit.log` at 64 MiB with five retained generations, and falls back to a synchronous append when its queue is saturated so records are not silently dropped. `FlushAudit` provides an explicit persistence barrier for tests and controlled shutdown. Audit write failures do not change the tool result, but synchronous/enqueue failures and background writer failures are reported separately in runtime health and make the audit check in `workspace_doctor` warn. State operations use a bounded striped path-lock table, so unrelated notes, task, index, approval, and audit files do not share one workspace-wide mutex while writes to the same path remain serialized.
 
@@ -660,7 +663,11 @@ Per-workspace state is stored under:
 ~/.codebridge/state/
   audit.log
   processes.json
-  launcher.log
+  server.log
+  server.log.1 ... server.log.4
+  tunnel.log
+  tunnel.log.1 ... tunnel.log.4
+  launcher.log  # legacy combined log; no longer written by new processes
   profiles/
   workspaces/<workspace-path-hash>/
     notes.json

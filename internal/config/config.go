@@ -220,9 +220,15 @@ func LegacyDataDir() string {
 	}
 }
 
-func DotEnvPath() string { return filepath.Join(AppConfigDir(), ".env") }
-func PIDPath() string    { return filepath.Join(AppDataDir(), "processes.json") }
-func LogPath() string    { return filepath.Join(AppDataDir(), "launcher.log") }
+func DotEnvPath() string    { return filepath.Join(AppConfigDir(), ".env") }
+func PIDPath() string       { return filepath.Join(AppDataDir(), "processes.json") }
+func ServerLogPath() string { return filepath.Join(AppDataDir(), "server.log") }
+func TunnelLogPath() string { return filepath.Join(AppDataDir(), "tunnel.log") }
+
+// LogPath is the legacy combined launcher log retained for migration and
+// compatibility with older installations. New child processes write to the
+// separate server and tunnel paths.
+func LogPath() string { return filepath.Join(AppDataDir(), "launcher.log") }
 
 // MigrateLegacyLayout copies files from the former OS-specific config/state
 // directories into ~/.codebridge. Existing destinations are never replaced
