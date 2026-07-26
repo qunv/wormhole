@@ -25,8 +25,8 @@ type AuditWriterConfig struct {
 }
 
 // AuditWriter batches append-only JSONL records for one audit path. Queue
-// saturation falls back to a synchronous append so records are never silently
-// dropped.
+// saturation applies bounded backpressure to callers so records remain ordered
+// without moving disk I/O onto tool-call goroutines.
 type AuditWriter struct {
 	path   string
 	config AuditWriterConfig
@@ -39,14 +39,15 @@ type AuditWriter struct {
 	gate      sync.RWMutex
 	closed    atomic.Bool
 
-	enqueued       atomic.Uint64
-	fallbackWrites atomic.Uint64
-	batches        atomic.Uint64
-	rotations      atomic.Uint64
-	writeFailures  atomic.Uint64
-	lastFailureMu  sync.Mutex
-	lastFailureAt  time.Time
-	lastFailure    string
+	enqueued          atomic.Uint64
+	backpressureWaits atomic.Uint64
+	fallbackWrites    atomic.Uint64
+	batches           atomic.Uint64
+	rotations         atomic.Uint64
+	writeFailures     atomic.Uint64
+	lastFailureMu     sync.Mutex
+	lastFailureAt     time.Time
+	lastFailure       string
 }
 
 func NewAuditWriter(path string, config AuditWriterConfig) *AuditWriter {
@@ -96,9 +97,14 @@ func (w *AuditWriter) Append(line []byte) error {
 		w.enqueued.Add(1)
 		return nil
 	default:
-		w.fallbackWrites.Add(1)
-		return w.writeBatch([][]byte{copyLine})
+		w.backpressureWaits.Add(1)
 	}
+	// Keep the read gate while waiting so Close cannot stop the worker between
+	// the closed check and this accepted enqueue. The worker continues draining
+	// while Close waits for the gate, so queue pressure cannot deadlock shutdown.
+	w.queue <- copyLine
+	w.enqueued.Add(1)
+	return nil
 }
 
 func (w *AuditWriter) Flush(ctx context.Context) error {
@@ -162,8 +168,9 @@ func (w *AuditWriter) Stats() map[string]any {
 	result := map[string]any{
 		"enabled": true, "closed": w.closed.Load(),
 		"queue_depth": len(w.queue), "queue_capacity": cap(w.queue),
-		"enqueued": w.enqueued.Load(), "fallback_writes": w.fallbackWrites.Load(),
-		"batches": w.batches.Load(), "rotations": w.rotations.Load(),
+		"enqueued": w.enqueued.Load(), "backpressure_waits": w.backpressureWaits.Load(),
+		"fallback_writes": w.fallbackWrites.Load(),
+		"batches":         w.batches.Load(), "rotations": w.rotations.Load(),
 		"write_failures": w.writeFailures.Load(),
 		"max_bytes":      w.config.MaxBytes, "max_files": w.config.MaxFiles,
 	}

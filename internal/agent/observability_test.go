@@ -34,6 +34,10 @@ func TestRuntimeMetricsTrackOutcomesAndAuditCorrelation(t *testing.T) {
 	if metrics["in_flight"] != int64(0) || metrics["max_in_flight"].(int64) < 1 {
 		t.Fatalf("unexpected in-flight metrics: %#v", metrics)
 	}
+	auditMetrics := metrics["audit"].(map[string]any)
+	if _, ok := auditMetrics["writer_backpressure_waits"]; !ok {
+		t.Fatalf("audit metrics omitted writer backpressure: %#v", auditMetrics)
+	}
 	recent := metrics["recent_calls"].([]map[string]any)
 	if len(recent) != 3 {
 		t.Fatalf("recent calls = %d, want 3", len(recent))
@@ -274,15 +278,22 @@ func TestRuntimeMetricsClassifyCancellationAndBoundRecentCalls(t *testing.T) {
 	runtime.finishToolCall(call, toolCallOutcome{Err: context.Canceled})
 	call = runtime.beginToolCall("ping")
 	runtime.finishToolCall(call, toolCallOutcome{Err: context.DeadlineExceeded})
+	var successfulCallIDs []string
 	for index := 0; index < 100; index++ {
 		call = runtime.beginToolCall("ping")
+		successfulCallIDs = append(successfulCallIDs, call.ID)
 		runtime.finishToolCall(call, toolCallOutcome{})
 	}
 	metrics := runtime.RuntimeMetrics(false, 100)
 	if metrics["canceled"] != uint64(1) || metrics["deadline_exceeded"] != uint64(1) {
 		t.Fatalf("cancellation classification failed: %#v", metrics)
 	}
-	if got := len(metrics["recent_calls"].([]map[string]any)); got != maxRecentToolCalls {
+	recent := metrics["recent_calls"].([]map[string]any)
+	if got := len(recent); got != maxRecentToolCalls {
 		t.Fatalf("recent calls = %d, want %d", got, maxRecentToolCalls)
+	}
+	if recent[0]["call_id"] != successfulCallIDs[len(successfulCallIDs)-maxRecentToolCalls] ||
+		recent[len(recent)-1]["call_id"] != successfulCallIDs[len(successfulCallIDs)-1] {
+		t.Fatalf("recent ring order is wrong: first=%v last=%v", recent[0]["call_id"], recent[len(recent)-1]["call_id"])
 	}
 }

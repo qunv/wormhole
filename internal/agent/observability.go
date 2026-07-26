@@ -62,8 +62,10 @@ type runtimeCallTracker struct {
 	observationEnqueued  uint64
 	observationDropped   uint64
 
-	tools  map[string]*toolCallCounter
-	recent []recentToolCall
+	tools       map[string]*toolCallCounter
+	recent      [maxRecentToolCalls]recentToolCall
+	recentCount int
+	recentNext  int
 }
 
 type toolCallCounter struct {
@@ -197,14 +199,14 @@ func (r *Runtime) finishToolCall(call trackedToolCall, outcome toolCallOutcome) 
 			tracker.observationDropped++
 		}
 	}
-	tracker.recent = append(tracker.recent, recentToolCall{
+	tracker.recent[tracker.recentNext] = recentToolCall{
 		ID: call.ID, Tool: call.Tool, Module: call.Module, Status: status,
 		StartedAt: call.Started, Duration: duration, AuditWriteFailed: outcome.AuditErr != nil,
 		ObservationAttempted: outcome.ObservationAttempted, ObservationAccepted: outcome.ObservationAccepted,
-	})
-	if len(tracker.recent) > maxRecentToolCalls {
-		copy(tracker.recent, tracker.recent[len(tracker.recent)-maxRecentToolCalls:])
-		tracker.recent = tracker.recent[:maxRecentToolCalls]
+	}
+	tracker.recentNext = (tracker.recentNext + 1) % maxRecentToolCalls
+	if tracker.recentCount < maxRecentToolCalls {
+		tracker.recentCount++
 	}
 }
 
@@ -250,58 +252,110 @@ func latencyBucket(duration time.Duration) int {
 	}
 }
 
+type runtimeMetricsSnapshot struct {
+	startedAt            time.Time
+	started              uint64
+	completed            uint64
+	succeeded            uint64
+	failed               uint64
+	policyRejected       uint64
+	canceled             uint64
+	deadlineExceeded     uint64
+	inFlight             int64
+	maxInFlight          int64
+	totalDuration        time.Duration
+	maxDuration          time.Duration
+	latencyBuckets       [5]uint64
+	auditWriteFailures   uint64
+	lastAuditFailureAt   time.Time
+	observationAttempted uint64
+	observationEnqueued  uint64
+	observationDropped   uint64
+	tools                map[string]toolCallCounter
+	recent               []recentToolCall
+}
+
+func (t *runtimeCallTracker) snapshot(includeTools bool, recentLimit int) runtimeMetricsSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	snapshot := runtimeMetricsSnapshot{
+		startedAt: t.startedAt, started: t.started, completed: t.completed,
+		succeeded: t.succeeded, failed: t.failed, policyRejected: t.policyRejected,
+		canceled: t.canceled, deadlineExceeded: t.deadlineExceeded,
+		inFlight: t.inFlight, maxInFlight: t.maxInFlight,
+		totalDuration: t.totalDuration, maxDuration: t.maxDuration,
+		latencyBuckets:     t.latencyBuckets,
+		auditWriteFailures: t.auditWriteFailures, lastAuditFailureAt: t.lastAuditFailureAt,
+		observationAttempted: t.observationAttempted,
+		observationEnqueued:  t.observationEnqueued, observationDropped: t.observationDropped,
+	}
+	if includeTools {
+		snapshot.tools = make(map[string]toolCallCounter, len(t.tools))
+		for name, counter := range t.tools {
+			snapshot.tools[name] = *counter
+		}
+	}
+	if recentLimit > 0 {
+		recentLimit = min(recentLimit, maxRecentToolCalls, t.recentCount)
+		snapshot.recent = make([]recentToolCall, recentLimit)
+		start := (t.recentNext - recentLimit + maxRecentToolCalls) % maxRecentToolCalls
+		for index := range recentLimit {
+			snapshot.recent[index] = t.recent[(start+index)%maxRecentToolCalls]
+		}
+	}
+	return snapshot
+}
+
 // RuntimeMetrics returns bounded, argument-free diagnostics for this workspace
 // runtime. It never includes session IDs, tool arguments, results, or error text.
 func (r *Runtime) RuntimeMetrics(includeTools bool, recentLimit int) map[string]any {
-	tracker := r.metricsTracker()
 	now := time.Now().UTC()
 	repositoryCache := r.repositoryCacheStats()
-	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
+	snapshot := r.metricsTracker().snapshot(includeTools, recentLimit)
 	auditMetrics := map[string]any{
-		"enabled": r.Config.Audit, "write_failures": tracker.auditWriteFailures,
+		"enabled": r.Config.Audit, "write_failures": snapshot.auditWriteFailures,
 	}
 	if r.AuditWriter != nil {
 		writerStats := r.AuditWriter.Stats()
-		for _, key := range []string{"queue_depth", "queue_capacity", "enqueued", "fallback_writes", "batches", "rotations", "write_failures", "max_bytes", "max_files"} {
+		for _, key := range []string{"queue_depth", "queue_capacity", "enqueued", "backpressure_waits", "fallback_writes", "batches", "rotations", "write_failures", "max_bytes", "max_files"} {
 			if value, ok := writerStats[key]; ok {
 				auditMetrics["writer_"+key] = value
 			}
 		}
 	}
 	result := map[string]any{
-		"started_at":     tracker.startedAt,
-		"uptime_seconds": max(int64(0), int64(now.Sub(tracker.startedAt)/time.Second)),
-		"started_calls":  tracker.started, "completed_calls": tracker.completed,
-		"succeeded": tracker.succeeded, "failed": tracker.failed,
-		"policy_rejected": tracker.policyRejected, "canceled": tracker.canceled,
-		"deadline_exceeded": tracker.deadlineExceeded,
-		"in_flight":         tracker.inFlight, "max_in_flight": tracker.maxInFlight,
-		"latency_us": durationSummary(tracker.totalDuration, tracker.maxDuration, tracker.completed),
+		"started_at":     snapshot.startedAt,
+		"uptime_seconds": max(int64(0), int64(now.Sub(snapshot.startedAt)/time.Second)),
+		"started_calls":  snapshot.started, "completed_calls": snapshot.completed,
+		"succeeded": snapshot.succeeded, "failed": snapshot.failed,
+		"policy_rejected": snapshot.policyRejected, "canceled": snapshot.canceled,
+		"deadline_exceeded": snapshot.deadlineExceeded,
+		"in_flight":         snapshot.inFlight, "max_in_flight": snapshot.maxInFlight,
+		"latency_us": durationSummary(snapshot.totalDuration, snapshot.maxDuration, snapshot.completed),
 		"latency_buckets": map[string]uint64{
-			"lt_10ms": tracker.latencyBuckets[0], "lt_100ms": tracker.latencyBuckets[1],
-			"lt_1s": tracker.latencyBuckets[2], "lt_10s": tracker.latencyBuckets[3],
-			"gte_10s": tracker.latencyBuckets[4],
+			"lt_10ms": snapshot.latencyBuckets[0], "lt_100ms": snapshot.latencyBuckets[1],
+			"lt_1s": snapshot.latencyBuckets[2], "lt_10s": snapshot.latencyBuckets[3],
+			"gte_10s": snapshot.latencyBuckets[4],
 		},
 		"audit": auditMetrics,
 		"memory_observations": map[string]uint64{
-			"attempted": tracker.observationAttempted, "enqueued": tracker.observationEnqueued,
-			"dropped": tracker.observationDropped,
+			"attempted": snapshot.observationAttempted, "enqueued": snapshot.observationEnqueued,
+			"dropped": snapshot.observationDropped,
 		},
 		"repository_cache": repositoryCache,
 	}
-	if !tracker.lastAuditFailureAt.IsZero() {
-		result["audit"].(map[string]any)["last_failure_at"] = tracker.lastAuditFailureAt
+	if !snapshot.lastAuditFailureAt.IsZero() {
+		result["audit"].(map[string]any)["last_failure_at"] = snapshot.lastAuditFailureAt
 	}
 	if includeTools {
-		names := make([]string, 0, len(tracker.tools))
-		for name := range tracker.tools {
+		names := make([]string, 0, len(snapshot.tools))
+		for name := range snapshot.tools {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		tools := make([]map[string]any, 0, len(names))
 		for _, name := range names {
-			counter := tracker.tools[name]
+			counter := snapshot.tools[name]
 			entry := map[string]any{
 				"tool": name, "module": counter.module,
 				"started_calls": counter.started, "completed_calls": counter.completed,
@@ -321,11 +375,9 @@ func (r *Runtime) RuntimeMetrics(includeTools bool, recentLimit int) map[string]
 		}
 		result["tools"] = tools
 	}
-	if recentLimit > 0 {
-		recentLimit = min(recentLimit, maxRecentToolCalls, len(tracker.recent))
-		recent := make([]map[string]any, 0, recentLimit)
-		for index := len(tracker.recent) - recentLimit; index < len(tracker.recent); index++ {
-			call := tracker.recent[index]
+	if len(snapshot.recent) > 0 {
+		recent := make([]map[string]any, 0, len(snapshot.recent))
+		for _, call := range snapshot.recent {
 			entry := map[string]any{
 				"call_id": call.ID, "tool": call.Tool, "module": call.Module,
 				"status": call.Status, "started_at": call.StartedAt,

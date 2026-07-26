@@ -40,6 +40,66 @@ func TestAuditWriterFlushesBatchedRecords(t *testing.T) {
 	}
 }
 
+func TestAuditWriterQueuePressurePreservesFIFOWithoutCallerDiskWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	pathLock := statePathLock(path)
+	pathLock.Lock()
+
+	writer := NewAuditWriter(path, AuditWriterConfig{
+		QueueSize: 1, BatchSize: 1, FlushInterval: time.Hour,
+		MaxBytes: 1 << 20, MaxFiles: 2,
+	})
+	if err := writer.Append([]byte("first\n")); err != nil {
+		pathLock.Unlock()
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(writer.queue) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(writer.queue) != 0 {
+		pathLock.Unlock()
+		t.Fatal("audit worker did not start the first blocked write")
+	}
+	if err := writer.Append([]byte("second\n")); err != nil {
+		pathLock.Unlock()
+		t.Fatal(err)
+	}
+
+	thirdDone := make(chan error, 1)
+	go func() { thirdDone <- writer.Append([]byte("third\n")) }()
+	select {
+	case err := <-thirdDone:
+		pathLock.Unlock()
+		t.Fatalf("pressured append returned before queue drained: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	pathLock.Unlock()
+
+	select {
+	case err := <-thirdDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pressured append did not resume after the writer drained")
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); got != "first\nsecond\nthird\n" {
+		t.Fatalf("audit order = %q", got)
+	}
+	stats := writer.Stats()
+	if stats["backpressure_waits"] != uint64(1) || stats["fallback_writes"] != uint64(0) {
+		t.Fatalf("unexpected queue-pressure stats: %#v", stats)
+	}
+}
+
 func TestAuditWriterRotatesAndRetainsBoundedFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.log")
 	writer := NewAuditWriter(path, AuditWriterConfig{
