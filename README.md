@@ -4,150 +4,147 @@
 
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **76 built-in MCP tools plus tools discovered from configured community MCP servers**.
+Codebridge is a local-first MCP coding agent written in Go. It runs beside your repositories, gives ChatGPT controlled access to local files and development tools, and can connect private workspaces through OpenAI Secure MCP Tunnel without exposing a public server.
 
-## Highlights
+## What it provides
 
-- Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, and `tunnel`.
-- One stateless Streamable HTTP daemon with `/mcp/session` for full per-chat workspace selection, `/mcp/session/fast` for compact per-chat coding, `/mcp` for the full primary workspace, `/mcp/fast` for a compact fixed coding surface, and `/mcp/workspaces/<id>` plus `/fast` for fixed compatibility endpoints.
-- 76 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers; the fast profile exposes 11 high-value coding tools.
-- Root confinement that blocks path traversal and symlink escapes.
-- `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
-- Embedded MCP Apps widget with no separate web bundle.
-- Optional CodeGraph navigation and a generic upstream MCP gateway for database, design, cloud, search, and other community integrations.
-- Provider-neutral project memory with an agentmemory adapter, asynchronous capture, retry/backoff, canonical export/import, and daemon-wide provider/recorder pooling.
-- Compatible workspace runtimes reuse upstream MCP clients and immutable tool contracts without sharing workspace state or policy.
-- Bounded `runtime_metrics`, workspace/session diagnostics, correlation IDs, latency buckets, audit-writer health, and loopback supervisor telemetry without retaining arguments, results, sessions, or error text.
-- Builds for Linux, macOS, and Windows.
+- One local daemon for multiple repositories.
+- Per-chat workspace selection with `workspace <id>`.
+- A compact `fast` tool profile for everyday coding and a complete `main` profile for advanced workflows.
+- Root-confined file, Git, command, patch, review, process, memory, and upstream MCP tools.
+- `strict`, `balanced`, and `full` policies with exact, expiring approvals for risky actions.
+- Bounded logs, backups, audit records, process output, caches, and workspace state.
+- A single native binary for Linux, macOS, and Windows.
 
-## Quick install
-
-### Linux and macOS
-
-Install the current stable release with one command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh | sh
-```
-
-The installer detects Linux/macOS and `amd64`/`arm64`, verifies the release checksum, and installs into `~/.local/bin`.
-
-Install a specific release or directory:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh -o install.sh
-sh install.sh --version v1.0.0 --install-dir "$HOME/.local/bin"
-rm install.sh
-```
-
-### Windows PowerShell
-
-```powershell
-$Version = "v1.0.0"
-$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-$Arch = switch ($Architecture) {
-    "X64" { "amd64" }
-    "Arm64" { "arm64" }
-    default { throw "Unsupported architecture: $Architecture" }
-}
-
-$Archive = "codebridge_$($Version.Substring(1))_windows_$Arch.zip"
-$BaseUrl = "https://github.com/qunv/codebridge/releases/download/$Version"
-$InstallDir = Join-Path $env:LOCALAPPDATA "Codebridge\bin"
-$TempArchive = Join-Path $env:TEMP $Archive
-$TempChecksums = Join-Path $env:TEMP "codebridge-checksums.txt"
-
-Invoke-WebRequest -Uri "$BaseUrl/$Archive" -OutFile $TempArchive
-Invoke-WebRequest -Uri "$BaseUrl/checksums.txt" -OutFile $TempChecksums
-
-$Expected = (Get-Content $TempChecksums | Where-Object { $_ -match "\s+$([regex]::Escape($Archive))$" } | ForEach-Object { ($_ -split '\s+')[0] })
-if (-not $Expected) {
-    throw "Checksum entry not found for $Archive"
-}
-
-$Actual = (Get-FileHash -Algorithm SHA256 $TempArchive).Hash.ToLowerInvariant()
-if ($Actual -ne $Expected.ToLowerInvariant()) {
-    throw "Checksum verification failed for $Archive"
-}
-
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Expand-Archive -Path $TempArchive -DestinationPath $InstallDir -Force
-Remove-Item $TempArchive, $TempChecksums
-
-$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (($UserPath -split ";") -notcontains $InstallDir) {
-    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
-}
-
-& "$InstallDir\codebridge.exe" --version
-```
-
-Open a new terminal after installation so the updated user `PATH` is loaded.
-
-Release files and checksums are available on the [v1.0.0 release page](https://github.com/qunv/codebridge/releases/tag/v1.0.0).
+For package ownership, runtime internals, and security invariants, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Requirements
 
-- Go 1.25 or later when building from source.
-- Git for repository-root detection and project identity.
-- `rg` is optional; Codebridge falls back to a Go scanner when it is unavailable.
-- `codegraph` is optional; `codegraph_explore` runs only when the project contains `.codegraph/`.
-- A Tunnel ID and Runtime API key when using the ChatGPT Web tunnel.
-- Any package manager or executable required by configured `stdio` MCP servers, such as `npx`, `uvx`, or Docker.
-- agentmemory when project memory is enabled.
+For local use:
 
-## Tool module architecture
+- Git.
+- Go 1.25 or later only when building from source.
+- `rg` and `codegraph` are optional.
 
-Tool groups implement a common extension boundary:
+For ChatGPT through Secure MCP Tunnel:
 
-```go
-type ToolModule interface {
-    Name() string
-    Specs() []ToolSpec
-    Handle(context.Context, CallIdentity, string, map[string]any) (any, error)
-    Health(context.Context) any
-    Close() error
-}
-```
+- A ChatGPT workspace with custom MCP app access and Developer mode enabled. OpenAI currently documents full MCP apps for ChatGPT Business, Enterprise, and Edu on the web.
+- An OpenAI Platform organization permitted to use Secure MCP Tunnel.
+- A tunnel scoped to the target ChatGPT workspace.
+- A restricted Runtime API key with **Tunnels Read + Use**.
 
-The built-in modules are `basic`, `filesystem`, `repo`, `workflow`, `memory`, and `execution`. `Runtime` validates module and tool uniqueness, builds an O(1) tool-to-module index, and keeps policy, audit, and memory capture as shared cross-cutting behavior. Strict policy derives write access from `ToolSpec.ReadOnly`; every external tool with `ReadOnly=false` requires a hashed exact-argument approval under balanced policy unless its module supplies a custom `ToolPolicyProvider`.
+ChatGPT now calls this integration a **custom app** or **MCP app**. Older interfaces may call it a custom connector. It is not a legacy ChatGPT plugin.
 
-Additional modules such as Redis, MongoDB, Elasticsearch, Kafka, Kubernetes, cloud providers, or upstream MCP bridges can be registered before server construction:
+Official references:
 
-```go
-if err := runtime.RegisterModule(customModule); err != nil {
-    return err
-}
-server := mcpserver.New(runtime)
-```
+- [Developer mode and MCP apps in ChatGPT](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
+- [OpenAI tunnel-client end-user guide](https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md)
+- [OpenAI tunnel-client releases](https://github.com/openai/tunnel-client/releases/latest)
 
-## Build from source
+## Install
+
+### Linux and macOS
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh | sh
+codebridge --version
+```
+
+The installer downloads the matching release, verifies its checksum, and installs to `~/.local/bin` by default.
+
+### Windows
+
+Download the matching archive and `checksums.txt` from the [latest Codebridge release](https://github.com/qunv/codebridge/releases/latest), verify the SHA-256 checksum, extract `codebridge.exe`, and add its directory to your user `PATH`.
+
+### Build from source
+
+```bash
+git clone https://github.com/qunv/codebridge.git
 cd codebridge
 go test ./...
-go build -o dist/codebridge ./cmd/codebridge
+make install
 ```
 
-Or:
+## Connect Codebridge to ChatGPT
+
+The complete flow is:
+
+```text
+ChatGPT MCP app
+  → OpenAI Secure MCP Tunnel
+  → tunnel-client running on your machine
+  → Codebridge at http://127.0.0.1:8789
+  → selected local workspace
+```
+
+### 1. Configure Platform permissions
+
+In OpenAI Platform, create or assign roles before creating keys:
+
+| Operator | Required tunnel permissions |
+|---|---|
+| Runs Codebridge/tunnel-client | Tunnels Read + Use |
+| Creates or edits tunnels | Tunnels Read + Manage |
+| Does both | Tunnels Read + Manage + Use |
+
+Print the Tunnels and Runtime API-key URLs with:
 
 ```bash
-make build
+codebridge keys
 ```
 
-Install into the user binary directory:
+Role and group configuration is available on these pages:
+
+- [Organization roles](https://platform.openai.com/settings/organization/people/roles)
+- [Organization groups](https://platform.openai.com/settings/organization/people/groups)
+- [Tunnels](https://platform.openai.com/settings/organization/tunnels)
+- [Runtime API keys](https://platform.openai.com/settings/organization/api-keys)
+
+Prefer assigning roles through groups when multiple operators need access.
+
+### 2. Create the Secure MCP Tunnel
+
+Open [Platform → Organization → Tunnels](https://platform.openai.com/settings/organization/tunnels) and create a tunnel.
+
+When creating it:
+
+1. Give it a recognizable name such as `codebridge-local`.
+2. Scope it to the correct Platform organization.
+3. Include the target ChatGPT workspace ID. A tunnel without the correct workspace scope may exist in Platform but not appear in ChatGPT's tunnel picker.
+4. Copy the returned ID, which looks like:
+
+```text
+tunnel_0123456789abcdef0123456789abcdef
+```
+
+Codebridge only needs the Tunnel ID. An Admin API key is not required when you create and manage the tunnel in the Platform UI.
+
+### 3. Create the Runtime API key
+
+Open [Platform → Organization → API keys](https://platform.openai.com/settings/organization/api-keys) and create a **Restricted** Runtime API key with:
+
+```text
+Tunnels Read
+Tunnels Use
+```
+
+Do not use an Admin API key for the long-running tunnel process. `OPENAI_ADMIN_KEY` is only needed when using `tunnel-client admin tunnels create|update|delete`.
+
+Keep these values separate:
+
+| Value | Used for |
+|---|---|
+| Tunnel ID | Identifies the tunnel shared by ChatGPT and tunnel-client |
+| Runtime API key | Authenticates the long-running tunnel-client process |
+| Admin API key | Optional tunnel-management CLI operations only |
+
+### 4. Configure and start Codebridge
+
+Install OpenAI's tunnel client:
 
 ```bash
-install -Dm755 dist/codebridge "$HOME/.local/bin/codebridge"
+codebridge tunnel install
 ```
-
-The binary also supports:
-
-```bash
-./dist/codebridge install-cli
-```
-
-## Quick start
 
 Run the setup wizard:
 
@@ -155,118 +152,112 @@ Run the setup wizard:
 codebridge setup
 ```
 
-Start Codebridge in the current repository:
+Recommended answers:
+
+```text
+Mode:                         safe
+Policy:                       balanced
+Use ChatGPT Web tunnel?:      y
+Tunnel ID:                    tunnel_...
+tunnel-client path:           keep the default
+Download tunnel-client now?:  y, if it is not installed
+Enable memory?:               n, unless already configured
+```
+
+Store the Runtime API key separately:
 
 ```bash
-cd /path/to/repo
+codebridge key set
+```
+
+The key is written to `~/.codebridge/.env` as `CONTROL_PLANE_API_KEY`; it is not stored in `config.json` or passed on the command line.
+
+Generate the tunnel profile, start Codebridge, and verify it:
+
+```bash
+codebridge profile
+codebridge restart
+codebridge doctor
+codebridge status
+```
+
+A successful status should show both the server and tunnel online.
+
+Manual configuration is also possible:
+
+```bash
+codebridge config set noTunnel false
+codebridge config set tunnelId tunnel_0123456789abcdef0123456789abcdef
+codebridge tunnel install
+codebridge key set
+codebridge restart
+```
+
+### 5. Create the MCP app in ChatGPT
+
+First enable Developer mode for the ChatGPT workspace. OpenAI documents the admin control under:
+
+```text
+Workspace Settings
+  → Permissions & Roles
+  → Connected Data
+  → Developer mode / Create custom MCP connectors
+```
+
+Then create the app:
+
+1. Open **Settings → Apps → Create**, or **Workspace Settings → Apps → Create** as an admin/owner.
+2. Name the app, for example `Codebridge`.
+3. Select **Tunnel** or **Secure MCP Tunnel** as the connection type.
+4. Select the tunnel created above.
+5. Select channel **`fast`** for normal coding.
+6. Choose **No auth** for the MCP app. Tunnel control-plane authentication is handled by the Runtime API key stored on the machine.
+7. Click **Scan Tools** and wait for discovery to finish.
+8. Click **Create**.
+
+The app should appear under enabled apps with a `Dev` label until it is published by a workspace admin.
+
+OpenAI may change labels while MCP apps remain in beta. The current official flow is documented in the [Developer mode guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
+
+### 6. Use it in a chat
+
+Open a new ChatGPT conversation and enable the Codebridge app from the tools menu. Then select a repository:
+
+```text
+workspace codebridge
+```
+
+Use a different workspace in another chat:
+
+```text
+workspace loyalty-api
+```
+
+ChatGPT receives an opaque workspace binding automatically. You do not need to copy or manage that token. Bindings expire after inactivity and are reset when Codebridge restarts; say `workspace <id>` again when needed.
+
+## Which tunnel channel should I use?
+
+| Channel | Local endpoint | Use case |
+|---|---|---|
+| `fast` | `/mcp/session/fast` | Recommended. Compact coding profile with 11 high-value tools |
+| `main` | `/mcp/session` | Full workspace, memory, workflow, process, policy, and upstream MCP surface |
+| `workspace-<id>-fast` | `/mcp/workspaces/<id>/fast` | Fixed workspace with compact tools |
+| `workspace-<id>` | `/mcp/workspaces/<id>` | Fixed workspace with the complete tool surface |
+
+Start with one ChatGPT app on channel `fast`. Add a separate `main` app only when the larger tool surface is genuinely needed.
+
+Codebridge regenerates the tunnel profile with all enabled workspace channels when it starts. After adding or removing workspaces, restart Codebridge and rescan tools in ChatGPT.
+
+## Workspaces
+
+Running `codebridge` inside a Git repository starts the daemon and automatically registers that repository when necessary:
+
+```bash
+cd /path/to/repository
 codebridge
 ```
 
-The default command detects the Git root, auto-registers it as a named workspace when it differs from the configured default, and starts or reconciles Codebridge in the background.
-
-Run only the local MCP server without a tunnel:
-
-```bash
-codebridge start \
-  --workspace /path/to/repo \
-  --no-tunnel \
-  --background \
-  --save
-```
-
-Run in the foreground for debugging:
-
-```bash
-codebridge serve --workspace /path/to/repo --no-tunnel
-```
-
-Endpoints:
-
-- Session workspace MCP (full): `http://127.0.0.1:8789/mcp/session`
-- Session workspace MCP (fast): `http://127.0.0.1:8789/mcp/session/fast`
-- Primary workspace MCP (full): `http://127.0.0.1:8789/mcp`
-- Primary workspace MCP (fast): `http://127.0.0.1:8789/mcp/fast`
-- Health: `http://127.0.0.1:8789/healthz`
-- Supervisor health: `http://127.0.0.1:8789/internal/healthz`
-
-## Common CLI commands
-
-```bash
-codebridge status
-codebridge status --json
-codebridge doctor
-codebridge doctor --json
-codebridge state gc --dry-run
-codebridge state gc
-codebridge workspace
-codebridge workspace /path/to/repo
-codebridge restart
-codebridge stop
-codebridge logs
-codebridge config get
-codebridge config path
-```
-
-Show all commands and options:
-
-```bash
-codebridge help
-```
-
-## Multiple workspace endpoints
-
-Codebridge runs one local daemon with a session router plus fixed compatibility endpoints:
-
-```text
-http://127.0.0.1:8789/mcp/session                      per-chat workspace selection, full tools
-http://127.0.0.1:8789/mcp/session/fast                 per-chat workspace selection, fast tools
-http://127.0.0.1:8789/mcp                              fixed primary workspace, full tools
-http://127.0.0.1:8789/mcp/fast                         fixed primary workspace, 11 coding tools
-http://127.0.0.1:8789/mcp/workspaces/loyalty-api       fixed loyalty-api workspace, full tools
-http://127.0.0.1:8789/mcp/workspaces/loyalty-api/fast  fixed loyalty-api workspace, fast tools
-http://127.0.0.1:8789/mcp/workspaces/admin-web         fixed admin-web workspace, full tools
-```
-
-### One ChatGPT app, one workspace per chat
-
-For the lowest ChatGPT orchestration overhead, point the connector at `/mcp/session/fast` or tunnel channel `fast`. Use `/mcp/session` or channel `main` when the chat needs the complete memory, workflow, process, policy, or upstream MCP tool surface. In every new chat, select the repository with a natural command:
-
-```text
-Chat A: workspace loyalty-api
-Chat B: workspace admin-web
-```
-
-The session endpoint publishes four routing tools:
-
-| Tool | Purpose |
-|---|---|
-| `workspace_select` | Bind the current chat to an enabled workspace |
-| `workspace_current` | Verify the binding and selected root |
-| `workspace_list` | List workspace IDs available to the router |
-| `workspace_clear` | Detach the chat from its workspace |
-
-When the user writes `workspace <id>`, the MCP instructions tell ChatGPT to call `workspace_select`. Codebridge returns a cryptographically random opaque `workspace_binding`; ChatGPT keeps that value in the conversation context and supplies it automatically on every later Codebridge tool call. The user does not copy, paste, or manage the token.
-
-The selected root exists on the local Codebridge host and must be accessed through Codebridge tools. ChatGPT's container, sandbox, and code-interpreter filesystem are separate environments; trying to open the returned host path there can report `ENOENT` even while `workspace_doctor` and Codebridge file tools can access it normally. The session instructions and workspace-selection response explicitly prohibit that fallback and tell the client to reconnect or select the workspace again instead.
-
-All routed coding-tool schemas require `workspace_binding`. Codebridge removes the field before runtime dispatch, so it is never passed to a tool handler or written into audit arguments. The runtime memory/audit session uses a short hash of the binding instead of the raw token. This keeps two chats isolated even if ChatGPT reconnects or reuses an MCP transport.
-
-Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. Selecting a new workspace on the same MCP session invalidates its previous binding. The router caps active bindings at 4,096, evicts the least recently used binding only at capacity, and performs full expiry cleanup on a bounded interval instead of scanning all bindings on every tool call. After an expiry, eviction, or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding; append `/fast` to expose only the compact coding profile.
-
-Running `codebridge` derives the primary workspace ID from the Git repository root folder, or from the current folder outside Git. A different repository is automatically registered as a named workspace; `codebridge restart` performs the same check before restarting the daemon. Generated IDs are lowercase ASCII slugs, replace unsupported character runs with `-`, collapse repeated separators, and are limited to 32 characters. Named-workspace collisions receive a stable path hash. An existing registration for the same root is reused and automatically enabled.
-
-Examples:
-
-```text
-Loyalty API.Service  → loyalty-api-service
-repo_name            → repo-name
-service-api          → service-api
-service-api collision → service-api-4f29c8a1
-```
-
-The primary workspace remains available at the compatibility endpoint `/mcp`, but its router ID is the repository or folder slug rather than `default`. A bare invocation outside Git uses the current directory; an explicit `--workspace` uses the selected repository or directory.
-
-Register and manage workspaces manually with:
+Manage workspaces explicitly:
 
 ```bash
 codebridge workspace add loyalty-api /path/to/loyalty-api
@@ -280,129 +271,91 @@ codebridge workspace start loyalty-api
 codebridge workspace remove admin-web
 ```
 
-`workspace add` creates an enabled registry entry and a non-secret workspace config. Restart Codebridge, or run `workspace start <id>`, to reconcile the shared daemon. `workspace stop <id>` disables the endpoint and restarts the daemon when it is online. `workspace remove <id> --force` also removes the named config file; local state is retained unless deleted manually.
+Each workspace has isolated roots, policy, state, backups, approvals, tasks, memory scope, and process registry. All enabled workspaces share one daemon, one port, and one tunnel process.
 
-Every endpoint owns a separate runtime with its own:
+## Local use without ChatGPT
 
-- workspace manager and root confinement;
-- notes, tasks, checkpoints, audit, approvals, backups, and patch history;
-- managed process registry with fixed-capacity circular stdout/stderr tails, plus profile;
-- memory project and workspace-prefixed MCP session identity;
-- policy, tool exposure, request limits, and workspace-local handlers.
-
-`SharedServices` owns daemon-lifetime resources. Compatible runtimes reuse one memory provider and asynchronous recorder. Audit records for the same state root share one bounded batching writer with synchronous fallback on queue saturation and size-based log rotation. Upstream HTTP clients reuse one MCP session when the server name, transport configuration, resolved secrets, and timeouts match. Stdio clients are also keyed by their resolved `cwd`, so two repositories cannot accidentally share a workspace-relative child process. Tool filtering or approval-policy differences create separate immutable contracts while still reusing the compatible upstream client.
-
-Built-in tool schemas are constructed once per process, and each fixed or session-routing MCP server is assembled once when the HTTP daemon starts rather than once per JSON-RPC request. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, audit-writer, upstream-client, contract, acquire, and reuse counts. `runtime_metrics` reports per-workspace call counts, bounded latency summaries, in-flight peaks, policy/cancellation outcomes, audit queue/batch/rotation/write-failure counters, memory-observation enqueue/drop counts, repository-cache generation/cardinality, and a bounded argument-free recent-call ring. Deep module health adds sanitized upstream queue, concurrency, health-cache, reconnect, and circuit counters.
-
-Repository overview tools share one generation-keyed inventory per root for five minutes. Tree depth/limit views, project profile, important files, and symbol scans derive from that inventory instead of repeating `WalkDir`. Successful Codebridge file, patch, process-start, and mutating-Git operations invalidate the generation; shell commands classified as read-only preserve it, and a command batch invalidates at most once. Git status uses one porcelain-v2 process and a configurable 2-second snapshot cache with an explicit `refresh` bypass. `workspace_snapshot`, `task_context`, and CodeGraph output accept detail/token budgets. Fast profiles use structured result mode to avoid duplicating full JSON in text content, while full profiles preserve legacy JSON text compatibility. `security_scan` and `todo_scan` stream tracked files through `git grep`, stop as soon as their result limit is reached, and use a bounded context-aware fallback when Git is unavailable.
-
-The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `main` for `/mcp/session`, channel `fast` for `/mcp/session/fast`, and both `workspace-<id>` and `workspace-<id>-fast` channels for every enabled fixed workspace endpoint.
-
-The unified default layout on every operating system is:
-
-```text
-~/.codebridge/
-  config.json
-  .env
-  workspaces.json
-  workspaces/<id>/config.json
-  state/
-    processes.json
-    server.log
-    server.log.1 ... server.log.4
-    tunnel.log
-    tunnel.log.1 ... tunnel.log.4
-    profiles/
-    instances/<id>/audit.log
-    instances/<id>/workspaces/<path-hash>/...
-```
-
-Set `CODEBRIDGE_HOME` to relocate the complete layout. The existing granular overrides (`CODEBRIDGE_CONFIG_PATH`, `CODEBRIDGE_DATA_DIR`, and `CODEBRIDGE_WORKSPACE_REGISTRY_PATH`) remain supported for advanced deployments.
-
-Workspace state paths are created lazily, so starting a read-only runtime does not leave empty hash directories. GC includes the primary state root, registered named workspaces, and existing instance directories left behind by removed registrations. On daemon startup Codebridge scans a bounded batch of workspace-state directories and removes only regenerable or expired data: empty directories, repository index caches older than seven days or whose root no longer exists, orphaned/out-of-quota patch backups, and terminal approval records older than 30 days. Durable notes, checkpoints, current tasks, decisions, and unknown files are preserved.
-
-Inspect or run the same cleanup manually:
+Run only the local MCP server:
 
 ```bash
-codebridge state gc --dry-run
-codebridge state gc --dry-run --json
-codebridge stop
-codebridge state gc
-codebridge restart
+codebridge start \
+  --workspace /path/to/repository \
+  --no-tunnel \
+  --background \
+  --save
 ```
 
-A live daemon blocks destructive manual GC unless `--force` is passed. Patch recovery keeps at most 50 batches, 30 days, and 256 MiB per workspace; a single backup batch is limited to 128 MiB.
-
-The shared `.env` remains the source for the Runtime API key and referenced memory or upstream MCP secrets, so credentials are not copied into workspace configs. Workspace IDs must match `[a-z0-9][a-z0-9_-]{0,31}`; `default` is reserved. Registry validation also rejects shared config paths or data directories between two IDs.
-
-On the first run with the default layout, Codebridge copies missing files from the former OS-specific config and state directories into `~/.codebridge` without overwriting new files or deleting the legacy copies. A completion marker prevents retained legacy backups from recreating canonical state that is later removed intentionally. Registry versions 1 and 2 are upgraded in memory, including default absolute workspace paths. Stop any legacy per-workspace server or tunnel processes before starting the upgraded daemon.
-
-## ChatGPT Web tunnel
+For foreground debugging:
 
 ```bash
-codebridge tunnel install
-codebridge setup
-codebridge key set
-codebridge profile
-codebridge restart
+codebridge serve --workspace /path/to/repository --no-tunnel
 ```
 
-`codebridge key set` stores the Runtime API key in the local `.env` file with `0600` permissions. In ChatGPT Web:
-
-1. Open **Settings → Connectors → Developer mode**.
-2. Add one custom MCP connector.
-3. Select tunnel channel `fast`, which points to `/mcp/session/fast`, for normal coding. Select `main` only when the chat needs the complete tool surface.
-4. Choose `No auth`; the Runtime API key stays on the local machine and is not entered in the connector.
-5. Start a new chat and write `workspace <id>`, for example `workspace loyalty-api`.
-6. In another chat, write a different workspace ID. Each chat carries its own opaque binding automatically.
-
-### ChatGPT Skills and Codebridge
-
-ChatGPT Skills are reusable workflows owned and managed by the ChatGPT client. Create, install, upload, and share them through ChatGPT rather than through the Codebridge MCP server. See [Skills in ChatGPT](https://help.openai.com/en/articles/20001066-skills-in-chatgpt).
-
-Codebridge intentionally provides capabilities rather than a second skill registry:
-
-- ChatGPT Skills define reusable instructions, examples, resources, and task workflows.
-- Codebridge exposes workspace, filesystem, repository, execution, policy, memory, and upstream MCP tools.
-- A skill may instruct ChatGPT to call Codebridge tools, but every call still passes through Codebridge policy, approval, path-confinement, audit, and memory rules.
-- Codebridge does not read, create, update, delete, or persist ChatGPT Skills.
-
-The legacy Codebridge skill interfaces have been removed:
+Local endpoints:
 
 ```text
-MCP: list_skills, read_skill, create_skill, delete_skill
-CLI: codebridge skills [list|read]
-Files: embedded *.skill assets
+http://127.0.0.1:8789/mcp/session/fast
+http://127.0.0.1:8789/mcp/session
+http://127.0.0.1:8789/mcp/fast
+http://127.0.0.1:8789/mcp
+http://127.0.0.1:8789/healthz
+http://127.0.0.1:8789/internal/healthz
 ```
 
-After upgrading from a build that exposed those interfaces, rebuild or install the new binary, run `codebridge restart`, and reconnect or refresh the ChatGPT connector so it requests the current `tools/list` contract.
+## Common commands
+
+| Command | Purpose |
+|---|---|
+| `codebridge` | Start and auto-register the current Git repository |
+| `codebridge setup` | Configure workspace, policy, tunnel, and optional memory |
+| `codebridge restart` | Reconcile config and restart server/tunnel |
+| `codebridge status --json` | Show endpoints, process IDs, and health |
+| `codebridge doctor` | Check local server, tunnel, memory, and upstream MCP dependencies |
+| `codebridge logs` | Print bounded server and tunnel log tails |
+| `codebridge profile` | Regenerate the tunnel-client profile |
+| `codebridge tunnel install` | Download and verify OpenAI tunnel-client |
+| `codebridge key set` | Store the Runtime API key in `.env` |
+| `codebridge config get` | Print the effective non-secret configuration |
+| `codebridge state gc --dry-run` | Preview safe state cleanup |
+| `codebridge help` | Show the complete CLI surface |
 
 ## Configuration and secrets
 
-Codebridge loads configuration in this order:
+Persistent data lives under:
 
 ```text
-defaults
-  → config.json
-  → environment overrides
-  → CLI options for the current invocation
+~/.codebridge/
+  config.json          non-secret global configuration
+  .env                 Runtime API key and referenced secrets
+  workspaces.json      named-workspace registry
+  workspaces/<id>/     named-workspace configuration
+  state/               logs, process state, audit, backups, approvals, caches
 ```
 
-All persistent files now live below one root:
+Set `CODEBRIDGE_HOME=/custom/path` to relocate the complete tree.
+
+Configuration precedence:
 
 ```text
-~/.codebridge/                 default root on Linux, macOS, and Windows
-~/.codebridge/config.json      non-secret configuration
-~/.codebridge/.env             Runtime API key and optional provider secrets
-~/.codebridge/workspaces.json  named-workspace registry
-~/.codebridge/state/           process, log, audit, backup, and workspace state
+defaults → config.json → environment → CLI options
 ```
 
-Set `CODEBRIDGE_HOME=/custom/path` before launching Codebridge to relocate the whole tree. Project-specific command conventions and ignored directories use `<workspace>/.codebridge/profile.json`; the former `<workspace>/.agent/profile.json` remains a read-only fallback during migration.
+Minimal tunnel-related configuration:
 
-On Unix, `config.json` and `.env` are written with `0600` permissions. Codebridge does not serialize the MCP bearer token or approval token into `config.json`.
+```json
+{
+  "workspace": "/path/to/repository",
+  "mode": "safe",
+  "policy": "balanced",
+  "host": "127.0.0.1",
+  "port": 8789,
+  "noTunnel": false,
+  "tunnelId": "tunnel_0123456789abcdef0123456789abcdef",
+  "runtimeKeyEnv": "CONTROL_PLANE_API_KEY"
+}
+```
 
-Runtime-only secrets can be supplied through environment variables:
+Runtime-only secrets can be provided through environment variables:
 
 ```bash
 export CONTROL_PLANE_API_KEY="..."
@@ -410,11 +363,13 @@ export MCP_AUTH_TOKEN="..."
 export AGENT_APPROVAL_TOKEN="..."
 ```
 
-## Community and upstream MCP servers
+Do not commit `.env`, API keys, tunnel credentials, local state, or private workspace configuration.
 
-Codebridge can start or connect to community MCP servers and expose their discovered tools through the same policy, approval, audit, health, and lifecycle pipeline as built-in modules. Each `mcpServers` entry becomes a module named `mcp_<server>`, and the entry name is also the public tool prefix: `<server>__<normalized_tool_name>`. This gives every configured server one stable identity and prevents prefix collisions.
+## Optional upstream MCP servers
 
-A `stdio` server may use any executable available in `PATH`, including `npx`, `uvx`, `pnpm`, `bunx`, `docker`, or a custom binary. Native executables are started directly with structured argv. On Windows only, resolved `.cmd`/`.bat` launchers such as `npx.cmd` are invoked through a restricted `cmd.exe /d /s /v:off /c` adapter; quote, control, `%`, and `!` expansion characters are rejected in batch arguments:
+Codebridge can expose tools from trusted stdio or Streamable HTTP MCP servers under the same workspace policy and audit pipeline.
+
+Example:
 
 ```json
 {
@@ -422,143 +377,27 @@ A `stdio` server may use any executable available in `PATH`, including `npx`, `u
     "postgres_prod": {
       "transport": "stdio",
       "command": "uvx",
-      "args": [
-        "postgres-mcp",
-        "--access-mode=restricted"
-      ],
+      "args": ["postgres-mcp", "--access-mode=restricted"],
       "envRefs": {
         "DATABASE_URI": "POSTGRES_PROD_MCP_DATABASE_URI"
       },
       "required": false,
-      "maxConcurrency": 8,
-      "healthCacheMs": 5000,
-      "failureCooldownMs": 1000,
       "policy": {
         "default": "approval",
-        "readOnlyTools": [
-          "list_schemas",
-          "list_tables",
-          "describe_table"
-        ],
-        "alwaysApproveTools": [
-          "execute_sql"
-        ]
+        "readOnlyTools": ["list_schemas", "list_tables", "describe_table"]
       }
     }
   }
 }
 ```
 
-The credential value remains outside `config.json`:
+Keep credentials in `.env` or the process environment, not `config.json`. Restart Codebridge after changing upstream servers so their tools are rediscovered.
 
-```bash
-POSTGRES_PROD_MCP_DATABASE_URI="postgresql://username:password@localhost:5432/dbname"
-```
+Community MCP servers run as local code with your user's privileges. Pin versions and review them before enabling them.
 
-A Streamable HTTP server uses `url`; remote hosts require explicit `allowRemote: true`, and sensitive headers must reference environment variables:
+## Optional project memory
 
-```json
-{
-  "mcpServers": {
-    "remote_search": {
-      "transport": "streamable-http",
-      "url": "https://mcp.example.com/mcp",
-      "allowRemote": true,
-      "headerRefs": {
-        "Authorization": "REMOTE_MCP_AUTHORIZATION"
-      },
-      "policy": {
-        "default": "approval",
-        "trustAnnotations": false,
-        "readOnlyTools": ["search"]
-      }
-    }
-  }
-}
-```
-
-Figma Desktop can be connected through the same generic HTTP bridge:
-
-```json
-{
-  "mcpServers": {
-    "figma": {
-      "transport": "streamable-http",
-      "url": "http://127.0.0.1:3845/mcp",
-      "required": false,
-      "policy": {
-        "trustAnnotations": false,
-        "default": "approval",
-        "readOnlyTools": [
-          "get_design_context",
-          "get_screenshot",
-          "get_metadata",
-          "get_variable_defs",
-          "get_code_connect_map",
-          "get_figjam"
-        ]
-      }
-    }
-  }
-}
-```
-
-Important behavior:
-
-- The `mcpServers` entry name is always the module identity and public tool namespace. For example, `postgres_prod` creates module `mcp_postgres_prod` and tools such as `postgres_prod__query`.
-- Tool discovery runs once during Codebridge startup. Compatible workspace runtimes reuse the same upstream MCP client/session; policy or tool-filter differences keep separate contracts while reusing that connection. Stdio pooling additionally requires the same confined resolved `cwd`. Restart Codebridge after an upstream server changes its tool list.
-- `maxConcurrency` defaults to 8 and is limited to 128 concurrent calls per shared upstream client. Calls wait within their caller context and expose queued/in-flight/rejected counters. Session replacement is reference-counted, so a reconnect cannot close a session still borrowed by another call.
-- Deep health checks are single-flight and cached for `healthCacheMs` (default 5,000 ms), preventing multiple workspaces sharing one client from pinging it repeatedly. Repeated transport/reconnect failures open a three-failure circuit for `failureCooldownMs` (default 1,000 ms); calls fail fast during cooldown instead of creating a reconnect storm. Both timing values are limited to 60 seconds.
-- `required: true` makes Codebridge startup fail when the server cannot connect or publish a valid tool contract. Optional servers are skipped and reported through `workspace_info.upstream_mcp.startup_warnings`.
-- `codebridge start` streams `[startup]` phase logs while workspace, memory, and upstream MCP dependencies initialize. The launcher readiness timeout includes every enabled server's `startupTimeoutMs` and the bounded subprocess cleanup time for stdio servers, so slow or unavailable dependencies are not killed by the supervisor while they are shutting down.
-- `codebridge doctor` requests a deep local health check and reports each configured upstream as `mcp:<name>`, including transport, discovered tool count, reconnect count, and the latest sanitized connection error.
-- Community tool annotations are untrusted by default. Unknown tools require approval under `balanced`; `alwaysApproveTools` still requires exact approval under `policy=full`.
-- `strict` blocks every upstream tool not explicitly classified as read-only.
-- Parent process secrets are not inherited. Only a small platform environment plus explicit `inheritEnv`, `env`, and `envRefs` values are passed to `stdio` processes.
-- Raw upstream arguments and results are not persisted in audit or automatic memory capture. Audit stores only argument names and bounded call metadata.
-- A community MCP command is arbitrary local code and is not an operating-system sandbox. Pin package or image versions and review the server before enabling it.
-
-Tool exposure works through module ownership:
-
-```json
-{
-  "tools": {
-    "allowedGroups": ["basic", "filesystem", "mcp_postgres_prod"],
-    "allowedTools": ["workspace_snapshot", "task_context", "read_file", "apply_patch"],
-    "deniedTools": ["postgres_prod__execute_sql"]
-  },
-  "gitStatusCacheMs": 2000
-}
-```
-
-When `allowedTools` is non-empty it becomes the exact allow-list and takes precedence over `allowedGroups`; `deniedTools` always wins. `gitStatusCacheMs` defaults to 2000 and can be bypassed per call with `git_status.refresh=true`.
-
-## Database and Figma integrations
-
-Database and Figma integrations are provided through upstream MCP servers configured under `mcpServers`. Restart Codebridge after changing the configuration so their tools are discovered and registered.
-
-The exact upstream tool names depend on the selected community server. Use restrictive upstream access modes and explicit `readOnlyTools`/`alwaysApproveTools` policy lists rather than assuming a server's annotations are trustworthy.
-
-# Project memory
-
-Codebridge exposes a provider-neutral contract so ChatGPT does not depend directly on agentmemory:
-
-| Tool | Purpose |
-|---|---|
-| `memory_status` | Return the provider, project scope, capabilities, health, and recorder statistics |
-| `memory_context` | Retrieve compact historical context for the current task |
-| `memory_search` | Search decisions, failures, solutions, preferences, and procedures |
-| `memory_remember` | Store an explicit fact, decision, or solution |
-| `memory_commit` | Create a session handoff from a summary and local project state |
-| `memory_forget` | Delete a memory or session; destructive under the `balanced` policy |
-| `memory_export` | Export the canonical schema as an object or JSONL |
-| `memory_import` | Import the canonical schema to migrate between providers |
-
-Memory is **historical evidence**, not the current source of truth. The agent must still verify the current implementation with CodeGraph or file tools before editing code.
-
-## Enable memory
-
-Recommended setup:
+Codebridge supports provider-neutral project memory with an agentmemory adapter. Enable it through:
 
 ```bash
 codebridge setup
@@ -566,179 +405,105 @@ codebridge restart
 codebridge doctor
 ```
 
-The setup wizard stores non-secret settings in `config.json`. Only the secret, when required by the backend, is stored in `.env`.
+Memory is historical context, not the current source of truth. Codebridge still verifies current files and repository state before editing. Raw source, patches, command output, and secrets are excluded from automatic memory capture.
 
-At the secret prompt:
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for provider configuration, capture modes, queueing, retry behavior, and session scoping.
 
-```text
-Enter  keep the existing secret
--      clear the secret
-value  replace the secret
+## State retention
+
+Codebridge creates workspace state lazily and removes only regenerable or expired data:
+
+- Repository index cache: 7 days.
+- Terminal approvals: 30 days.
+- Patch history: at most 50 batches, 30 days, and 256 MiB per workspace.
+- One backup batch: at most 128 MiB.
+- Server and tunnel logs: size-based rotation.
+
+Durable notes, checkpoints, current tasks, decisions, and unknown files are preserved.
+
+```bash
+codebridge state gc --dry-run
+codebridge stop
+codebridge state gc
+codebridge restart
 ```
 
-When agentmemory is bound only to localhost and `AGENTMEMORY_SECRET` is not enabled, the secret can remain empty. When a secret is configured, Codebridge sends:
+## Security model
 
-```text
-Authorization: Bearer <secret>
-```
-
-## Example memory configuration
-
-```json
-{
-  "memory": {
-    "enabled": true,
-    "provider": "agentmemory",
-    "endpoint": "http://127.0.0.1:3111",
-    "secretEnv": "CODEBRIDGE_MEMORY_SECRET",
-    "timeoutMs": 3000,
-    "captureMode": "selected",
-    "tokenBudget": 1600,
-    "agentId": "chatgpt-codebridge",
-    "required": false,
-    "projectStrategy": "git-origin",
-    "queueSize": 128,
-    "deliveryWorkers": 4,
-    "deliveryTimeoutMs": 2000,
-    "retryMaxAttempts": 3,
-    "retryBackoffMs": 100,
-    "healthCacheMs": 5000,
-    "options": {
-      "circuitFailureThreshold": 3,
-      "circuitCooldownMs": 10000
-    }
-  }
-}
-```
-
-### `required`
-
-- `false`: fail open. An offline provider does not prevent Codebridge from starting or running coding tools.
-- `true`: startup fails when the provider health check does not succeed.
-
-### `deliveryWorkers`
-
-Defaults to 4 and is limited to 32. It is used only when the configured provider explicitly opts into concurrent calls; otherwise Codebridge forces one worker. The total `queueSize` is divided across session shards, so increase both values together when one session can produce large bursts.
-
-### `captureMode`
-
-- `off`: disable automatic capture; explicitly invoked memory tools still work.
-- `selected`: capture only tools with durable historical value, such as edits, tests, builds, Git operations, plans, decisions, and reviews.
-- `metadata`: capture more tool calls while retaining only minimal metadata.
-
-Automatic capture does not send raw source code, patches, command output, or secrets. Inputs are redacted, and results are reduced to whitelisted fields.
-
-### `projectStrategy`
-
-- `git-origin`: normalize the remote into a value such as `git:github.com/owner/repo`; clones in different directories share the same project memory.
-- `path-hash`: hash the configured owning root; separate checkouts receive separate memory scopes.
-
-A file or subdirectory is always mapped to its configured owning root before the project ID is created, preventing memory fragmentation by subdirectory.
-
-### Session identity
-
-Fixed endpoints derive memory identity from the MCP connection. Codebridge prefers the protocol session ID; when the transport does not provide one, it creates a stable process-local hash from the session object. Named endpoints prefix that identity with `workspace:<id>:`. The `/mcp/session` router instead uses `workspace:<id>:chat:<binding-hash>`, so two chats remain separate even if ChatGPT reconnects or reuses one transport. The raw workspace binding is never used as a provider session ID.
-
-### Asynchronous recorder
-
-Automatic capture uses a bounded queue and does not block tool responses:
-
-```text
-tool completed
-  → redact + whitelist
-  → non-blocking enqueue
-  → deliver with timeout
-  → bounded exponential retry
-  → delivered / failed / dropped counters
-```
-
-Compatible workspace runtimes share one daemon-scoped recorder; every queued observation still carries its own project, `cwd`, and workspace-prefixed session ID. Providers that explicitly implement `ConcurrencySafeProvider` use `deliveryWorkers` deterministic session shards: observations from one session remain FIFO on one worker, while different sessions can deliver concurrently. Providers without that opt-in remain single-worker and serialized. Provider and recorder circuit breakers stop retry storms when AgentMemory is offline; marked non-retryable errors such as ordinary 4xx responses are attempted once. Snapshot/report tools read cached health and trigger a bounded background refresh, while explicit `memory_status` may perform the synchronous check. Closing one runtime leaves the queue active. During daemon shutdown, `SharedServices` stops acquisitions, drains each recorder, and closes the pooled provider afterward. `memory_status` exposes `scope=daemon`, worker/shard capacity, `enqueued`, `delivered`, `retried`, `failed`, `dropped`, circuit counters, and the current queue depth.
-
-## Provider options
-
-`memory.options` contains adapter-specific configuration, such as custom REST paths or a response-size limit. Codebridge rejects any option key containing `secret`, `password`, `token`, `apiKey`, `authorization`, or `credential`; secrets must be referenced through `memory.secretEnv`.
-
-A new provider can register through `memory/factory.Register` without changing the MCP tools or runtime dispatch. Pooled providers are wrapped by a serializer, so plugins do not need to implement their own concurrent-call safety; optional export/import capabilities are preserved.
-
-## Export and import
-
-Export memory through MCP:
-
-```json
-{
-  "path": ".",
-  "format": "jsonl"
-}
-```
-
-Import it again:
-
-```json
-{
-  "path": ".",
-  "jsonl": "{\"id\":\"...\",\"content\":\"...\"}\n"
-}
-```
-
-Exports are normalized into the Codebridge schema. Import replays each item through the provider's `Remember` operation instead of restoring a raw database dump, making the format suitable for migration between different backends.
-
-# Security model
-
-- File tools and command `cwd` values are restricted to configured roots.
-- Canonicalization blocks traversal, symlink, and junction escapes.
-- A configured root cannot be deleted or renamed through dedicated tools or patch operations.
-- Codebridge is not an operating-system sandbox; accepted commands still run with the current user's privileges.
+- Files and command working directories are confined to configured roots.
+- Canonicalization blocks traversal and symlink/junction escapes.
 - `safe` mode blocks destructive shell patterns and Git mutations.
-- The `strict` policy permits only read and analysis operations.
-- The `balanced` policy permits edits but requires an exact one-time approval for deletion, installation, network access, mutating Git, `memory_forget`, and upstream tools not explicitly classified as read-only.
-- The `full` policy enables the complete project workflow while catastrophic system commands remain blocked; upstream `alwaysApproveTools` still require approval.
-- Audit arguments are recursively redacted before they are written to local state. Community MCP modules reduce audit data to argument names and bounded metadata and are excluded from automatic memory capture.
-- Session-routed coding calls require an explicit opaque binding. Codebridge removes it before runtime dispatch and never persists the raw value in audit, memory, health, or workspace state.
-- A non-loopback MCP host requires a bearer token.
+- `strict` permits read and analysis operations only.
+- `balanced` allows normal edits and requests exact approval for risky actions.
+- `full` enables the complete workflow while catastrophic system commands remain blocked.
+- A non-loopback local MCP listener requires a bearer token.
+- Codebridge is not an operating-system sandbox; approved commands run with the current user's privileges.
+- Audit arguments are redacted before being written locally.
+- Raw workspace bindings are never persisted in audit, memory, health, or state.
 
-# Repository structure
+## Troubleshooting
 
-```text
-cmd/codebridge/       executable entrypoint
-internal/app/         version and tier metadata
-internal/cli/         command parsing, setup, lifecycle, tunnel, and installation
-internal/server/      HTTP routes, authentication, CORS/origin, and limits
-internal/mcpserver/   MCP SDK adapter, session identity, and widget resource
-internal/agent/       tool-module registry, runtime pipeline, policy, and functional modules
-internal/workspace/   root confinement, owning-root resolution, search, and tree
-internal/security/    command guards, redaction, and approvals
-internal/patch/       backup, diff, preview, validation, and undo
-internal/processx/    bounded process execution and process-tree management
-internal/upstreammcp/  generic stdio and Streamable HTTP MCP client/session management
-internal/memory/      canonical contracts, recorder, scoping, and adapters
-internal/state/       per-workspace local state
-internal/maintenance/ bounded state garbage collection
-internal/workspaceregistry/ persistent named-workspace registry and migration
-internal/assets/      embedded MCP Apps widget
+### The tunnel does not appear in ChatGPT
+
+Check all four layers:
+
+1. The tunnel includes the correct ChatGPT workspace scope.
+2. Your ChatGPT operator and Runtime API key principal have Tunnels Read + Use.
+3. `codebridge status` shows the tunnel online.
+4. The ChatGPT workspace has Developer mode and custom MCP apps enabled.
+
+Then run:
+
+```bash
+codebridge doctor
+codebridge logs
+codebridge profile
+codebridge restart
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed design.
+Reopen **Settings → Apps → Create**, select the tunnel, and scan tools again.
 
-# Contributing
+### `missing Runtime API key`
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, architecture boundaries, security requirements, testing expectations, and pull request guidelines.
+```bash
+codebridge key set
+codebridge restart
+```
 
-# Verification
+### The app has an old tool list
+
+ChatGPT may retain the discovered tool contract. Restart Codebridge after configuration changes, then rescan the app's tools or recreate the draft app.
+
+### A workspace binding expired
+
+In the same chat, select it again:
+
+```text
+workspace <id>
+```
+
+### Inspect local health
+
+```bash
+codebridge status --json
+codebridge doctor --json
+codebridge logs
+```
+
+## Development
 
 ```bash
 go test ./...
-go test -race ./internal/memory/... ./internal/agent ./internal/cli ./internal/config ./internal/mcpserver ./internal/server ./internal/workspaceregistry
 go vet ./...
 go build ./...
-GOOS=windows GOARCH=amd64 go build ./...
-GOOS=darwin GOARCH=arm64 go build ./...
 ```
 
-External Streamable HTTP smoke test:
+Useful project documents:
 
-```bash
-CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8789/mcp \
-  go test ./internal/server -run TestExternalStreamableHTTP -v
-```
+- [Architecture](docs/ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
-Codebridge is released under AGPL-3.0-or-later; see `LICENSE` at the repository root.
+## License
+
+Codebridge is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
