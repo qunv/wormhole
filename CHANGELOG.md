@@ -4,12 +4,26 @@ All notable changes to Codebridge are documented in this file.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-26
+
+### Added
+
+- Added `codebridge state gc --dry-run` and bounded startup garbage collection for workspace state.
+- Added backup retention limits by age, batch count, per-workspace storage, and single-batch size.
+
+### Changed
+
+- Simplified the README around installation, Secure MCP Tunnel setup, Runtime API keys, ChatGPT MCP apps, channels, and workspace usage.
+- Reduced audit I/O and metrics lock contention.
+- Bounded server and tunnel log retention.
+
 ### Fixed
 
 - Prevented read-only runtimes and tests from creating empty persistent workspace-state directories.
-- Added bounded state garbage collection for stale repository caches, orphaned and over-quota patch backups, expired terminal approvals, and empty workspace-state directories.
-- Added `codebridge state gc --dry-run` and a bounded daemon-startup sweep while preserving durable notes, tasks, checkpoints, and decisions.
+- Removed stale repository caches, orphaned and over-quota backups, expired terminal approvals, and empty workspace-state directories without deleting durable notes, tasks, checkpoints, or decisions.
 - Isolated runtime-heavy test packages from the user's real `~/.codebridge` tree.
+- Made legacy state migration one-time so removed canonical state is not recreated on later starts.
+- Prevented ChatGPT from falling back to an external container filesystem for Codebridge host workspace paths.
 
 ## [1.0.0] - 2026-07-22
 
@@ -40,5 +54,6 @@ Codebridge 1.0.0 is the first stable release. It packages the multi-workspace MC
 - `go build ./...`
 - Cross-compilation for Linux, macOS, and Windows on amd64 and arm64 through GoReleaser.
 
-[Unreleased]: https://github.com/qunv/codebridge/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/qunv/codebridge/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/qunv/codebridge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/qunv/codebridge/releases/tag/v1.0.0
