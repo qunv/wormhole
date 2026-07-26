@@ -16,7 +16,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const WorkspaceAccessInstructions = `The workspace root is on the local Codebridge host. Access it only through Codebridge tools. Never use ChatGPT's container, sandbox, code interpreter, or another filesystem tool for that host path; those environments are separate and may return ENOENT even when the workspace exists. If Codebridge tools are temporarily unavailable, reconnect or reselect the workspace instead of falling back to an external container.`
+
 const Instructions = `Codebridge is a local coding agent.
+
+` + WorkspaceAccessInstructions + `
 
 For requests that require understanding, locating, tracing, or evaluating code, call codegraph_explore first. This includes architecture, symbols, implementations, callers, callees, execution flow, dependencies, dynamic dispatch, and change impact.
 

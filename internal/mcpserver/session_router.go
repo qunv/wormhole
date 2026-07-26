@@ -200,8 +200,10 @@ func (r *SessionRouter) registerControlTools(server *mcp.Server) {
 		return toolSuccess(map[string]any{
 			"selected": true, "workspace_id": binding.WorkspaceID,
 			"workspace_binding": binding.Token, "root": runtime.Workspace.Primary,
+			"workspace_access":   "codebridge_tools_only",
 			"expires_in_seconds": int64(r.ttl / time.Second),
-			"instruction":        "Pass workspace_binding unchanged on every later Codebridge tool call in this chat.",
+			"instruction": "Pass workspace_binding unchanged on every later Codebridge tool call in this chat. " +
+				WorkspaceAccessInstructions,
 		}), nil
 	})
 
@@ -224,7 +226,9 @@ func (r *SessionRouter) registerControlTools(server *mcp.Server) {
 		return toolSuccess(map[string]any{
 			"selected": true, "workspace_id": binding.WorkspaceID,
 			"workspace_binding": binding.Token, "root": runtime.Workspace.Primary,
-			"last_used_at": binding.LastUsedAt.UTC().Format(time.RFC3339),
+			"workspace_access": "codebridge_tools_only",
+			"last_used_at":     binding.LastUsedAt.UTC().Format(time.RFC3339),
+			"instruction":      WorkspaceAccessInstructions,
 		}), nil
 	})
 

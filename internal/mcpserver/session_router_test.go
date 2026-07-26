@@ -16,6 +16,40 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestWorkspaceInstructionsPreventExternalContainerFallback(t *testing.T) {
+	for name, instructions := range map[string]string{
+		"base":    Instructions,
+		"session": SessionInstructions,
+	} {
+		for _, required := range []string{"Codebridge tools", "container", "ENOENT", "reselect the workspace"} {
+			if !strings.Contains(instructions, required) {
+				t.Fatalf("%s instructions missing %q: %s", name, required, instructions)
+			}
+		}
+	}
+
+	runtime := newSessionTestRuntime(t, "codebridge", t.TempDir())
+	router := NewSessionRouter(runtime, nil)
+	chat := connectSessionGateway(t, router)
+	selected := callSessionTool(t, chat, "workspace_select", map[string]any{"id": "codebridge"}, false)
+	object := resultObject(t, selected)
+	if object["workspace_access"] != "codebridge_tools_only" {
+		t.Fatalf("workspace access marker = %#v", object["workspace_access"])
+	}
+	instruction, _ := object["instruction"].(string)
+	if !strings.Contains(instruction, "Never use ChatGPT's container") {
+		t.Fatalf("selection response omitted container warning: %#v", object)
+	}
+
+	binding, _ := object["workspace_binding"].(string)
+	current := callSessionTool(t, chat, "workspace_current", map[string]any{"workspace_binding": binding}, false)
+	currentObject := resultObject(t, current)
+	if currentObject["workspace_access"] != "codebridge_tools_only" ||
+		!strings.Contains(fmt.Sprint(currentObject["instruction"]), "ENOENT") {
+		t.Fatalf("current workspace response omitted access contract: %#v", currentObject)
+	}
+}
+
 func TestSessionRouterUsesPrimaryRuntimeWorkspaceID(t *testing.T) {
 	primary := newSessionTestRuntime(t, "codebridge", t.TempDir())
 	api := newSessionTestRuntime(t, "api", t.TempDir())
