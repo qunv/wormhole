@@ -37,7 +37,7 @@ func executionToolSpecs() []ToolSpec {
 		roSpec("proc_output", "Process output", "Read buffered process output.", object(map[string]any{"id": str("Process ID."), "tail_chars": integer()}, "id")),
 		rwSpec("proc_stop", "Stop process", "Stop a managed process tree.", object(map[string]any{"id": str("Process ID.")}, "id"), true),
 		rwSpec("git", "Git", "Run a guarded git command.", object(map[string]any{"args": array(str("")), "cwd": str("Repo directory.")}, "args"), true),
-		roSpec("git_status", "Git status", "Return parsed working-tree status.", object(map[string]any{"cwd": str("Repo directory.")})),
+		structuredROSpec("git_status", "Git status", "Return parsed working-tree status, optionally bypassing the short cache.", object(map[string]any{"cwd": str("Repo directory."), "refresh": boolean()})),
 		roSpec("git_diff", "Git diff", "Return a bounded git diff.", object(map[string]any{"path": str("Optional path."), "staged": boolean(), "cwd": str("Repo directory.")})),
 	}
 }

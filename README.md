@@ -4,13 +4,13 @@
 
 # Codebridge
 
-Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **75 built-in MCP tools plus tools discovered from configured community MCP servers**.
+Codebridge is a local coding agent written in Go and distributed as a single binary. It manages workspaces, runs a local MCP server, connects ChatGPT Web through a Secure MCP Tunnel, integrates with CodeGraph, and exposes **76 built-in MCP tools plus tools discovered from configured community MCP servers**.
 
 ## Highlights
 
 - Native Go CLI for `setup`, `start`, `stop`, `restart`, `status`, `doctor`, `workspace`, `logs`, `config`, `key`, and `tunnel`.
-- One stateless Streamable HTTP daemon with `/mcp/session` for per-chat workspace selection, `/mcp` for the primary workspace, and `/mcp/workspaces/<id>` for fixed compatibility endpoints.
-- 75 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers.
+- One stateless Streamable HTTP daemon with `/mcp/session` for full per-chat workspace selection, `/mcp/session/fast` for compact per-chat coding, `/mcp` for the full primary workspace, `/mcp/fast` for a compact fixed coding surface, and `/mcp/workspaces/<id>` plus `/fast` for fixed compatibility endpoints.
+- 76 built-in tools plus namespaced tools dynamically discovered from configured upstream MCP servers; the fast profile exposes 11 high-value coding tools.
 - Root confinement that blocks path traversal and symlink escapes.
 - `strict`, `balanced`, and `full` policies, with one-time exact-action approvals for risky operations.
 - Embedded MCP Apps widget with no separate web bundle.
@@ -182,8 +182,10 @@ codebridge serve --workspace /path/to/repo --no-tunnel
 
 Endpoints:
 
-- Session workspace MCP: `http://127.0.0.1:8789/mcp/session`
-- Primary workspace MCP: `http://127.0.0.1:8789/mcp`
+- Session workspace MCP (full): `http://127.0.0.1:8789/mcp/session`
+- Session workspace MCP (fast): `http://127.0.0.1:8789/mcp/session/fast`
+- Primary workspace MCP (full): `http://127.0.0.1:8789/mcp`
+- Primary workspace MCP (fast): `http://127.0.0.1:8789/mcp/fast`
 - Health: `http://127.0.0.1:8789/healthz`
 - Supervisor health: `http://127.0.0.1:8789/internal/healthz`
 
@@ -214,15 +216,18 @@ codebridge help
 Codebridge runs one local daemon with a session router plus fixed compatibility endpoints:
 
 ```text
-http://127.0.0.1:8789/mcp/session                 per-chat workspace selection
-http://127.0.0.1:8789/mcp                         fixed primary workspace
-http://127.0.0.1:8789/mcp/workspaces/loyalty-api  fixed loyalty-api workspace
-http://127.0.0.1:8789/mcp/workspaces/admin-web    fixed admin-web workspace
+http://127.0.0.1:8789/mcp/session                      per-chat workspace selection, full tools
+http://127.0.0.1:8789/mcp/session/fast                 per-chat workspace selection, fast tools
+http://127.0.0.1:8789/mcp                              fixed primary workspace, full tools
+http://127.0.0.1:8789/mcp/fast                         fixed primary workspace, 11 coding tools
+http://127.0.0.1:8789/mcp/workspaces/loyalty-api       fixed loyalty-api workspace, full tools
+http://127.0.0.1:8789/mcp/workspaces/loyalty-api/fast  fixed loyalty-api workspace, fast tools
+http://127.0.0.1:8789/mcp/workspaces/admin-web         fixed admin-web workspace, full tools
 ```
 
 ### One ChatGPT app, one workspace per chat
 
-Point one ChatGPT custom MCP app or tunnel channel at `/mcp/session`. In every new chat, select the repository with a natural command:
+For the lowest ChatGPT orchestration overhead, point the connector at `/mcp/session/fast` or tunnel channel `fast`. Use `/mcp/session` or channel `main` when the chat needs the complete memory, workflow, process, policy, or upstream MCP tool surface. In every new chat, select the repository with a natural command:
 
 ```text
 Chat A: workspace loyalty-api
@@ -242,7 +247,7 @@ When the user writes `workspace <id>`, the MCP instructions tell ChatGPT to call
 
 All routed coding-tool schemas require `workspace_binding`. Codebridge removes the field before runtime dispatch, so it is never passed to a tool handler or written into audit arguments. The runtime memory/audit session uses a short hash of the binding instead of the raw token. This keeps two chats isolated even if ChatGPT reconnects or reuses an MCP transport.
 
-Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. Selecting a new workspace on the same MCP session invalidates its previous binding. The router caps active bindings at 4,096, evicts the least recently used binding only at capacity, and performs full expiry cleanup on a bounded interval instead of scanning all bindings on every tool call. After an expiry, eviction, or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding.
+Bindings are process-memory only, expire after 24 hours of inactivity, and disappear when Codebridge restarts. Selecting a new workspace on the same MCP session invalidates its previous binding. The router caps active bindings at 4,096, evicts the least recently used binding only at capacity, and performs full expiry cleanup on a bounded interval instead of scanning all bindings on every tool call. After an expiry, eviction, or restart, say `workspace <id>` again. Fixed `/mcp` and `/mcp/workspaces/<id>` endpoints remain available for clients that want endpoint-level binding; append `/fast` to expose only the compact coding profile.
 
 Running `codebridge` derives the primary workspace ID from the Git repository root folder, or from the current folder outside Git. A different repository is automatically registered as a named workspace; `codebridge restart` performs the same check before restarting the daemon. Generated IDs are lowercase ASCII slugs, replace unsupported character runs with `-`, collapse repeated separators, and are limited to 32 characters. Named-workspace collisions receive a stable path hash. An existing registration for the same root is reused and automatically enabled.
 
@@ -285,9 +290,9 @@ Every endpoint owns a separate runtime with its own:
 
 Built-in tool schemas are constructed once per process, and each fixed or session-routing MCP server is assembled once when the HTTP daemon starts rather than once per JSON-RPC request. `workspace_info`, `memory_status`, and `/internal/healthz` expose `shared_resources` counters for provider, recorder, audit-writer, upstream-client, contract, acquire, and reuse counts. `runtime_metrics` reports per-workspace call counts, bounded latency summaries, in-flight peaks, policy/cancellation outcomes, audit queue/batch/rotation/write-failure counters, memory-observation enqueue/drop counts, repository-cache generation/cardinality, and a bounded argument-free recent-call ring. Deep module health adds sanitized upstream queue, concurrency, health-cache, reconnect, and circuit counters.
 
-Repository overview tools share one generation-keyed inventory per root for five minutes. Tree depth/limit views, project profile, important files, and symbol results derive from that inventory instead of repeating `WalkDir`; successful Codebridge file, patch, shell, process-start, and mutating-Git operations invalidate the generation. Git status uses one porcelain-v2 process and a 300 ms snapshot cache. `security_scan` and `todo_scan` stream tracked files through `git grep`, stop as soon as their result limit is reached, and use a bounded context-aware fallback when Git is unavailable.
+Repository overview tools share one generation-keyed inventory per root for five minutes. Tree depth/limit views, project profile, important files, and symbol scans derive from that inventory instead of repeating `WalkDir`. Successful Codebridge file, patch, process-start, and mutating-Git operations invalidate the generation; shell commands classified as read-only preserve it, and a command batch invalidates at most once. Git status uses one porcelain-v2 process and a configurable 2-second snapshot cache with an explicit `refresh` bypass. `workspace_snapshot`, `task_context`, and CodeGraph output accept detail/token budgets. Fast profiles use structured result mode to avoid duplicating full JSON in text content, while full profiles preserve legacy JSON text compatibility. `security_scan` and `todo_scan` stream tracked files through `git grep`, stop as soon as their result limit is reached, and use a bounded context-aware fallback when Git is unavailable.
 
-The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `session` for `/mcp/session`, channel `main` for `/mcp`, and channel `workspace-<id>` for every enabled fixed endpoint.
+The daemon listener, bearer authentication, Origin policy, tunnel process, Runtime API key, and pooled resources remain global. A generated tunnel profile contains channel `main` for `/mcp/session`, channel `fast` for `/mcp/session/fast`, and both `workspace-<id>` and `workspace-<id>-fast` channels for every enabled fixed workspace endpoint.
 
 The unified default layout on every operating system is:
 
@@ -325,7 +330,7 @@ codebridge restart
 
 1. Open **Settings → Connectors → Developer mode**.
 2. Add one custom MCP connector.
-3. Select the configured tunnel channel `session`, which points to `/mcp/session`.
+3. Select tunnel channel `fast`, which points to `/mcp/session/fast`, for normal coding. Select `main` only when the chat needs the complete tool surface.
 4. Choose `No auth`; the Runtime API key stays on the local machine and is not entered in the connector.
 5. Start a new chat and write `workspace <id>`, for example `workspace loyalty-api`.
 6. In another chat, write a different workspace ID. Each chat carries its own opaque binding automatically.
@@ -498,10 +503,14 @@ Tool exposure works through module ownership:
 {
   "tools": {
     "allowedGroups": ["basic", "filesystem", "mcp_postgres_prod"],
+    "allowedTools": ["workspace_snapshot", "task_context", "read_file", "apply_patch"],
     "deniedTools": ["postgres_prod__execute_sql"]
-  }
+  },
+  "gitStatusCacheMs": 2000
 }
 ```
+
+When `allowedTools` is non-empty it becomes the exact allow-list and takes precedence over `allowedGroups`; `deniedTools` always wins. `gitStatusCacheMs` defaults to 2000 and can be bypassed per call with `git_status.refresh=true`.
 
 ## Database and Figma integrations
 
@@ -573,7 +582,10 @@ Authorization: Bearer <secret>
     "retryMaxAttempts": 3,
     "retryBackoffMs": 100,
     "healthCacheMs": 5000,
-    "options": {}
+    "options": {
+      "circuitFailureThreshold": 3,
+      "circuitCooldownMs": 10000
+    }
   }
 }
 ```
@@ -619,7 +631,7 @@ tool completed
   → delivered / failed / dropped counters
 ```
 
-Compatible workspace runtimes share one daemon-scoped recorder; every queued observation still carries its own project, `cwd`, and workspace-prefixed session ID. Providers that explicitly implement `ConcurrencySafeProvider` use `deliveryWorkers` deterministic session shards: observations from one session remain FIFO on one worker, while different sessions can deliver concurrently. Providers without that opt-in remain single-worker and serialized. Closing one runtime leaves the queue active. During daemon shutdown, `SharedServices` stops acquisitions, drains each recorder, and closes the pooled provider afterward. `memory_status` exposes `scope=daemon`, worker/shard capacity, `enqueued`, `delivered`, `retried`, `failed`, `dropped`, and the current queue depth.
+Compatible workspace runtimes share one daemon-scoped recorder; every queued observation still carries its own project, `cwd`, and workspace-prefixed session ID. Providers that explicitly implement `ConcurrencySafeProvider` use `deliveryWorkers` deterministic session shards: observations from one session remain FIFO on one worker, while different sessions can deliver concurrently. Providers without that opt-in remain single-worker and serialized. Provider and recorder circuit breakers stop retry storms when AgentMemory is offline; marked non-retryable errors such as ordinary 4xx responses are attempted once. Snapshot/report tools read cached health and trigger a bounded background refresh, while explicit `memory_status` may perform the synchronous check. Closing one runtime leaves the queue active. During daemon shutdown, `SharedServices` stops acquisitions, drains each recorder, and closes the pooled provider afterward. `memory_status` exposes `scope=daemon`, worker/shard capacity, `enqueued`, `delivered`, `retried`, `failed`, `dropped`, circuit counters, and the current queue depth.
 
 ## Provider options
 

@@ -8,17 +8,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"codebridge/internal/memory"
 )
 
-const defaultMaxResponseBytes = 4 << 20
+const (
+	defaultMaxResponseBytes        = 4 << 20
+	defaultCircuitFailureThreshold = 3
+	defaultCircuitCooldown         = 10 * time.Second
+)
 
 type Config struct {
 	Endpoint string
@@ -48,11 +54,37 @@ type Provider struct {
 	exportPath       string
 	contextFallback  bool
 	maxResponseBytes int64
+
+	circuitMu               sync.Mutex
+	circuitFailureThreshold int
+	circuitCooldown         time.Duration
+	circuitFailures         int
+	circuitOpenUntil        time.Time
+	circuitProbeInFlight    bool
+	circuitTrips            uint64
+	circuitRejected         uint64
 }
 
 type HTTPError struct {
 	StatusCode int
 	Message    string
+}
+
+type CircuitOpenError struct {
+	RetryAfter time.Duration
+}
+
+func (e *CircuitOpenError) Error() string {
+	if e.RetryAfter <= 0 {
+		return "agentmemory circuit breaker is open"
+	}
+	return fmt.Sprintf("agentmemory circuit breaker is open for %s", e.RetryAfter.Round(time.Millisecond))
+}
+
+func (*CircuitOpenError) Retryable() bool { return false }
+
+func (e *HTTPError) Retryable() bool {
+	return e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= http.StatusInternalServerError
 }
 
 func (e *HTTPError) Error() string {
@@ -77,18 +109,28 @@ func New(cfg Config) (*Provider, error) {
 	if maxResponse <= 0 {
 		maxResponse = defaultMaxResponseBytes
 	}
+	failureThreshold := optionInt(cfg.Options, "circuitFailureThreshold", defaultCircuitFailureThreshold)
+	if failureThreshold <= 0 {
+		failureThreshold = defaultCircuitFailureThreshold
+	}
+	cooldown := time.Duration(optionInt(cfg.Options, "circuitCooldownMs", int(defaultCircuitCooldown/time.Millisecond))) * time.Millisecond
+	if cooldown <= 0 {
+		cooldown = defaultCircuitCooldown
+	}
 	return &Provider{
 		endpoint: endpoint, secret: cfg.Secret, client: &http.Client{Timeout: cfg.Timeout},
-		healthPath:       optionPath(cfg.Options, "healthPath", "/agentmemory/health"),
-		configPath:       optionPath(cfg.Options, "configPath", "/agentmemory/config/flags"),
-		searchPath:       optionPath(cfg.Options, "searchPath", "/agentmemory/search"),
-		contextPath:      optionPath(cfg.Options, "contextPath", "/agentmemory/context"),
-		rememberPath:     optionPath(cfg.Options, "rememberPath", "/agentmemory/remember"),
-		observePath:      optionPath(cfg.Options, "observePath", "/agentmemory/observe"),
-		forgetPath:       optionPath(cfg.Options, "forgetPath", "/agentmemory/forget"),
-		exportPath:       optionPath(cfg.Options, "exportPath", "/agentmemory/export"),
-		contextFallback:  optionBool(cfg.Options, "contextFallback", true),
-		maxResponseBytes: maxResponse,
+		healthPath:              optionPath(cfg.Options, "healthPath", "/agentmemory/health"),
+		configPath:              optionPath(cfg.Options, "configPath", "/agentmemory/config/flags"),
+		searchPath:              optionPath(cfg.Options, "searchPath", "/agentmemory/search"),
+		contextPath:             optionPath(cfg.Options, "contextPath", "/agentmemory/context"),
+		rememberPath:            optionPath(cfg.Options, "rememberPath", "/agentmemory/remember"),
+		observePath:             optionPath(cfg.Options, "observePath", "/agentmemory/observe"),
+		forgetPath:              optionPath(cfg.Options, "forgetPath", "/agentmemory/forget"),
+		exportPath:              optionPath(cfg.Options, "exportPath", "/agentmemory/export"),
+		contextFallback:         optionBool(cfg.Options, "contextFallback", true),
+		maxResponseBytes:        maxResponse,
+		circuitFailureThreshold: failureThreshold,
+		circuitCooldown:         cooldown,
 	}, nil
 }
 
@@ -106,16 +148,16 @@ func (*Provider) Capabilities() memory.Capabilities {
 func (p *Provider) Health(ctx context.Context) memory.HealthResult {
 	result := memory.HealthResult{
 		Provider: "agentmemory", Enabled: true, Endpoint: p.endpoint,
-		Capabilities: p.Capabilities(),
+		Capabilities: p.Capabilities(), Details: map[string]any{"clientCircuitBreaker": p.circuitStatus()},
 	}
 	var body map[string]any
 	if err := p.call(ctx, http.MethodGet, p.healthPath, nil, &body); err != nil {
 		result.Error = err.Error()
+		result.Details["clientCircuitBreaker"] = p.circuitStatus()
 		return result
 	}
 	result.Available = true
 	result.Capabilities = capabilitiesFromBody(result.Capabilities, body)
-	result.Details = map[string]any{}
 	for _, key := range []string{"status", "service", "version", "viewerPort", "viewerSkipped", "circuitBreaker"} {
 		if value, exists := body[key]; exists {
 			result.Details[key] = value
@@ -130,6 +172,7 @@ func (p *Provider) Health(ctx context.Context) memory.HealthResult {
 			}
 		}
 	}
+	result.Details["clientCircuitBreaker"] = p.circuitStatus()
 	return result
 }
 
@@ -297,7 +340,13 @@ func (p *Provider) Import(ctx context.Context, req memory.ImportRequest) (memory
 
 func (*Provider) Close() error { return nil }
 
-func (p *Provider) call(ctx context.Context, method, path string, payload any, target any) error {
+func (p *Provider) call(ctx context.Context, method, path string, payload any, target any) (err error) {
+	probe, err := p.beginCircuitCall()
+	if err != nil {
+		return err
+	}
+	defer func() { p.finishCircuitCall(probe, err) }()
+
 	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -342,6 +391,76 @@ func (p *Provider) call(ctx context.Context, method, path string, payload any, t
 		}
 	}
 	return nil
+}
+
+func (p *Provider) beginCircuitCall() (bool, error) {
+	now := time.Now()
+	p.circuitMu.Lock()
+	defer p.circuitMu.Unlock()
+	if p.circuitOpenUntil.After(now) {
+		p.circuitRejected++
+		return false, &CircuitOpenError{RetryAfter: p.circuitOpenUntil.Sub(now)}
+	}
+	if !p.circuitOpenUntil.IsZero() {
+		if p.circuitProbeInFlight {
+			p.circuitRejected++
+			return false, &CircuitOpenError{}
+		}
+		p.circuitProbeInFlight = true
+		return true, nil
+	}
+	return false, nil
+}
+
+func (p *Provider) finishCircuitCall(probe bool, callErr error) {
+	p.circuitMu.Lock()
+	defer p.circuitMu.Unlock()
+	if callErr == nil || !retryableCircuitError(callErr) {
+		p.circuitFailures = 0
+		p.circuitOpenUntil = time.Time{}
+		p.circuitProbeInFlight = false
+		return
+	}
+	p.circuitProbeInFlight = false
+	now := time.Now()
+	if p.circuitOpenUntil.After(now) {
+		return
+	}
+	p.circuitFailures++
+	if probe || p.circuitFailures >= p.circuitFailureThreshold {
+		p.circuitOpenUntil = now.Add(p.circuitCooldown)
+		p.circuitTrips++
+	}
+}
+
+func retryableCircuitError(err error) bool {
+	var marker interface{ Retryable() bool }
+	if errors.As(err, &marker) {
+		return marker.Retryable()
+	}
+	return true
+}
+
+func (p *Provider) circuitStatus() map[string]any {
+	p.circuitMu.Lock()
+	defer p.circuitMu.Unlock()
+	now := time.Now()
+	state := "closed"
+	if p.circuitOpenUntil.After(now) {
+		state = "open"
+	} else if !p.circuitOpenUntil.IsZero() && p.circuitProbeInFlight {
+		state = "half_open"
+	}
+	result := map[string]any{
+		"state": state, "consecutiveFailures": p.circuitFailures,
+		"failureThreshold": p.circuitFailureThreshold,
+		"cooldownMs":       p.circuitCooldown.Milliseconds(),
+		"trips":            p.circuitTrips, "rejected": p.circuitRejected,
+	}
+	if state == "open" {
+		result["openUntil"] = p.circuitOpenUntil.UTC()
+	}
+	return result
 }
 
 func isUnsupportedContext(err error) bool {

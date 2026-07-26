@@ -1,0 +1,16 @@
+{
+  "description": "Codebridge Go MCP server",
+  "conventions": "Use gofmt, keep MCP contracts backward compatible, prefer bounded concurrency and cache-aware repository operations.",
+  "ignoredDirs": [
+    ".agents",
+    ".codegraph",
+    ".codex",
+    ".idea",
+    "data"
+  ],
+  "testCommands": {
+    "test": "go test ./...",
+    "build": "go build ./...",
+    "lint": "go vet ./..."
+  }
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -201,5 +202,82 @@ func TestProviderCanonicalExportAndImport(t *testing.T) {
 	request := <-remembered
 	if request["project"] != "project" || request["agentId"] != "chatgpt" || request["type"] != "decision" {
 		t.Fatalf("unexpected imported remember request: %#v", request)
+	}
+}
+
+func TestProviderCircuitIgnoresNonTransientHTTPFailures(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.NotFound(w, nil)
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{
+		Endpoint: server.URL, Timeout: time.Second,
+		Options: map[string]any{"circuitFailureThreshold": 1, "circuitCooldownMs": 1000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := provider.Search(context.Background(), memory.SearchRequest{Query: "missing"}); err == nil {
+			t.Fatal("expected HTTP 404")
+		}
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("non-transient failures opened circuit after %d requests", got)
+	}
+	if status := provider.circuitStatus(); status["state"] != "closed" || status["trips"] != uint64(0) {
+		t.Fatalf("non-transient failure changed circuit state: %#v", status)
+	}
+}
+
+func TestProviderCircuitBreakerFastFailsAndRecovers(t *testing.T) {
+	var requests atomic.Int32
+	var failing atomic.Bool
+	failing.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		if failing.Load() {
+			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{
+		Endpoint: server.URL, Timeout: time.Second,
+		Options: map[string]any{"circuitFailureThreshold": 2, "circuitCooldownMs": 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := memory.ObservationRequest{HookType: "PostToolUse", SessionID: "session"}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := provider.Observe(context.Background(), request); err == nil {
+			t.Fatal("expected provider failure")
+		}
+	}
+	if err := provider.Observe(context.Background(), request); err == nil || !strings.Contains(err.Error(), "circuit breaker") {
+		t.Fatalf("circuit did not fast-fail: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("network requests while circuit open = %d, want 2", got)
+	}
+
+	failing.Store(false)
+	time.Sleep(30 * time.Millisecond)
+	if err := provider.Observe(context.Background(), request); err != nil {
+		t.Fatalf("half-open probe did not recover: %v", err)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("network requests after recovery = %d, want 3", got)
+	}
+	status := provider.circuitStatus()
+	if status["state"] != "closed" || status["trips"] != uint64(1) || status["rejected"] != uint64(1) {
+		t.Fatalf("unexpected circuit status after recovery: %#v", status)
 	}
 }

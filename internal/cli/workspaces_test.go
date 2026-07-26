@@ -264,7 +264,10 @@ func TestTunnelProfileIncludesEnabledWorkspaceChannels(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"channel: main", "/mcp/session", "channel: workspace-api", "/mcp/workspaces/api"} {
+	for _, want := range []string{
+		"channel: main", "/mcp/session", "channel: fast", "/mcp/session/fast",
+		"channel: workspace-api", "/mcp/workspaces/api", "channel: workspace-api-fast", "/mcp/workspaces/api/fast",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("profile missing %q: %s", want, text)
 		}

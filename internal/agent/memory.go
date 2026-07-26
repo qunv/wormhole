@@ -302,7 +302,14 @@ func memoryCaptureResult(value any) map[string]any {
 }
 
 func (r *Runtime) memoryStatus(ctx context.Context) map[string]any {
-	health := r.memoryHealth(ctx, false)
+	return r.memoryStatusResult(r.memoryHealth(ctx, false))
+}
+
+func (r *Runtime) memoryStatusCached() map[string]any {
+	return r.memoryStatusResult(r.memoryHealthCached())
+}
+
+func (r *Runtime) memoryStatusResult(health memory.HealthResult) map[string]any {
 	recorder := r.MemoryRecorder.Stats()
 	recorder["scope"] = "daemon"
 	return map[string]any{
@@ -315,15 +322,61 @@ func (r *Runtime) memoryStatus(ctx context.Context) map[string]any {
 }
 
 func (r *Runtime) memoryHealth(ctx context.Context, force bool) memory.HealthResult {
-	r.memoryHealthMu.Lock()
-	defer r.memoryHealthMu.Unlock()
 	cacheFor := time.Duration(r.Config.Memory.HealthCacheMS) * time.Millisecond
+	r.memoryHealthMu.Lock()
 	if !force && !r.memoryHealthAt.IsZero() && time.Since(r.memoryHealthAt) < cacheFor {
-		return r.memoryHealthValue
+		value := r.memoryHealthValue
+		r.memoryHealthMu.Unlock()
+		return value
 	}
-	r.memoryHealthValue = r.Memory.Health(ctx)
+	r.memoryHealthMu.Unlock()
+
+	value := r.Memory.Health(ctx)
+	r.memoryHealthMu.Lock()
+	r.memoryHealthValue = value
 	r.memoryHealthAt = time.Now()
-	return r.memoryHealthValue
+	r.memoryHealthRefreshing = false
+	r.memoryHealthMu.Unlock()
+	return value
+}
+
+func (r *Runtime) memoryHealthCached() memory.HealthResult {
+	cacheFor := time.Duration(r.Config.Memory.HealthCacheMS) * time.Millisecond
+	r.memoryHealthMu.Lock()
+	if !r.memoryHealthAt.IsZero() && time.Since(r.memoryHealthAt) < cacheFor {
+		value := r.memoryHealthValue
+		r.memoryHealthMu.Unlock()
+		return value
+	}
+	value := r.memoryHealthValue
+	if !r.memoryHealthRefreshing {
+		r.memoryHealthRefreshing = true
+		go r.refreshMemoryHealth()
+	}
+	r.memoryHealthMu.Unlock()
+	if value.Provider == "" {
+		value = memory.HealthResult{
+			Provider: r.Memory.Name(), Enabled: r.Config.Memory.Enabled,
+			Endpoint: r.Config.Memory.Endpoint, Capabilities: r.Memory.Capabilities(),
+			Details: map[string]any{"refreshing": true},
+		}
+	}
+	return value
+}
+
+func (r *Runtime) refreshMemoryHealth() {
+	timeout := time.Duration(r.Config.Memory.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	value := r.Memory.Health(ctx)
+	cancel()
+	r.memoryHealthMu.Lock()
+	r.memoryHealthValue = value
+	r.memoryHealthAt = time.Now()
+	r.memoryHealthRefreshing = false
+	r.memoryHealthMu.Unlock()
 }
 
 func (r *Runtime) memoryScope(args map[string]any) (string, string, error) {

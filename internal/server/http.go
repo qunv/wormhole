@@ -89,11 +89,17 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 		mcpserver.SessionEndpoint,
 		instance.guardMCPValues(runtime.Config.AuthToken, instance.SessionRouter.BodyLimit(), sessionStreamableHandler(instance.SessionRouter)),
 	)
+	mux.Handle(
+		mcpserver.SessionFastEndpoint,
+		instance.guardMCPValues(runtime.Config.AuthToken, instance.SessionRouter.BodyLimit(), sessionStreamableProfileHandler(instance.SessionRouter, mcpserver.ToolProfileFast)),
+	)
 	mux.Handle("/mcp", instance.guardMCP(runtime, streamableHandler(runtime, primaryID)))
+	mux.Handle("/mcp/fast", instance.guardMCP(runtime, streamableProfileHandler(runtime, primaryID, mcpserver.ToolProfileFast)))
 	for _, id := range instance.namedWorkspaceIDs() {
 		endpoint := "/mcp/workspaces/" + id
 		child := instance.Runtimes[id]
 		mux.Handle(endpoint, instance.guardMCP(child, streamableHandler(child, id)))
+		mux.Handle(endpoint+"/fast", instance.guardMCP(child, streamableProfileHandler(child, id, mcpserver.ToolProfileFast)))
 	}
 	mux.HandleFunc("/mcp/workspaces/", instance.unknownWorkspace)
 
@@ -108,7 +114,11 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 }
 
 func streamableHandler(runtime *agent.Runtime, workspaceID string) http.Handler {
-	server := mcpserver.NewWorkspace(runtime, workspaceID)
+	return streamableProfileHandler(runtime, workspaceID, mcpserver.ToolProfileFull)
+}
+
+func streamableProfileHandler(runtime *agent.Runtime, workspaceID string, profile mcpserver.ToolProfile) http.Handler {
+	server := mcpserver.NewWorkspaceProfile(runtime, workspaceID, profile)
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
@@ -116,7 +126,11 @@ func streamableHandler(runtime *agent.Runtime, workspaceID string) http.Handler 
 }
 
 func sessionStreamableHandler(router *mcpserver.SessionRouter) http.Handler {
-	server := mcpserver.NewSessionGateway(router)
+	return sessionStreamableProfileHandler(router, mcpserver.ToolProfileFull)
+}
+
+func sessionStreamableProfileHandler(router *mcpserver.SessionRouter, profile mcpserver.ToolProfile) http.Handler {
+	server := mcpserver.NewSessionGatewayProfile(router, profile)
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
@@ -128,7 +142,7 @@ func (h *HTTP) ListenAndServe(ctx context.Context) error {
 	go func() {
 		fmt.Printf("Codebridge v%s listening on http://%s\n", h.Runtime.Version, h.Server.Addr)
 		fmt.Printf("Mode: %s  Policy: %s  Auth: %s\n", h.Runtime.Config.Mode, h.Runtime.Config.Policy, ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"))
-		fmt.Printf("Workspace: %s\nMCP endpoint: http://%s/mcp\n", h.Runtime.Workspace.Primary, h.Server.Addr)
+		fmt.Printf("Workspace: %s\nMCP endpoint: http://%s/mcp\nFast MCP endpoint: http://%s/mcp/fast\n", h.Runtime.Workspace.Primary, h.Server.Addr, h.Server.Addr)
 		errs <- h.Server.ListenAndServe()
 	}()
 	select {
@@ -149,6 +163,7 @@ func (h *HTTP) root(writer http.ResponseWriter, _ *http.Request) {
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok", "name": "Codebridge", "version": h.Runtime.Version,
 		"workspace_count": 1 + len(h.Runtimes), "session_endpoint": mcpserver.SessionEndpoint,
+		"session_fast_endpoint": mcpserver.SessionFastEndpoint, "fast_endpoint": "/mcp/fast",
 	})
 }
 
@@ -278,13 +293,17 @@ func (h *HTTP) namedWorkspaceIDs() []string {
 func (h *HTTP) workspaceSummaries() []map[string]any {
 	items := []map[string]any{{
 		"id": h.Runtime.WorkspaceID, "endpoint": "/mcp", "root": h.Runtime.Workspace.Primary,
-		"memory_project": h.Runtime.MemoryProject, "tool_count": len(h.Runtime.Tools()),
+		"fast_endpoint": "/mcp/fast", "memory_project": h.Runtime.MemoryProject,
+		"tool_count":      len(h.Runtime.Tools()),
+		"fast_tool_count": mcpserver.ProfileToolCount(h.Runtime, mcpserver.ToolProfileFast),
 	}}
 	for _, id := range h.namedWorkspaceIDs() {
 		runtime := h.Runtimes[id]
 		items = append(items, map[string]any{
 			"id": id, "endpoint": "/mcp/workspaces/" + id, "root": runtime.Workspace.Primary,
+			"fast_endpoint":  "/mcp/workspaces/" + id + "/fast",
 			"memory_project": runtime.MemoryProject, "tool_count": len(runtime.Tools()),
+			"fast_tool_count":  mcpserver.ProfileToolCount(runtime, mcpserver.ToolProfileFast),
 			"startup_warnings": runtime.StartupWarnings(),
 		})
 	}

@@ -22,7 +22,6 @@ const (
 	repoViewCacheLimit      = 16
 	repoSymbolCacheLimit    = 16
 	gitStatusCacheLimit     = 16
-	gitStatusCacheTTL       = 300 * time.Millisecond
 )
 
 type repoInventoryEntry struct {
@@ -91,6 +90,14 @@ func (r *Runtime) currentRepositoryGeneration() uint64 {
 	return r.repoGeneration
 }
 
+func (r *Runtime) gitStatusCacheTTL() time.Duration {
+	milliseconds := r.Config.GitStatusCacheMS
+	if milliseconds <= 0 {
+		milliseconds = 2_000
+	}
+	return time.Duration(milliseconds) * time.Millisecond
+}
+
 func (r *Runtime) repositoryCacheStats() map[string]any {
 	if r == nil {
 		return map[string]any{"enabled": false}
@@ -105,7 +112,7 @@ func (r *Runtime) repositoryCacheStats() map[string]any {
 		"git_status_snapshots": len(r.gitStatusCache), "git_status_limit": gitStatusCacheLimit,
 		"inventory_entry_limit": repoInventoryEntryLimit,
 		"ttl_seconds":           int64(repoCacheTTL / time.Second),
-		"git_status_ttl_ms":     int64(gitStatusCacheTTL / time.Millisecond),
+		"git_status_ttl_ms":     int64(r.gitStatusCacheTTL() / time.Millisecond),
 	}
 }
 

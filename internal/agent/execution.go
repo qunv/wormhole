@@ -57,7 +57,7 @@ func (r *Runtime) handleExec(ctx context.Context, name string, args map[string]a
 	case "git":
 		return r.rawGit(ctx, args)
 	case "git_status":
-		return r.gitStatus(ctx, stringArg(args, "cwd", "."))
+		return r.gitStatusWithRefresh(ctx, stringArg(args, "cwd", "."), boolArg(args, "refresh", false))
 	case "git_diff":
 		return r.gitDiff(ctx, args)
 	default:
@@ -85,7 +85,9 @@ func (r *Runtime) runCommand(ctx context.Context, args map[string]any) (any, err
 	timeout := time.Duration(intArg(args, "timeout_ms", 120_000)) * time.Millisecond
 	maxChars := min(max(intArg(args, "max_output_chars", r.Config.CommandOutput), 1), r.Config.MaxCommandOutput)
 	result := processx.Run(ctx, command, cwd, stringArg(args, "shell", ""), timeout, maxChars)
-	r.invalidateRepositoryCaches()
+	if !boolArg(args, "defer_cache_invalidation", false) && commandMayMutateWorkspace(command) {
+		r.invalidateRepositoryCaches()
+	}
 	stdout := processx.Trim(result.Stdout, intArg(args, "head_lines", 0), intArg(args, "tail_lines", 0), maxChars)
 	stderr := processx.Trim(result.Stderr, intArg(args, "head_lines", 0), intArg(args, "tail_lines", 0), maxChars)
 	return map[string]any{
@@ -103,8 +105,17 @@ func (r *Runtime) runCommands(ctx context.Context, args map[string]any) (any, er
 		return nil, errors.New("commands must contain 1-12 entries")
 	}
 	results := make([]any, len(items))
-	runOne := func(index int) {
+	entries := make([]map[string]any, len(items))
+	mayMutate := make([]bool, len(items))
+	executedMutation := make([]bool, len(items))
+	for index := range items {
 		entry := decodeMap(items[index])
+		entry["defer_cache_invalidation"] = true
+		entries[index] = entry
+		mayMutate[index] = commandMayMutateWorkspace(stringArg(entry, "command", ""))
+	}
+	runOne := func(index int) {
+		entry := entries[index]
 		if _, ok := entry["max_output_chars"]; !ok {
 			entry["max_output_chars"] = 10_000
 		}
@@ -116,6 +127,7 @@ func (r *Runtime) runCommands(ctx context.Context, args map[string]any) (any, er
 		value := result.(map[string]any)
 		value["index"] = index
 		results[index] = value
+		executedMutation[index] = mayMutate[index]
 	}
 	parallel := boolArg(args, "parallel", false)
 	completed := len(items)
@@ -155,10 +167,79 @@ func (r *Runtime) runCommands(ctx context.Context, args map[string]any) (any, er
 			ok = false
 		}
 	}
+	for index := range results {
+		if executedMutation[index] {
+			r.invalidateRepositoryCaches()
+			break
+		}
+	}
 	return map[string]any{
 		"ok": ok, "parallel": parallel, "requested": len(items), "completed": completed,
 		"stopped_early": completed < len(items), "results": results,
 	}, nil
+}
+
+func commandMayMutateWorkspace(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	// Shell composition, substitution, and redirection can turn an otherwise
+	// read-only prefix into a mutating command. Fail closed for those forms.
+	if strings.ContainsAny(command, "\r\n;&|><`") || strings.Contains(command, "$(") {
+		return true
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	name := strings.ToLower(filepath.Base(fields[0]))
+	args := fields[1:]
+	switch name {
+	case "pwd", "ls", "cat", "rg", "grep", "head", "tail", "wc":
+		return false
+	case "find":
+		for _, arg := range args {
+			switch strings.ToLower(arg) {
+			case "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-fprint", "-fprintf":
+				return true
+			}
+		}
+		return false
+	case "git":
+		return !security.IsReadOnlyGit(args)
+	case "go":
+		return !goCommandReadOnly(args)
+	default:
+		return true
+	}
+}
+
+func goCommandReadOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch strings.ToLower(args[0]) {
+	case "vet", "list", "version":
+		return true
+	case "env":
+		return true
+	case "test":
+		for _, arg := range args[1:] {
+			lower := strings.ToLower(arg)
+			for _, outputFlag := range []string{
+				"-c", "-o", "-coverprofile", "-trace", "-cpuprofile", "-memprofile",
+				"-mutexprofile", "-blockprofile",
+			} {
+				if lower == outputFlag || strings.HasPrefix(lower, outputFlag+"=") {
+					return false
+				}
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Runtime) rawGit(ctx context.Context, args map[string]any) (any, error) {
@@ -187,6 +268,10 @@ func (r *Runtime) rawGit(ctx context.Context, args map[string]any) (any, error) 
 }
 
 func (r *Runtime) gitStatus(ctx context.Context, cwdArg string) (any, error) {
+	return r.gitStatusWithRefresh(ctx, cwdArg, false)
+}
+
+func (r *Runtime) gitStatusWithRefresh(ctx context.Context, cwdArg string, refresh bool) (any, error) {
 	cwd, err := r.Workspace.Resolve(cwdArg)
 	if err != nil {
 		return nil, err
@@ -197,7 +282,7 @@ func (r *Runtime) gitStatus(ctx context.Context, cwdArg string) (any, error) {
 	now := time.Now().UTC()
 	generation := r.currentRepositoryGeneration()
 	r.repoCacheMu.Lock()
-	if cached, ok := r.gitStatusCache[cwd]; ok && cached.Generation == generation && now.Sub(cached.GeneratedAt) < gitStatusCacheTTL {
+	if cached, ok := r.gitStatusCache[cwd]; !refresh && ok && cached.Generation == generation && now.Sub(cached.GeneratedAt) < r.gitStatusCacheTTL() {
 		r.repoCacheMu.Unlock()
 		return gitStatusMap(cached, true), nil
 	}

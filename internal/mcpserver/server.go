@@ -36,11 +36,36 @@ Prefer dedicated tools over shell commands. File tools and command cwd are confi
 
 In balanced policy, risky delete, install, network, mutating git, and upstream mutation tools require an exact one-time approval. Use preview_patch or validate_patch before large edits, review_diff before handoff, and task_plan, decision_log, or checkpoint for long work. Run tests, build, or lint only when explicitly requested.`
 
+type ToolProfile string
+
+const (
+	ToolProfileFull ToolProfile = "full"
+	ToolProfileFast ToolProfile = "fast"
+)
+
+var fastCodingTools = map[string]bool{
+	"workspace_snapshot": true,
+	"task_context":       true,
+	"codegraph_explore":  true,
+	"search_text":        true,
+	"read_file":          true,
+	"read_many":          true,
+	"apply_patch":        true,
+	"run_commands":       true,
+	"git_status":         true,
+	"git_diff":           true,
+	"quality_gate":       true,
+}
+
 func New(runtime *agent.Runtime) *mcp.Server {
 	return NewWorkspace(runtime, runtime.WorkspaceID)
 }
 
 func NewWorkspace(runtime *agent.Runtime, workspaceID string) *mcp.Server {
+	return NewWorkspaceProfile(runtime, workspaceID, ToolProfileFull)
+}
+
+func NewWorkspaceProfile(runtime *agent.Runtime, workspaceID string, profile ToolProfile) *mcp.Server {
 	workspaceID = strings.ToLower(strings.TrimSpace(workspaceID))
 	if workspaceID == "" {
 		workspaceID = "default"
@@ -51,13 +76,17 @@ func NewWorkspace(runtime *agent.Runtime, workspaceID string) *mcp.Server {
 		name += " · " + workspaceID
 		instructions += "\n\nThis MCP endpoint is fixed to workspace " + workspaceID + ". Never assume or switch to another workspace."
 	}
+	if profile == ToolProfileFast {
+		name += " · fast"
+		instructions += "\n\nThis is the compact fast coding endpoint. Prefer batching reads and commands, and use only the exposed coding tools."
+	}
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: name, Version: runtime.Version},
 		&mcp.ServerOptions{Instructions: instructions, PageSize: 100},
 	)
 	registerWidget(server)
 	for _, spec := range runtime.Tools() {
-		if !runtime.ToolEnabled(spec.Name) {
+		if !profileToolEnabled(runtime, profile, spec.Name) {
 			continue
 		}
 		spec := spec
@@ -76,6 +105,7 @@ func NewWorkspace(runtime *agent.Runtime, workspaceID string) *mcp.Server {
 					return toolError(fmt.Errorf("invalid tool arguments: %w", err)), nil
 				}
 			}
+			applyProfileDefaults(profile, spec.Name, args)
 			sessionID := scopedSessionID(workspaceID, requestSessionID(request.Session))
 			value, err := runtime.HandleSession(ctx, sessionID, spec.Name, args)
 			if err != nil {
@@ -84,10 +114,65 @@ func NewWorkspace(runtime *agent.Runtime, workspaceID string) *mcp.Server {
 			if forwarded, ok := value.(*mcp.CallToolResult); ok {
 				return forwarded, nil
 			}
-			return toolSuccess(value), nil
+			return toolSuccessWithMode(value, profileOutputMode(profile, spec.OutputMode)), nil
 		})
 	}
 	return server
+}
+
+func ProfileToolCount(runtime *agent.Runtime, profile ToolProfile) int {
+	count := 0
+	for _, spec := range runtime.Tools() {
+		if profileToolEnabled(runtime, profile, spec.Name) {
+			count++
+		}
+	}
+	return count
+}
+
+func profileToolEnabled(runtime *agent.Runtime, profile ToolProfile, name string) bool {
+	if !runtime.ToolEnabled(name) {
+		return false
+	}
+	if profile == ToolProfileFast {
+		return fastCodingTools[name]
+	}
+	return true
+}
+
+func profileOutputMode(profile ToolProfile, mode agent.ToolOutputMode) agent.ToolOutputMode {
+	if profile != ToolProfileFast {
+		return agent.ToolOutputBoth
+	}
+	return mode
+}
+
+func applyProfileDefaults(profile ToolProfile, tool string, args map[string]any) {
+	if profile != ToolProfileFast || args == nil {
+		return
+	}
+	setDefault := func(key string, value any) {
+		if _, exists := args[key]; !exists {
+			args[key] = value
+		}
+	}
+	switch tool {
+	case "workspace_snapshot":
+		setDefault("detail_level", "compact")
+		setDefault("token_budget", 4_000)
+		setDefault("max_entries", 120)
+		setDefault("include_memory", false)
+	case "task_context":
+		setDefault("detail_level", "compact")
+		setDefault("token_budget", 8_000)
+		setDefault("max_entries", 100)
+		setDefault("search_limit", 16)
+		setDefault("max_read_files", 5)
+		setDefault("include_memory", false)
+	case "codegraph_explore":
+		setDefault("detail_level", "compact")
+		setDefault("token_budget", 8_000)
+	}
 }
 
 func requestSessionID(session *mcp.ServerSession) string {
@@ -143,6 +228,10 @@ func toolError(err error) *mcp.CallToolResult {
 }
 
 func toolSuccess(value any) *mcp.CallToolResult {
+	return toolSuccessWithMode(value, agent.ToolOutputBoth)
+}
+
+func toolSuccessWithMode(value any, mode agent.ToolOutputMode) *mcp.CallToolResult {
 	if text, ok := value.(string); ok {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 	}
@@ -150,7 +239,14 @@ func toolSuccess(value any) *mcp.CallToolResult {
 	if err != nil {
 		return toolError(err)
 	}
-	result := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}
+	text := string(raw)
+	if mode == agent.ToolOutputStructured {
+		text = structuredResultSummary(value, len(raw))
+	}
+	result := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+	if mode == agent.ToolOutputText {
+		return result
+	}
 	switch value.(type) {
 	case map[string]any:
 		result.StructuredContent = value
@@ -161,4 +257,16 @@ func toolSuccess(value any) *mcp.CallToolResult {
 		}
 	}
 	return result
+}
+
+func structuredResultSummary(value any, bytes int) string {
+	object, _ := value.(map[string]any)
+	parts := []string{"Structured result"}
+	for _, key := range []string{"kind", "query", "root", "path", "count", "failed", "branch", "clean", "truncated"} {
+		if entry, exists := object[key]; exists {
+			parts = append(parts, fmt.Sprintf("%s=%v", key, entry))
+		}
+	}
+	parts = append(parts, fmt.Sprintf("bytes=%d", bytes))
+	return strings.Join(parts, " · ")
 }

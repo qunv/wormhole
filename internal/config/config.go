@@ -47,6 +47,7 @@ type MemoryConfig struct {
 
 type ToolExposureConfig struct {
 	AllowedGroups []string `json:"allowedGroups,omitempty"`
+	AllowedTools  []string `json:"allowedTools,omitempty"`
 	DeniedTools   []string `json:"deniedTools,omitempty"`
 }
 
@@ -109,6 +110,7 @@ type Config struct {
 	CommandOutput     int `json:"commandOutputDefault,omitempty"`
 	MaxBodyBytes      int `json:"maxBodyBytes,omitempty"`
 	MaxProcesses      int `json:"maxProcesses,omitempty"`
+	GitStatusCacheMS  int `json:"gitStatusCacheMs,omitempty"`
 
 	Audit     bool `json:"audit"`
 	AuditArgs bool `json:"auditArgs"`
@@ -142,6 +144,7 @@ func Default() Config {
 		CommandOutput:     20_000,
 		MaxBodyBytes:      16 * 1024 * 1024,
 		MaxProcesses:      24,
+		GitStatusCacheMS:  2_000,
 		Audit:             true,
 		AuditArgs:         true,
 		Workspace:         home,
@@ -472,7 +475,7 @@ func (c Config) Validate(requireWorkspace bool) error {
 		{"maxReadChars", c.MaxReadChars}, {"readDefault", c.ReadDefault},
 		{"maxBatchReadChars", c.MaxBatchReadChars}, {"maxCommandOutput", c.MaxCommandOutput},
 		{"commandOutputDefault", c.CommandOutput}, {"maxBodyBytes", c.MaxBodyBytes},
-		{"maxProcesses", c.MaxProcesses},
+		{"maxProcesses", c.MaxProcesses}, {"gitStatusCacheMs", c.GitStatusCacheMS},
 		{"memory.timeoutMs", c.Memory.TimeoutMS}, {"memory.tokenBudget", c.Memory.TokenBudget},
 		{"memory.queueSize", c.Memory.QueueSize}, {"memory.deliveryWorkers", c.Memory.DeliveryWorkers},
 		{"memory.deliveryTimeoutMs", c.Memory.DeliveryTimeoutMS},
@@ -486,6 +489,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 	}
 	if c.Memory.DeliveryWorkers > 32 {
 		return fmt.Errorf("memory.deliveryWorkers must not exceed 32")
+	}
+	if c.GitStatusCacheMS > 60_000 {
+		return fmt.Errorf("gitStatusCacheMs must not exceed 60000")
 	}
 	if c.ReadDefault > c.MaxReadChars {
 		return fmt.Errorf("readDefault must not exceed maxReadChars")
@@ -511,6 +517,11 @@ func (c Config) Validate(requireWorkspace bool) error {
 	for _, group := range c.Tools.AllowedGroups {
 		if !toolModulePattern.MatchString(group) {
 			return fmt.Errorf("tools.allowedGroups value %q must be a valid module name", group)
+		}
+	}
+	for _, name := range c.Tools.AllowedTools {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("tools.allowedTools must not contain empty names")
 		}
 	}
 	for _, name := range c.Tools.DeniedTools {
@@ -733,6 +744,9 @@ func normalize(c *Config) {
 	for index, group := range c.Tools.AllowedGroups {
 		c.Tools.AllowedGroups[index] = strings.ToLower(strings.TrimSpace(group))
 	}
+	for index, name := range c.Tools.AllowedTools {
+		c.Tools.AllowedTools[index] = strings.TrimSpace(name)
+	}
 	for index, name := range c.Tools.DeniedTools {
 		c.Tools.DeniedTools[index] = strings.TrimSpace(name)
 	}
@@ -759,6 +773,9 @@ func normalize(c *Config) {
 	}
 	if c.MaxProcesses == 0 {
 		c.MaxProcesses = 24
+	}
+	if c.GitStatusCacheMS == 0 {
+		c.GitStatusCacheMS = 2_000
 	}
 	if c.Workspace != "" {
 		if abs, err := filepath.Abs(c.Workspace); err == nil {
@@ -805,6 +822,7 @@ func applyEnvironment(c *Config) {
 	intEnv("AGENT_MAX_COMMAND_OUTPUT", &c.MaxCommandOutput)
 	intEnv("AGENT_CMD_OUTPUT_DEFAULT", &c.CommandOutput)
 	intEnv("AGENT_MAX_BODY_BYTES", &c.MaxBodyBytes)
+	intEnv("CODEBRIDGE_GIT_STATUS_CACHE_MS", &c.GitStatusCacheMS)
 	c.Memory.Enabled = envBool("CODEBRIDGE_MEMORY_ENABLED", c.Memory.Enabled)
 	c.Memory.Required = envBool("CODEBRIDGE_MEMORY_REQUIRED", c.Memory.Required)
 	c.Audit = !envIs("AGENT_AUDIT", "0", !c.Audit)

@@ -88,9 +88,12 @@ func (r *Runtime) codegraphExplore(ctx context.Context, args map[string]any) (an
 		stdout = stderr
 	}
 
-	maxOutput := intArg(args, "max_output_chars", r.Config.MaxCommandOutput)
+	level := contextDetailLevel(args, "normal")
+	defaultTokens := detailTokenDefault(level, 4_000, 8_000, 20_000)
+	_, budgetChars := r.contextCharBudget(args, defaultTokens)
+	maxOutput := intArg(args, "max_output_chars", min(budgetChars, r.Config.MaxCommandOutput))
 	if maxOutput <= 0 || maxOutput > r.Config.MaxCommandOutput {
-		maxOutput = r.Config.MaxCommandOutput
+		maxOutput = min(budgetChars, r.Config.MaxCommandOutput)
 	}
 	output, truncated := capText(stdout, maxOutput)
 	if truncated {

@@ -21,6 +21,19 @@ func BenchmarkCachedMCPToolsList(b *testing.B) {
 	benchmarkMCPToolsList(b, handler)
 }
 
+func BenchmarkFastMCPToolsList(b *testing.B) {
+	runtime := benchmarkHTTPRuntime(b)
+	handler := streamableProfileHandler(runtime, "default", mcpserver.ToolProfileFast)
+	benchmarkMCPToolsList(b, handler)
+}
+
+func BenchmarkFastSessionMCPToolsList(b *testing.B) {
+	runtime := benchmarkHTTPRuntime(b)
+	router := mcpserver.NewSessionRouter(runtime, nil)
+	handler := sessionStreamableProfileHandler(router, mcpserver.ToolProfileFast)
+	benchmarkMCPToolsList(b, handler)
+}
+
 func BenchmarkRebuiltMCPToolsListBaseline(b *testing.B) {
 	runtime := benchmarkHTTPRuntime(b)
 	handler := mcp.NewStreamableHTTPHandler(
@@ -49,6 +62,7 @@ func benchmarkHTTPRuntime(b *testing.B) *agent.Runtime {
 func benchmarkMCPToolsList(b *testing.B, handler http.Handler) {
 	b.Helper()
 	b.ReportAllocs()
+	responseBytes := 0
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(benchmarkToolsListBody))
@@ -59,5 +73,7 @@ func benchmarkMCPToolsList(b *testing.B, handler http.Handler) {
 		if response.Code != http.StatusOK {
 			b.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
 		}
+		responseBytes = response.Body.Len()
 	}
+	b.ReportMetric(float64(responseBytes), "response-B")
 }

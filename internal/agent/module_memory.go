@@ -60,7 +60,7 @@ func memoryToolSpecs() []ToolSpec {
 			"path": str("Workspace path used to resolve project scope."), "format": enum("object", "jsonl"),
 		})),
 		rwSpec("memory_import", "Import memory", "Import canonical Codebridge memories into the configured provider.", object(map[string]any{
-			"path": str("Workspace path used to resolve project scope."), "memories": array(object(nil)),
+			"path": str("Workspace path used to resolve project scope."), "memories": array(memoryItemSchema()),
 			"jsonl": str("Canonical Codebridge memory items, one JSON object per line."),
 		}), false),
 	}

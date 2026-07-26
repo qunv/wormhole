@@ -20,3 +20,15 @@ func TestToolExposureRejectsInvalidModuleNames(t *testing.T) {
 		t.Fatalf("invalid module name error = %v", err)
 	}
 }
+
+func TestToolExposureAcceptsExactToolsAndRejectsEmptyNames(t *testing.T) {
+	cfg := Default()
+	cfg.Tools.AllowedTools = []string{"read_file", "apply_patch"}
+	if err := cfg.Validate(false); err != nil {
+		t.Fatalf("valid exact tool names rejected: %v", err)
+	}
+	cfg.Tools.AllowedTools = []string{"read_file", " "}
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "allowedTools") {
+		t.Fatalf("empty exact tool name error = %v", err)
+	}
+}

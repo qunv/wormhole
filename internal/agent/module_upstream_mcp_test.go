@@ -83,7 +83,7 @@ func TestRuntimeUsesMCPServerNameAsToolNamespace(t *testing.T) {
 	if got := runtime.ToolModuleName("postgres_prod__read_data"); got != "mcp_postgres_prod" {
 		t.Fatalf("read tool module = %q", got)
 	}
-	if got, want := len(runtime.Tools()), 77; got != want {
+	if got, want := len(runtime.Tools()), 78; got != want {
 		t.Fatalf("runtime tools = %d, want %d", got, want)
 	}
 	readSpec, ok := runtime.ToolSpec("postgres_prod__read_data")
@@ -146,7 +146,7 @@ func TestMultipleMCPServersWithSameToolsUseDistinctNamespaces(t *testing.T) {
 	}
 	defer runtime.Close()
 
-	if got, want := len(runtime.Tools()), 79; got != want {
+	if got, want := len(runtime.Tools()), 80; got != want {
 		t.Fatalf("runtime tools = %d, want %d", got, want)
 	}
 	for tool, module := range map[string]string{

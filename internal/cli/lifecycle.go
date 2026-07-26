@@ -127,6 +127,7 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	}
 	fmt.Fprintf(a.Stdout, "[server] MCP OK: http://127.0.0.1:%d/mcp\n", cfg.Port)
 	fmt.Fprintf(a.Stdout, "[server] Session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionEndpoint)
+	fmt.Fprintf(a.Stdout, "[server] Fast session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionFastEndpoint)
 
 	var tunnelCmd *exec.Cmd
 	if !cfg.NoTunnel {
@@ -299,8 +300,9 @@ func (a App) status(cfg config.Config, opts options) error {
 	value := map[string]any{
 		"workspace":   cfg.Workspace,
 		"config_path": config.ConfigPath(), "pid_path": config.PIDPath(), "log_path": config.LogPath(),
-		"mcp_url":         fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
-		"session_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint), "server": health,
+		"mcp_url":              fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
+		"session_mcp_url":      fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint),
+		"session_fast_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionFastEndpoint), "server": health,
 		"pids": map[string]any{
 			"server": state.ServerPID, "server_alive": pidAlive(state.ServerPID),
 			"tunnel": state.TunnelPID, "tunnel_alive": pidAlive(state.TunnelPID),
@@ -311,7 +313,7 @@ func (a App) status(cfg config.Config, opts options) error {
 		fmt.Fprintln(a.Stdout, string(raw))
 		return nil
 	}
-	fmt.Fprintf(a.Stdout, "Config:      %s\nMCP URL:     http://127.0.0.1:%d/mcp\nSession MCP: http://127.0.0.1:%d%s\n", config.ConfigPath(), cfg.Port, cfg.Port, mcpserver.SessionEndpoint)
+	fmt.Fprintf(a.Stdout, "Config:          %s\nMCP URL:         http://127.0.0.1:%d/mcp\nSession MCP:     http://127.0.0.1:%d%s\nFast session MCP: http://127.0.0.1:%d%s\n", config.ConfigPath(), cfg.Port, cfg.Port, mcpserver.SessionEndpoint, cfg.Port, mcpserver.SessionFastEndpoint)
 	if health == nil {
 		fmt.Fprintln(a.Stdout, "Server:  offline")
 	} else {
@@ -798,7 +800,8 @@ func writeTunnelProfile(cfg config.Config) (string, error) {
 		lines = append(lines, "  extra_headers:", fmt.Sprintf(`    - "OpenAI-Organization: %s"`, yamlEscape(cfg.Organization)))
 	}
 	lines = append(lines, "log:", "  level: info", "  format: json", "mcp:", "  server_urls:",
-		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint))
+		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint),
+		"    - channel: fast", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionFastEndpoint))
 	registry, err := workspaceregistry.Load()
 	if err != nil {
 		return "", err
@@ -807,6 +810,8 @@ func writeTunnelProfile(cfg config.Config) (string, error) {
 		lines = append(lines,
 			fmt.Sprintf("    - channel: workspace-%s", entry.ID),
 			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, workspaceEndpoint(entry.ID)),
+			fmt.Sprintf("    - channel: workspace-%s-fast", entry.ID),
+			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s/fast"`, cfg.Port, workspaceEndpoint(entry.ID)),
 		)
 	}
 	return path, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)

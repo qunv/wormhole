@@ -24,6 +24,7 @@ import (
 
 const (
 	SessionEndpoint        = "/mcp/session"
+	SessionFastEndpoint    = "/mcp/session/fast"
 	defaultBindingTTL      = 24 * time.Hour
 	defaultCleanupInterval = time.Minute
 	defaultMaxBindings     = 4096
@@ -106,16 +107,29 @@ func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Run
 }
 
 func NewSessionGateway(router *SessionRouter) *mcp.Server {
+	return NewSessionGatewayProfile(router, ToolProfileFull)
+}
+
+func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.Server {
 	if router == nil {
 		router = NewSessionRouter(nil, nil)
 	}
+	name := "Codebridge · workspace session"
+	instructions := SessionInstructions
+	if profile == ToolProfileFast {
+		name += " · fast"
+		instructions += "\n\nThis is the compact session endpoint. It preserves workspace selection while exposing only high-value coding tools and compact structured output."
+	}
 	server := mcp.NewServer(
-		&mcp.Implementation{Name: "Codebridge · workspace session", Version: router.version},
-		&mcp.ServerOptions{Instructions: SessionInstructions, PageSize: 100},
+		&mcp.Implementation{Name: name, Version: router.version},
+		&mcp.ServerOptions{Instructions: instructions, PageSize: 100},
 	)
 	registerWidget(server)
 	router.registerControlTools(server)
 	for _, original := range router.specs {
+		if profile == ToolProfileFast && !fastCodingTools[original.Name] {
+			continue
+		}
 		spec := original
 		readOnly, openWorld, destructive := spec.ReadOnly, spec.OpenWorld, spec.Destructive
 		server.AddTool(&mcp.Tool{
@@ -131,6 +145,7 @@ func NewSessionGateway(router *SessionRouter) *mcp.Server {
 			if err != nil {
 				return toolError(err), nil
 			}
+			applyProfileDefaults(profile, spec.Name, args)
 			bindingToken := strings.TrimSpace(stringValue(args["workspace_binding"]))
 			if bindingToken == "" {
 				bindingToken = strings.TrimSpace(stringValue(args["_workspace_binding"]))
@@ -159,7 +174,7 @@ func NewSessionGateway(router *SessionRouter) *mcp.Server {
 			if forwarded, ok := value.(*mcp.CallToolResult); ok {
 				return forwarded, nil
 			}
-			return toolSuccess(value), nil
+			return toolSuccessWithMode(value, spec.OutputMode), nil
 		})
 	}
 	return server
@@ -345,13 +360,21 @@ func (r *SessionRouter) Stats() map[string]any {
 	if maxBindings <= 0 {
 		maxBindings = defaultMaxBindings
 	}
+	fastTools := 4
+	for _, spec := range r.specs {
+		if fastCodingTools[spec.Name] {
+			fastTools++
+		}
+	}
 	return map[string]any{
-		"endpoint": SessionEndpoint, "binding_ttl_seconds": int64(r.ttl / time.Second),
+		"endpoint": SessionEndpoint, "fast_endpoint": SessionFastEndpoint,
+		"binding_ttl_seconds":      int64(r.ttl / time.Second),
 		"cleanup_interval_seconds": int64(cleanupInterval / time.Second),
 		"active_bindings":          len(r.bindings), "max_bindings": maxBindings,
 		"bound_sessions": len(r.sessions), "expired_bindings": r.expiredCount,
 		"evicted_bindings": r.evictedCount,
 		"workspace_count":  len(r.runtimes), "tool_count": len(r.specs) + 4,
+		"fast_tool_count": fastTools,
 	}
 }
 
@@ -405,6 +428,9 @@ func mergeRoutedToolSpec(current, next agent.ToolSpec) agent.ToolSpec {
 	merged.ReadOnly = current.ReadOnly && next.ReadOnly
 	merged.Destructive = current.Destructive || next.Destructive
 	merged.OpenWorld = current.OpenWorld || next.OpenWorld
+	if current.OutputMode != next.OutputMode {
+		merged.OutputMode = agent.ToolOutputBoth
+	}
 	if !sameJSON(current.Schema, next.Schema) {
 		merged.Schema = map[string]any{
 			"type": "object", "properties": map[string]any{}, "additionalProperties": true,

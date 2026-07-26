@@ -29,15 +29,27 @@ func repoToolSpecs() []ToolSpec {
 	command := commandSchema()
 	return []ToolSpec{
 		roSpec("workspace_doctor", "Workspace doctor", "Check workspace, safety, git, tools, and readiness.", path),
-		roSpec("workspace_snapshot", "Workspace snapshot", "One-call project, tree, git, policy, and next-action briefing.", object(map[string]any{"path": str("Root."), "depth": integer(), "max_entries": integer(), "include_symbols": boolean(), "refresh": boolean()})),
+		structuredROSpec("workspace_snapshot", "Workspace snapshot", "Compact project, tree, git, policy, and next-action briefing with an explicit detail and token budget.", object(map[string]any{
+			"path": str("Root."), "depth": integer(), "max_entries": integer(),
+			"include_symbols": boolean(), "include_memory": boolean(), "refresh": boolean(),
+			"detail_level": enum("compact", "normal", "full"), "token_budget": integer(),
+		})),
+		structuredROSpec("task_context", "Task context", "Build a bounded coding context in one call from repository inventory, CodeGraph, targeted search and reads, git, and optional memory.", object(map[string]any{
+			"query": str("Coding task or code question."), "path": str("Root."),
+			"detail_level": enum("compact", "normal", "full"), "token_budget": integer(),
+			"depth": integer(), "max_entries": integer(), "search_limit": integer(), "max_read_files": integer(),
+			"include_codegraph": boolean(), "include_git": boolean(), "include_memory": boolean(),
+			"refresh": boolean(), "timeout_ms": integer(),
+		}, "query")),
 		roSpec("project_profile", "Project profile", "Detect languages, frameworks, package managers, and scripts.", object(map[string]any{"path": str("Root."), "refresh": boolean()})),
 		roSpec("important_files", "Important files", "List key project and configuration files.", path),
-		roSpec("repo_map", "Repo map", "Return a cached tree plus project profile.", object(map[string]any{"path": str("Root."), "depth": integer(), "max_entries": integer(), "refresh": boolean()})),
-		roSpec("repo_symbols", "Repo symbols", "Scan source definitions for navigation.", object(map[string]any{"path": str("Root."), "max_files": integer(), "max_matches": integer(), "kind": str("Optional symbol kind.")})),
+		structuredROSpec("repo_map", "Repo map", "Return a cached tree plus project profile.", object(map[string]any{"path": str("Root."), "depth": integer(), "max_entries": integer(), "refresh": boolean()})),
+		structuredROSpec("repo_symbols", "Repo symbols", "Scan source definitions for navigation.", object(map[string]any{"path": str("Root."), "max_files": integer(), "max_matches": integer(), "kind": str("Optional symbol kind.")})),
 		roSpec("codegraph_explore", "CodeGraph explore", "Navigate an indexed codebase in one call: return relevant symbols' verbatim source, call paths, dynamic-dispatch hops, and blast radius. Requires a .codegraph directory at the project root and the codegraph CLI.", object(map[string]any{
 			"query":       str("Code question, flow, file, or symbol names to explore."),
 			"projectPath": str("Indexed project root inside an allowed workspace root. Defaults to the primary workspace."),
 			"timeout_ms":  integer(), "max_output_chars": integer(),
+			"detail_level": enum("compact", "normal", "full"), "token_budget": integer(),
 		}, "query")),
 		roSpec("index_status", "Index status", "Return repo index cache status.", object(nil)),
 		rwSpec("quality_gate", "Quality gate", "Run selected test, build, and lint commands.", object(map[string]any{"test": boolean(), "build": boolean(), "lint": boolean(), "cwd": str("Root.")}), false),

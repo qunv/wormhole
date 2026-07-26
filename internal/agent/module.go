@@ -245,6 +245,14 @@ func (r *Runtime) ToolEnabled(name string) bool {
 	if group == "" {
 		return false
 	}
+	if len(r.Config.Tools.AllowedTools) > 0 {
+		for _, allowed := range r.Config.Tools.AllowedTools {
+			if allowed == name {
+				return true
+			}
+		}
+		return false
+	}
 	if len(r.Config.Tools.AllowedGroups) == 0 {
 		return true
 	}

@@ -5,18 +5,21 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type RecorderConfig struct {
-	QueueSize       int
-	Workers         int
-	DeliveryTimeout time.Duration
-	MaxAttempts     int
-	RetryBackoff    time.Duration
-	ShutdownTimeout time.Duration
+	QueueSize        int
+	Workers          int
+	DeliveryTimeout  time.Duration
+	MaxAttempts      int
+	RetryBackoff     time.Duration
+	ShutdownTimeout  time.Duration
+	FailureThreshold int
+	FailureCooldown  time.Duration
 }
 
 type Recorder struct {
@@ -31,6 +34,10 @@ type Recorder struct {
 	workers  int
 	workerWG sync.WaitGroup
 
+	breakerMu          sync.Mutex
+	consecutiveFailure int
+	circuitOpenUntil   time.Time
+
 	deliveryCtx    context.Context
 	cancelDelivery context.CancelFunc
 
@@ -42,6 +49,8 @@ type Recorder struct {
 	abandoned        atomic.Uint64
 	shutdownTimeouts atomic.Uint64
 	retrySequence    atomic.Uint64
+	breakerTrips     atomic.Uint64
+	circuitSkipped   atomic.Uint64
 }
 
 func NewRecorder(provider Provider, queueSize int) *Recorder {
@@ -66,6 +75,12 @@ func NewRecorderWithConfig(provider Provider, config RecorderConfig) *Recorder {
 	}
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = 5 * time.Second
+	}
+	if config.FailureThreshold <= 0 {
+		config.FailureThreshold = 3
+	}
+	if config.FailureCooldown <= 0 {
+		config.FailureCooldown = 10 * time.Second
 	}
 	workers := effectiveRecorderWorkers(provider, config.Workers, config.QueueSize)
 	deliveryCtx, cancelDelivery := context.WithCancel(context.Background())
@@ -165,14 +180,27 @@ func (r *Recorder) Stats() map[string]any {
 			shardCapacityMax = cap(queue)
 		}
 	}
-	return map[string]any{
+	r.breakerMu.Lock()
+	openUntil := r.circuitOpenUntil
+	consecutiveFailures := r.consecutiveFailure
+	r.breakerMu.Unlock()
+	result := map[string]any{
 		"enabled": true, "workers": r.workers, "sharded": r.workers > 1,
 		"queue_depth": depth, "queue_capacity": capacity,
 		"shard_capacity_min": shardCapacityMin, "shard_capacity_max": shardCapacityMax,
 		"enqueued": r.enqueued.Load(), "delivered": r.delivered.Load(),
 		"failed": r.failed.Load(), "retried": r.retried.Load(), "dropped": r.dropped.Load(),
 		"abandoned": r.abandoned.Load(), "shutdown_timeouts": r.shutdownTimeouts.Load(),
+		"breaker_trips": r.breakerTrips.Load(), "circuit_skipped": r.circuitSkipped.Load(),
+		"consecutive_failures": consecutiveFailures,
 	}
+	if time.Now().Before(openUntil) {
+		result["circuit_open"] = true
+		result["circuit_open_until"] = openUntil
+	} else {
+		result["circuit_open"] = false
+	}
+	return result
 }
 
 // Close stops accepting observations and drains the queues for at most the
@@ -254,6 +282,11 @@ func (r *Recorder) abandonQueue(queue chan ObservationRequest) {
 }
 
 func (r *Recorder) deliver(request ObservationRequest) {
+	if r.circuitOpen() {
+		r.circuitSkipped.Add(1)
+		r.failed.Add(1)
+		return
+	}
 	for attempt := 1; attempt <= r.config.MaxAttempts; attempt++ {
 		if r.deliveryCtx.Err() != nil {
 			r.abandoned.Add(1)
@@ -263,11 +296,20 @@ func (r *Recorder) deliver(request ObservationRequest) {
 		err := r.provider.Observe(ctx, request)
 		cancel()
 		if err == nil {
+			r.clearBreaker()
 			r.delivered.Add(1)
 			return
 		}
 		if r.deliveryCtx.Err() != nil {
 			r.abandoned.Add(1)
+			return
+		}
+		if !retryableDeliveryError(err) {
+			r.failed.Add(1)
+			return
+		}
+		if r.recordDeliveryFailure() {
+			r.failed.Add(1)
 			return
 		}
 		if attempt < r.config.MaxAttempts {
@@ -288,6 +330,44 @@ func (r *Recorder) deliver(request ObservationRequest) {
 		}
 	}
 	r.failed.Add(1)
+}
+
+func (r *Recorder) circuitOpen() bool {
+	r.breakerMu.Lock()
+	defer r.breakerMu.Unlock()
+	if r.circuitOpenUntil.IsZero() || !time.Now().Before(r.circuitOpenUntil) {
+		r.circuitOpenUntil = time.Time{}
+		return false
+	}
+	return true
+}
+
+func (r *Recorder) recordDeliveryFailure() bool {
+	r.breakerMu.Lock()
+	defer r.breakerMu.Unlock()
+	r.consecutiveFailure++
+	if r.consecutiveFailure < r.config.FailureThreshold {
+		return false
+	}
+	r.consecutiveFailure = 0
+	r.circuitOpenUntil = time.Now().Add(r.config.FailureCooldown)
+	r.breakerTrips.Add(1)
+	return true
+}
+
+func (r *Recorder) clearBreaker() {
+	r.breakerMu.Lock()
+	r.consecutiveFailure = 0
+	r.circuitOpenUntil = time.Time{}
+	r.breakerMu.Unlock()
+}
+
+func retryableDeliveryError(err error) bool {
+	var marker interface{ Retryable() bool }
+	if errors.As(err, &marker) {
+		return marker.Retryable()
+	}
+	return true
 }
 
 func (r *Recorder) retryDelay(attempt int) time.Duration {

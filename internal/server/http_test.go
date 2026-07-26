@@ -100,6 +100,89 @@ func TestMultiWorkspaceHTTPRoutesAreIsolated(t *testing.T) {
 	}
 }
 
+func TestFastMCPEndpointExposesCompactCodingTools(t *testing.T) {
+	runtime := newWorkspaceRuntime(t, "default", t.TempDir(), t.TempDir())
+	httpServer := httptest.NewServer(New(runtime).Server.Handler)
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	fastSession := connectMCP(t, ctx, httpServer.URL+"/mcp/fast")
+	defer fastSession.Close()
+	result, err := fastSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"workspace_snapshot": true, "task_context": true, "codegraph_explore": true, "search_text": true,
+		"read_file": true, "read_many": true, "apply_patch": true,
+		"run_commands": true, "git_status": true, "git_diff": true, "quality_gate": true,
+	}
+	if len(result.Tools) != len(want) {
+		t.Fatalf("fast tool count = %d, want %d", len(result.Tools), len(want))
+	}
+	for _, tool := range result.Tools {
+		if !want[tool.Name] {
+			t.Fatalf("unexpected fast tool %q", tool.Name)
+		}
+		delete(want, tool.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing fast tools: %#v", want)
+	}
+
+	fullSession := connectMCP(t, ctx, httpServer.URL+"/mcp")
+	defer fullSession.Close()
+	full, err := fullSession.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Tools) <= len(result.Tools) {
+		t.Fatalf("full endpoint tool count = %d, fast = %d", len(full.Tools), len(result.Tools))
+	}
+}
+
+func TestFastSessionEndpointPreservesWorkspaceSelectionWithCompactTools(t *testing.T) {
+	runtime := newWorkspaceRuntime(t, "codebridge", t.TempDir(), t.TempDir())
+	httpServer := httptest.NewServer(New(runtime).Server.Handler)
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	session := connectMCP(t, ctx, httpServer.URL+mcpserver.SessionFastEndpoint)
+	defer session.Close()
+	list, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"workspace_select": true, "workspace_current": true, "workspace_list": true, "workspace_clear": true,
+		"workspace_snapshot": true, "task_context": true, "codegraph_explore": true, "search_text": true,
+		"read_file": true, "read_many": true, "apply_patch": true, "run_commands": true,
+		"git_status": true, "git_diff": true, "quality_gate": true,
+	}
+	if len(list.Tools) != len(want) {
+		t.Fatalf("fast session tool count = %d, want %d", len(list.Tools), len(want))
+	}
+	for _, tool := range list.Tools {
+		if !want[tool.Name] {
+			t.Fatalf("unexpected fast session tool %q", tool.Name)
+		}
+		delete(want, tool.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing fast session tools: %#v", want)
+	}
+
+	selected := callTool(t, ctx, session, "workspace_select", map[string]any{"id": "codebridge"})
+	binding, _ := toolObject(t, selected)["workspace_binding"].(string)
+	if binding == "" {
+		t.Fatal("fast session did not return a workspace binding")
+	}
+	snapshot := callTool(t, ctx, session, "workspace_snapshot", map[string]any{"workspace_binding": binding})
+	if !strings.HasPrefix(toolText(snapshot), "Structured result") {
+		t.Fatalf("fast session did not use compact structured output: %s", toolText(snapshot))
+	}
+}
+
 func TestSessionWorkspaceHTTPRoutesChatsByBinding(t *testing.T) {
 	defaultRoot, aRoot, bRoot := t.TempDir(), t.TempDir(), t.TempDir()
 	defaultRuntime := newWorkspaceRuntime(t, "default", defaultRoot, t.TempDir())
@@ -306,7 +389,7 @@ func TestInternalHealthReportsSharedResourceReuse(t *testing.T) {
 		t.Fatalf("unexpected shared memory stats: %#v", memoryStats)
 	}
 	contractStats, _ := sharedStats["tool_contracts"].(map[string]any)
-	if contractStats["built_in_modules"] != float64(6) || contractStats["built_in_tools"] != float64(75) {
+	if contractStats["built_in_modules"] != float64(6) || contractStats["built_in_tools"] != float64(76) {
 		t.Fatalf("unexpected shared built-in contract stats: %#v", contractStats)
 	}
 }

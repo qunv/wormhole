@@ -50,6 +50,8 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 		return r.workspaceDoctor(ctx, args)
 	case "workspace_snapshot":
 		return r.workspaceSnapshot(ctx, args)
+	case "task_context":
+		return r.taskContext(ctx, args)
 	case "project_profile":
 		root, err := r.Workspace.Resolve(stringArg(args, "path", "."))
 		if err != nil {
@@ -162,7 +164,7 @@ func (r *Runtime) buildIndex(ctx context.Context, root string, depth, limit int,
 		ImportantFiles: inventory.Important,
 	}
 	if symbols {
-		index.Symbols, err = r.scanSymbols(ctx, root, 500, 2000, "", refresh)
+		index.Symbols, err = r.scanSymbolsFromInventory(ctx, inventory, 500, 2000, "", refresh)
 		if err != nil {
 			return repoIndex{}, false, err
 		}
@@ -203,25 +205,51 @@ func (r *Runtime) workspaceSnapshot(ctx context.Context, args map[string]any) (a
 	if err != nil {
 		return nil, err
 	}
-	index, cached, err := r.buildIndex(ctx, root, intArg(args, "depth", 3), intArg(args, "max_entries", 350), boolArg(args, "include_symbols", false), boolArg(args, "refresh", false))
+	level := contextDetailLevel(args, "compact")
+	defaultTokens := detailTokenDefault(level, 4_000, 8_000, 16_000)
+	tokenBudget, charBudget := r.contextCharBudget(args, defaultTokens)
+	depth := intArg(args, "depth", detailInt(level, 2, 3, 5))
+	maxEntries := intArg(args, "max_entries", detailInt(level, 120, 350, 800))
+	includeSymbols := boolArg(args, "include_symbols", false)
+	index, cached, err := r.buildIndex(ctx, root, depth, maxEntries, includeSymbols, boolArg(args, "refresh", false))
 	if err != nil {
 		return nil, err
 	}
 	git, _ := r.gitStatus(ctx, r.Workspace.Relative(root))
+	tree, treeTruncated := limitStringsByChars(index.Tree, index.Limit, max(2_000, charBudget/3))
+	important, importantTruncated := limitMaps(index.ImportantFiles, detailInt(level, 8, 20, 60))
 	result := map[string]any{
 		"kind": "workspace_snapshot", "pro": true, "version": r.Version, "tier": r.Tier,
-		"ts": time.Now().UTC(), "root": r.Workspace.Relative(root), "roots": r.Workspace.Roots,
-		"mode": r.Config.Mode, "policy": r.Config.Policy, "profile": index.Profile, "git": git,
-		"tree":            map[string]any{"depth": index.Depth, "max_entries": index.Limit, "dirs": index.Dirs, "files": index.Files, "entries": index.Tree},
-		"important_files": index.ImportantFiles, "ripgrep": map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
-		"cache":             map[string]any{"hit": cached, "generated_at": index.TS, "ttl_seconds": 300},
-		"memory":            r.memoryStatus(ctx),
-		"recommended_reads": recommendedReads(index.ImportantFiles),
-		"next_best_actions": []string{"Read the relevant manifests and entry points.", "Use search_text with context.", "Use review_diff before handoff."},
+		"ts": time.Now().UTC(), "root": r.Workspace.Relative(root),
+		"detail_level": level, "token_budget": tokenBudget, "char_budget": charBudget,
+		"mode": r.Config.Mode, "policy": r.Config.Policy,
+		"profile": compactProjectProfile(index.Profile, level), "git": git,
+		"tree": map[string]any{
+			"depth": index.Depth, "max_entries": index.Limit, "dirs": index.Dirs, "files": index.Files,
+			"entries": tree, "truncated": index.InventoryTruncated || treeTruncated,
+		},
+		"important_files":   important,
+		"ripgrep":           map[string]any{"available": r.Workspace.RGBin != "", "bin": r.Workspace.RGBin},
+		"cache":             map[string]any{"hit": cached, "generated_at": index.TS, "ttl_seconds": int(repoCacheTTL / time.Second)},
+		"recommended_reads": recommendedReads(important),
+		"next_best_actions": []string{"Use task_context for a coding question.", "Use review_diff before handoff."},
+		"truncated":         index.InventoryTruncated || treeTruncated || importantTruncated,
 	}
-	if boolArg(args, "include_symbols", false) {
-		result["symbols"] = index.Symbols
+	if level == "full" {
+		result["roots"] = r.Workspace.Roots
 	}
+	if boolArg(args, "include_memory", false) {
+		result["memory"] = r.memoryStatusCached()
+	}
+	if includeSymbols {
+		maxSymbols := detailInt(level, 120, 500, 2_000)
+		symbols, symbolsTruncated := limitMaps(index.Symbols, maxSymbols)
+		result["symbols"] = symbols
+		if symbolsTruncated {
+			result["truncated"] = true
+		}
+	}
+	result["chars_estimated"] = fitWorkspaceSnapshotBudget(result, max(1, charBudget-96))
 	return result, nil
 }
 
@@ -280,10 +308,23 @@ func (r *Runtime) scanSymbols(ctx context.Context, root string, maxFiles, maxMat
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	inventory, _, err := r.loadRepoInventory(ctx, root, refresh)
+	if err != nil {
+		return nil, err
+	}
+	return r.scanSymbolsFromInventory(ctx, inventory, maxFiles, maxMatches, kind, refresh)
+}
+
+func (r *Runtime) scanSymbolsFromInventory(ctx context.Context, inventory repoInventory, maxFiles, maxMatches int, kind string, refresh bool) ([]map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	maxFiles = min(max(maxFiles, 1), 20_000)
 	maxMatches = min(max(maxMatches, 1), 20_000)
-	generation := r.currentRepositoryGeneration()
-	key := repoSymbolKey{Root: root, Generation: generation, MaxFiles: maxFiles, MaxMatches: maxMatches, Kind: kind}
+	key := repoSymbolKey{
+		Root: inventory.Root, Generation: inventory.Generation,
+		MaxFiles: maxFiles, MaxMatches: maxMatches, Kind: kind,
+	}
 	if !refresh {
 		r.repoCacheMu.Lock()
 		if cached, ok := r.repoSymbols[key]; ok && time.Since(cached.GeneratedAt) < repoCacheTTL {
@@ -293,76 +334,30 @@ func (r *Runtime) scanSymbols(ctx context.Context, root string, maxFiles, maxMat
 		}
 		r.repoCacheMu.Unlock()
 	}
-	var out []map[string]any
+
+	out := make([]map[string]any, 0, min(maxMatches, 256))
 	files := 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		if walkErr != nil {
-			return nil
-		}
-		if entry.IsDir() {
-			if path != root && r.Workspace.Skips[entry.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
+	for _, entry := range inventory.Entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		if files >= maxFiles || len(out) >= maxMatches {
-			return errStop
+			break
 		}
-		if !sourceExtensions[strings.ToLower(filepath.Ext(path))] {
-			return nil
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil || info.Size() > 4<<20 {
-			return nil
+		if entry.Type != "file" || entry.Size > 4<<20 || !sourceExtensions[strings.ToLower(filepath.Ext(entry.RootRelative))] {
+			continue
 		}
 		files++
-		file, openErr := os.Open(path)
-		if openErr != nil {
-			return nil
+		path := filepath.Join(inventory.Root, filepath.FromSlash(entry.RootRelative))
+		fileSymbols, err := r.scanSymbolFile(ctx, path, kind, maxMatches-len(out))
+		if err != nil {
+			return nil, err
 		}
-		scanner := bufio.NewScanner(file)
-		scanner.Buffer(make([]byte, 64<<10), 1<<20)
-		line := 0
-		for scanner.Scan() {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				_ = file.Close()
-				return ctxErr
-			}
-			line++
-			text := scanner.Text()
-			for _, pattern := range symbolPatterns {
-				if kind != "" && pattern.Kind != kind {
-					continue
-				}
-				match := pattern.RE.FindStringSubmatch(text)
-				if len(match) > 1 {
-					name := match[1]
-					if pattern.Kind == "route" && len(match) > 2 {
-						name += " " + match[2]
-					}
-					out = append(out, map[string]any{"path": r.Workspace.Relative(path), "line": line, "kind": pattern.Kind, "name": name})
-					break
-				}
-			}
-			if len(out) >= maxMatches {
-				break
-			}
-		}
-		scanErr := scanner.Err()
-		_ = file.Close()
-		return scanErr
-	})
-	if errors.Is(err, errStop) {
-		err = nil
+		out = append(out, fileSymbols...)
 	}
-	if err != nil {
-		return nil, err
-	}
+
 	r.repoCacheMu.Lock()
-	if r.repoGeneration == generation {
+	if r.repoGeneration == inventory.Generation {
 		if r.repoSymbols == nil {
 			r.repoSymbols = map[repoSymbolKey]repoSymbolCacheEntry{}
 		}
@@ -377,10 +372,56 @@ func (r *Runtime) scanSymbols(ctx context.Context, root string, maxFiles, maxMat
 			}
 			delete(r.repoSymbols, oldestKey)
 		}
-		r.repoSymbols[key] = repoSymbolCacheEntry{GeneratedAt: time.Now().UTC(), Symbols: append([]map[string]any(nil), out...)}
+		r.repoSymbols[key] = repoSymbolCacheEntry{
+			GeneratedAt: time.Now().UTC(), Symbols: append([]map[string]any(nil), out...),
+		}
 	}
 	r.repoCacheMu.Unlock()
 	return out, nil
+}
+
+func (r *Runtime) scanSymbolFile(ctx context.Context, path, kind string, limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	out := make([]map[string]any, 0, min(limit, 32))
+	line := 0
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		line++
+		text := scanner.Text()
+		for _, pattern := range symbolPatterns {
+			if kind != "" && pattern.Kind != kind {
+				continue
+			}
+			match := pattern.RE.FindStringSubmatch(text)
+			if len(match) <= 1 {
+				continue
+			}
+			name := match[1]
+			if pattern.Kind == "route" && len(match) > 2 {
+				name += " " + match[2]
+			}
+			out = append(out, map[string]any{
+				"path": r.Workspace.Relative(path), "line": line,
+				"kind": pattern.Kind, "name": name,
+			})
+			break
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, scanner.Err()
 }
 
 func (r *Runtime) detectCommands(root string) map[string]any {
@@ -886,7 +927,7 @@ func (r *Runtime) sessionReport(ctx context.Context, args map[string]any) (any, 
 	return map[string]any{
 		"ts": time.Now().UTC(), "workspace": r.Workspace.Primary, "git": status,
 		"task": task, "checkpoint": checkpoint, "review": review,
-		"memory": r.memoryStatus(ctx), "runtime": r.RuntimeMetrics(true, 10),
+		"memory": r.memoryStatusCached(), "runtime": r.RuntimeMetrics(true, 10),
 	}, nil
 }
 

@@ -178,6 +178,58 @@ func TestMemoryCommitBuildsSessionHandoffFromLocalState(t *testing.T) {
 	}
 }
 
+type blockingHealthProvider struct {
+	sharedTestMemoryProvider
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingHealthProvider) Health(ctx context.Context) memory.HealthResult {
+	select {
+	case p.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-p.release:
+		return memory.HealthResult{Provider: p.Name(), Enabled: true, Available: true}
+	case <-ctx.Done():
+		return memory.HealthResult{Provider: p.Name(), Enabled: true, Error: ctx.Err().Error()}
+	}
+}
+
+func TestCachedMemoryHealthDoesNotBlockSnapshotPaths(t *testing.T) {
+	provider := &blockingHealthProvider{started: make(chan struct{}, 1), release: make(chan struct{})}
+	cfg := config.Default()
+	cfg.Memory.Enabled = true
+	cfg.Memory.HealthCacheMS = 1000
+	cfg.Memory.TimeoutMS = 500
+	runtime := &Runtime{Config: cfg, Memory: provider, MemoryProject: "project"}
+
+	startedAt := time.Now()
+	status := runtime.memoryStatusCached()
+	if elapsed := time.Since(startedAt); elapsed > 50*time.Millisecond {
+		t.Fatalf("cached memory status blocked for %s", elapsed)
+	}
+	health, _ := status["health"].(memory.HealthResult)
+	if health.Provider != provider.Name() || health.Details["refreshing"] != true {
+		t.Fatalf("unexpected initial cached health: %#v", health)
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("background health refresh did not start")
+	}
+	close(provider.release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if refreshed := runtime.memoryHealthCached(); refreshed.Available {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("background health refresh did not populate the cache")
+}
+
 func TestMemoryProviderAvailabilityHonorsRequiredFlag(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "offline", http.StatusServiceUnavailable)

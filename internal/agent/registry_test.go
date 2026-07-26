@@ -29,14 +29,14 @@ func TestToolRegistryContract(t *testing.T) {
 			}
 		}
 	}
-	if got, want := len(seen), 75; got != want {
+	if got, want := len(seen), 76; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	if got := len(Tools()); got != len(seen) {
 		t.Fatalf("compatibility catalog count = %d, want %d", got, len(seen))
 	}
 	for _, required := range []string{
-		"workspace_snapshot", "read_many", "apply_patch", "run_commands", "review_diff",
+		"workspace_snapshot", "task_context", "read_many", "apply_patch", "run_commands", "review_diff",
 		"request_approval_batch", "codegraph_explore", "cb_input",
 		"memory_export", "memory_import",
 	} {
@@ -51,6 +51,31 @@ func TestToolRegistryContract(t *testing.T) {
 	} {
 		if owner := seen[removed]; owner != "" {
 			t.Fatalf("removed built-in tool %s remains owned by %s", removed, owner)
+		}
+	}
+}
+
+func TestStructuredArraySchemasExposeItemFields(t *testing.T) {
+	tools := map[string]ToolSpec{}
+	for _, tool := range Tools() {
+		tools[tool.Name] = tool
+	}
+	assertArrayItemProperties(t, tools["read_many"].Schema, "requests", "path", "start_line", "line_count", "max_chars")
+	for _, name := range []string{"apply_patch", "preview_patch", "validate_patch"} {
+		assertArrayItemProperties(t, tools[name].Schema, "operations", "op", "path", "content", "rename_to", "recursive", "edits")
+	}
+	assertArrayItemProperties(t, tools["memory_import"].Schema, "memories", "id", "provider_id", "kind", "content", "summary", "metadata")
+}
+
+func assertArrayItemProperties(t *testing.T, schema map[string]any, field string, names ...string) {
+	t.Helper()
+	properties, _ := schema["properties"].(map[string]any)
+	arraySchema, _ := properties[field].(map[string]any)
+	itemSchema, _ := arraySchema["items"].(map[string]any)
+	itemProperties, _ := itemSchema["properties"].(map[string]any)
+	for _, name := range names {
+		if itemProperties[name] == nil {
+			t.Fatalf("schema field %s item is missing property %s: %#v", field, name, itemSchema)
 		}
 	}
 }

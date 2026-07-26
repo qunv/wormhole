@@ -56,20 +56,21 @@ type Runtime struct {
 	closeErr        error
 	startupWarnings []string
 
-	profileMu         sync.RWMutex
-	profile           map[string]any
-	repoIndexMu       sync.Mutex
-	repoCacheMu       sync.Mutex
-	repoGeneration    uint64
-	repoInventories   map[string]repoInventory
-	repoViews         map[repoViewKey]repoIndex
-	repoSymbols       map[repoSymbolKey]repoSymbolCacheEntry
-	gitStatusCache    map[string]gitStatusSnapshot
-	memoryHealthMu    sync.Mutex
-	memoryHealthValue memory.HealthResult
-	memoryHealthAt    time.Time
-	metricsOnce       sync.Once
-	metrics           *runtimeCallTracker
+	profileMu              sync.RWMutex
+	profile                map[string]any
+	repoIndexMu            sync.Mutex
+	repoCacheMu            sync.Mutex
+	repoGeneration         uint64
+	repoInventories        map[string]repoInventory
+	repoViews              map[repoViewKey]repoIndex
+	repoSymbols            map[repoSymbolKey]repoSymbolCacheEntry
+	gitStatusCache         map[string]gitStatusSnapshot
+	memoryHealthMu         sync.Mutex
+	memoryHealthValue      memory.HealthResult
+	memoryHealthAt         time.Time
+	memoryHealthRefreshing bool
+	metricsOnce            sync.Once
+	metrics                *runtimeCallTracker
 }
 
 // StartupReporter receives human-readable startup phase updates. Reporters

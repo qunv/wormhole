@@ -118,6 +118,36 @@ func TestRecorderRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+type nonRetryableRecorderError struct{}
+
+func (nonRetryableRecorderError) Error() string   { return "do not retry" }
+func (nonRetryableRecorderError) Retryable() bool { return false }
+
+type nonRetryableRecorderProvider struct {
+	recorderProvider
+	attempts atomic.Int32
+}
+
+func (p *nonRetryableRecorderProvider) Observe(context.Context, ObservationRequest) error {
+	p.attempts.Add(1)
+	return nonRetryableRecorderError{}
+}
+
+func TestRecorderDoesNotRetryMarkedErrors(t *testing.T) {
+	provider := &nonRetryableRecorderProvider{}
+	recorder := NewRecorderWithConfig(provider, RecorderConfig{
+		QueueSize: 1, DeliveryTimeout: time.Second, MaxAttempts: 3, RetryBackoff: time.Millisecond,
+	})
+	if !recorder.Record(ObservationRequest{SessionID: "non-retryable"}) {
+		t.Fatal("observation was not queued")
+	}
+	recorder.Close()
+	stats := recorder.Stats()
+	if provider.attempts.Load() != 1 || stats["retried"] != uint64(0) || stats["failed"] != uint64(1) {
+		t.Fatalf("unexpected non-retryable stats: attempts=%d stats=%#v", provider.attempts.Load(), stats)
+	}
+}
+
 type blockingRecorderProvider struct {
 	release chan struct{}
 	started chan struct{}

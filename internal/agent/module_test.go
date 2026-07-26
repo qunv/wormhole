@@ -57,7 +57,7 @@ func TestRuntimeRegistersFunctionalModules(t *testing.T) {
 	if got := runtime.ModuleNames(); !reflect.DeepEqual(got, wantModules) {
 		t.Fatalf("module order = %#v, want %#v", got, wantModules)
 	}
-	if got, want := len(runtime.Tools()), 75; got != want {
+	if got, want := len(runtime.Tools()), 76; got != want {
 		t.Fatalf("runtime tool count = %d, want %d", got, want)
 	}
 	for tool, want := range map[string]string{
@@ -270,5 +270,13 @@ func TestToolExposureUsesModuleOwnership(t *testing.T) {
 	runtime.Config.Tools.DeniedTools = []string{"kubernetes_get"}
 	if runtime.ToolEnabled("kubernetes_get") {
 		t.Fatal("denied tool remained enabled")
+	}
+	runtime.Config.Tools = config.ToolExposureConfig{AllowedTools: []string{"ping_test"}}
+	if runtime.ToolEnabled("kubernetes_get") || !runtime.ToolEnabled("ping_test") {
+		t.Fatalf("exact tool exposure mismatch: kubernetes=%t basic=%t", runtime.ToolEnabled("kubernetes_get"), runtime.ToolEnabled("ping_test"))
+	}
+	runtime.Config.Tools.DeniedTools = []string{"ping_test"}
+	if runtime.ToolEnabled("ping_test") {
+		t.Fatal("denied tool overrode exact allow list")
 	}
 }
