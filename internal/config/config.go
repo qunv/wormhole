@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	DefaultPort          = 8789
-	DefaultTunnelVersion = "v0.0.10"
+	DefaultPort                 = 8789
+	DefaultTunnelVersion        = "v0.0.10"
+	legacyLayoutMigrationMarker = ".legacy-layout-v1-complete"
 )
 
 type MemoryConfig struct {
@@ -237,9 +238,15 @@ func MigrateLegacyLayout() error {
 	if customLayoutConfigured() {
 		return nil
 	}
+	markerPath := filepath.Join(AppHomeDir(), legacyLayoutMigrationMarker)
+	if _, err := os.Stat(markerPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check legacy layout migration marker: %w", err)
+	}
 	legacyConfig, legacyData := LegacyConfigDir(), LegacyDataDir()
 	if samePath(legacyConfig, AppConfigDir()) && samePath(legacyData, AppDataDir()) {
-		return nil
+		return atomicWrite(markerPath, []byte("completed\n"), 0o600)
 	}
 
 	for _, name := range []string{"config.json", ".env", "workspaces.json"} {
@@ -260,7 +267,10 @@ func MigrateLegacyLayout() error {
 	if err := copyLegacyWorkspaceDirs(filepath.Join(legacyData, "workspaces"), filepath.Join(AppDataDir(), "workspaces"), false); err != nil {
 		return fmt.Errorf("migrate legacy workspace state: %w", err)
 	}
-	return nil
+	// The marker is written only after every migration step succeeds. Legacy
+	// files remain as rollback-safe backups, but are never copied back into the
+	// canonical tree after a user or state GC intentionally removes an entry.
+	return atomicWrite(markerPath, []byte("completed\n"), 0o600)
 }
 
 func customLayoutConfigured() bool {

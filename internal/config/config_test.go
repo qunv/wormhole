@@ -77,6 +77,19 @@ func TestMigrateLegacyLayoutCopiesWithoutOverwriting(t *testing.T) {
 	assertMissing(t, filepath.Join(AppConfigDir(), "workspaces", "0123456789abcdef", "notes.json"))
 	assertMissing(t, filepath.Join(AppDataDir(), "workspaces", "api", "config.json"))
 	assertFileContent(t, filepath.Join(legacyConfig, "config.json"), "legacy-config")
+	markerPath := filepath.Join(AppHomeDir(), legacyLayoutMigrationMarker)
+	assertFileContent(t, markerPath, "completed\n")
+
+	// A completed migration must not resurrect state that was intentionally
+	// removed from the canonical tree while the rollback-safe legacy copy stays.
+	migratedState := filepath.Join(AppDataDir(), "workspaces", "0123456789abcdef")
+	if err := os.RemoveAll(migratedState); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacyLayout(); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, migratedState)
 }
 
 func TestLoadFileMigratesLegacyDefaultAssetPaths(t *testing.T) {

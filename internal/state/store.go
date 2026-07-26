@@ -51,11 +51,9 @@ func NewAt(workspace, dataDir string) (*Store, error) {
 		ApprovalsDir: filepath.Join(workspaceDir, "approvals"),
 		AuditPath:    filepath.Join(dataDir, "audit.log"),
 	}
-	for _, dir := range []string{dataDir, workspaceDir, store.BackupsDir, store.ApprovalsDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, err
-		}
-	}
+	// Paths are materialized lazily by the write operation that owns them.
+	// Runtime construction and read-only tests must not leave empty workspace,
+	// backup, or approval directories behind in persistent state.
 	return store, nil
 }
 

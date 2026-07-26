@@ -2,6 +2,15 @@
 
 All notable changes to Codebridge are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Prevented read-only runtimes and tests from creating empty persistent workspace-state directories.
+- Added bounded state garbage collection for stale repository caches, orphaned and over-quota patch backups, expired terminal approvals, and empty workspace-state directories.
+- Added `codebridge state gc --dry-run` and a bounded daemon-startup sweep while preserving durable notes, tasks, checkpoints, and decisions.
+- Isolated runtime-heavy test packages from the user's real `~/.codebridge` tree.
+
 ## [1.0.0] - 2026-07-22
 
 Codebridge 1.0.0 is the first stable release. It packages the multi-workspace MCP gateway, local coding tools, policy enforcement, observability, memory integration, and cross-platform installer into one production-ready binary.
@@ -31,4 +40,5 @@ Codebridge 1.0.0 is the first stable release. It packages the multi-workspace MC
 - `go build ./...`
 - Cross-compilation for Linux, macOS, and Windows on amd64 and arm64 through GoReleaser.
 
+[Unreleased]: https://github.com/qunv/codebridge/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/qunv/codebridge/releases/tag/v1.0.0

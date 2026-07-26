@@ -198,7 +198,7 @@ All persistent Codebridge files use one canonical root on every operating system
 
 `CODEBRIDGE_HOME` relocates the entire tree. The older granular overrides remain available: `CODEBRIDGE_CONFIG_PATH` changes the primary config file, `CODEBRIDGE_DATA_DIR` changes the state root, and `CODEBRIDGE_WORKSPACE_REGISTRY_PATH` changes the registry file.
 
-With the default layout, startup performs an idempotent copy migration from the former XDG, Application Support, or AppData locations. Existing canonical files are never overwritten and legacy files are retained. Registry schema version 3 also rewrites default absolute paths from the previous layout while preserving explicitly customized paths.
+With the default layout, startup performs a one-time copy migration from the former XDG, Application Support, or AppData locations. Existing canonical files are never overwritten, legacy files are retained, and a completion marker prevents those retained backups from resurrecting canonical files removed after migration. Registry schema version 3 also rewrites default absolute paths from the previous layout while preserving explicitly customized paths.
 
 Workspace-specific command conventions, ignored directories, and profile metadata live in `<workspace>/.codebridge/profile.json`. `<workspace>/.agent/profile.json` remains a compatibility fallback when the canonical profile does not exist.
 
@@ -686,6 +686,12 @@ Per-workspace state is stored under:
 ```
 
 The inner workspace path hash is derived from the canonical primary workspace path. The outer named instance directory prevents state overlap across endpoint identities and supports replacing a registration without mixing the old repository's state with the new root. Memory-provider data is not stored in the local state directory, except for audit records and counters associated with tool calls.
+
+`state.NewAt` computes these paths without creating them. The first owning write materializes only the required parent directory, preventing read-only runtimes and tests from accumulating empty workspace hashes. Agent, MCP-server, and HTTP-server package tests set an isolated `CODEBRIDGE_HOME` through package `TestMain` entry points.
+
+State garbage collection distinguishes durable state from regenerable or bounded state. Durable notes, checkpoints, current tasks, decisions, and unknown files are never expired automatically. Repository `index.json` is removed after seven days or immediately when its recorded root no longer exists. Terminal approvals retain their existing 30-day window. Patch backups retain the newest eligible data subject to all three limits: 50 batches, 30 days, and 256 MiB per workspace; one batch may not exceed 128 MiB. Directories not referenced by `patch-history.json` are orphaned and removed.
+
+The daemon performs a startup sweep capped at 100 workspace directories and skips it when another daemon is active. `codebridge state gc --dry-run` scans the primary state root, registered named-workspace data directories, and existing instance roots left by removed registrations without changing files; destructive manual GC requires an offline daemon unless `--force` is explicit. Filesystem-entry scans and reported action lists are bounded, and malformed or unknown state is preserved rather than guessed about.
 
 ## 10. Security invariants
 

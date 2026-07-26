@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -73,6 +74,30 @@ func TestStoreAppendLineSerializesConcurrentWriters(t *testing.T) {
 	}
 	if lines != 20 {
 		t.Fatalf("line count = %d, want 20; content=%q", lines, raw)
+	}
+}
+
+func TestNewAtDoesNotMaterializeWorkspaceState(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	store, err := NewAt(workspace, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.WorkspaceDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("NewAt materialized workspace state: %v", err)
+	}
+	if err := store.WriteJSON(store.NotesPath, map[string]string{"note": "saved"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.NotesPath); err != nil {
+		t.Fatalf("WriteJSON did not materialize state: %v", err)
+	}
+	if _, err := os.Stat(store.BackupsDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unrelated backup directory was materialized: %v", err)
+	}
+	if _, err := os.Stat(store.ApprovalsDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unrelated approval directory was materialized: %v", err)
 	}
 }
 

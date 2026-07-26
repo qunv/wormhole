@@ -189,7 +189,7 @@ Tests should cover unavailable providers, timeouts, retries, shutdown, response 
 
 ## Testing
 
-Add regression tests for every bug fix and focused tests for new behavior. Prefer deterministic tests that use temporary directories, loopback listeners, fake providers, fake upstream servers, and explicit timeouts.
+Add regression tests for every bug fix and focused tests for new behavior. Prefer deterministic tests that use temporary directories, loopback listeners, fake providers, fake upstream servers, and explicit timeouts. Any package test that constructs a runtime through the default data directory must isolate `CODEBRIDGE_HOME` in `TestMain`; tests must never create entries in the developer's real `~/.codebridge/state/workspaces` tree.
 
 Minimum verification for ordinary changes:
 

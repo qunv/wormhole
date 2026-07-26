@@ -196,6 +196,8 @@ codebridge status
 codebridge status --json
 codebridge doctor
 codebridge doctor --json
+codebridge state gc --dry-run
+codebridge state gc
 codebridge workspace
 codebridge workspace /path/to/repo
 codebridge restart
@@ -317,9 +319,23 @@ The unified default layout on every operating system is:
 
 Set `CODEBRIDGE_HOME` to relocate the complete layout. The existing granular overrides (`CODEBRIDGE_CONFIG_PATH`, `CODEBRIDGE_DATA_DIR`, and `CODEBRIDGE_WORKSPACE_REGISTRY_PATH`) remain supported for advanced deployments.
 
+Workspace state paths are created lazily, so starting a read-only runtime does not leave empty hash directories. GC includes the primary state root, registered named workspaces, and existing instance directories left behind by removed registrations. On daemon startup Codebridge scans a bounded batch of workspace-state directories and removes only regenerable or expired data: empty directories, repository index caches older than seven days or whose root no longer exists, orphaned/out-of-quota patch backups, and terminal approval records older than 30 days. Durable notes, checkpoints, current tasks, decisions, and unknown files are preserved.
+
+Inspect or run the same cleanup manually:
+
+```bash
+codebridge state gc --dry-run
+codebridge state gc --dry-run --json
+codebridge stop
+codebridge state gc
+codebridge restart
+```
+
+A live daemon blocks destructive manual GC unless `--force` is passed. Patch recovery keeps at most 50 batches, 30 days, and 256 MiB per workspace; a single backup batch is limited to 128 MiB.
+
 The shared `.env` remains the source for the Runtime API key and referenced memory or upstream MCP secrets, so credentials are not copied into workspace configs. Workspace IDs must match `[a-z0-9][a-z0-9_-]{0,31}`; `default` is reserved. Registry validation also rejects shared config paths or data directories between two IDs.
 
-On the first run with the default layout, Codebridge copies missing files from the former OS-specific config and state directories into `~/.codebridge` without overwriting new files or deleting the legacy copies. Registry versions 1 and 2 are upgraded in memory, including default absolute workspace paths. Stop any legacy per-workspace server or tunnel processes before starting the upgraded daemon.
+On the first run with the default layout, Codebridge copies missing files from the former OS-specific config and state directories into `~/.codebridge` without overwriting new files or deleting the legacy copies. A completion marker prevents retained legacy backups from recreating canonical state that is later removed intentionally. Registry versions 1 and 2 are upgraded in memory, including default absolute workspace paths. Stop any legacy per-workspace server or tunnel processes before starting the upgraded daemon.
 
 ## ChatGPT Web tunnel
 
@@ -696,6 +712,7 @@ internal/processx/    bounded process execution and process-tree management
 internal/upstreammcp/  generic stdio and Streamable HTTP MCP client/session management
 internal/memory/      canonical contracts, recorder, scoping, and adapters
 internal/state/       per-workspace local state
+internal/maintenance/ bounded state garbage collection
 internal/workspaceregistry/ persistent named-workspace registry and migration
 internal/assets/      embedded MCP Apps widget
 ```

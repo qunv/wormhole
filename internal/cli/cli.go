@@ -53,6 +53,7 @@ type options struct {
 	Save         bool
 	JSON         bool
 	Force        bool
+	DryRun       bool
 }
 
 func (a App) Run(ctx context.Context, argv []string) error {
@@ -137,6 +138,8 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return a.status(cfg, opts)
 	case "doctor":
 		return a.doctor(ctx, cfg, opts)
+	case "state":
+		return a.stateCommand(cfg, opts)
 	case "workspace":
 		return a.workspaceCommand(ctx, defaultConfig, opts)
 	case "setup", "init":
@@ -182,6 +185,11 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		fmt.Fprintf(a.Stdout, "[startup] %-9s %s\n", stage, message)
 	}
 	reporter("boot", fmt.Sprintf("Codebridge %s pid=%d", a.Version, os.Getpid()))
+	if readHealth(cfg.Port) == nil {
+		a.startupStateGC(reporter)
+	} else {
+		reporter("state", "gc skipped because another daemon is active")
+	}
 	shared := agent.NewSharedServices(a.Version)
 	primaryID := workspaceregistry.IDFromPath(cfg.Workspace)
 	primaryRuntime, err := agent.NewWorkspaceContextWithSharedServices(
@@ -254,6 +262,7 @@ Usage:
   codebridge stop|restart       Manage background processes
   codebridge status [--json]    Show health and PID state
   codebridge doctor [--json]    Check local readiness
+  codebridge state gc [--dry-run] [--json]
   codebridge workspace [path]   Show or set the primary workspace
   codebridge workspace add <id> <path> [--extra-root <path>] [--force]
   codebridge workspace list [--json]
@@ -283,6 +292,7 @@ Options:
   --runtime-key-env <name>
   --runtime-key <key>     Runtime-only; never saved to config.json
   --save                  Persist non-secret options
+  --dry-run               Report state cleanup without deleting
   --json
 `, a.Name)
 }
@@ -416,6 +426,8 @@ func parse(argv []string) (options, error) {
 			opts.JSON = true
 		case "--force":
 			opts.Force = true
+		case "--dry-run":
+			opts.DryRun = true
 		default:
 			opts.Rest = append(opts.Rest, arg)
 		}

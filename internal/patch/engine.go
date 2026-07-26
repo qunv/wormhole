@@ -54,6 +54,11 @@ type backupBatch struct {
 	Files    []backupFile `json:"files"`
 }
 
+type backupBudget struct {
+	remainingBytes   int64
+	remainingEntries int
+}
+
 type Engine struct {
 	Workspace *workspace.Manager
 	Store     *state.Store
@@ -133,18 +138,32 @@ func (e *Engine) backupLocked(ctx context.Context, tool string, paths []string) 
 	defer func() {
 		if cleanup {
 			_ = os.RemoveAll(batch.BatchDir)
+			_ = removeDirIfEmpty(e.Store.BackupsDir)
+			_ = removeDirIfEmpty(e.Store.WorkspaceDir)
 		}
 	}()
 
+	budget := &backupBudget{
+		remainingBytes: DefaultBackupBatchBytes, remainingEntries: DefaultBackupScanEntries,
+	}
 	for index, target := range resolved {
 		if err := ctx.Err(); err != nil {
 			return backupBatch{}, err
 		}
-		item, err := backupPathContext(ctx, target, filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", index, filepath.Base(target))))
+		item, err := backupPathContextWithBudget(ctx, target, filepath.Join(batch.BatchDir, fmt.Sprintf("%d-%s", index, filepath.Base(target))), budget)
 		if err != nil {
 			return backupBatch{}, fmt.Errorf("backup %s: %w", e.Workspace.Relative(target), err)
 		}
 		batch.Files = append(batch.Files, item)
+	}
+
+	batchScanEntries := DefaultBackupScanEntries
+	batchBytes, err := pathSize(batch.BatchDir, &batchScanEntries)
+	if err != nil {
+		return backupBatch{}, err
+	}
+	if batchBytes > DefaultBackupBatchBytes {
+		return backupBatch{}, fmt.Errorf("backup batch is %d bytes; maximum is %d bytes", batchBytes, DefaultBackupBatchBytes)
 	}
 
 	history, err := e.readHistoryLocked()
@@ -152,18 +171,25 @@ func (e *Engine) backupLocked(ctx context.Context, tool string, paths []string) 
 		return backupBatch{}, err
 	}
 	history = append(history, batch)
-	var expired []backupBatch
-	if len(history) > 50 {
-		expired = append(expired, history[:len(history)-50]...)
-		history = history[len(history)-50:]
+	retentionOptions := normalizeBackupPruneOptions(BackupPruneOptions{
+		Now: time.Now().UTC(), ProtectedBatchID: batch.ID,
+	})
+	retentionScanEntries := retentionOptions.MaxScanEntries
+	retained, expired, err := selectBackupHistory(history, e.Store.BackupsDir, retentionOptions, &retentionScanEntries)
+	if err != nil {
+		return backupBatch{}, err
 	}
-	if err := e.Store.WriteJSON(e.Store.PatchHistory, history); err != nil {
+	if len(retained) == 0 || retained[len(retained)-1].ID != batch.ID {
+		return backupBatch{}, errors.New("new backup batch could not be retained within the configured quota")
+	}
+	if err := e.Store.WriteJSON(e.Store.PatchHistory, retained); err != nil {
 		return backupBatch{}, err
 	}
 	cleanup = false
-	for _, old := range expired {
-		_ = os.RemoveAll(old.BatchDir)
+	for path := range expired {
+		_ = os.RemoveAll(path)
 	}
+	removeUnreferencedBackupDirs(e.Store.BackupsDir, retained)
 	return batch, nil
 }
 
@@ -199,6 +225,10 @@ func backupPath(target, destination string) (backupFile, error) {
 }
 
 func backupPathContext(ctx context.Context, target, destination string) (backupFile, error) {
+	return backupPathContextWithBudget(ctx, target, destination, nil)
+}
+
+func backupPathContextWithBudget(ctx context.Context, target, destination string, budget *backupBudget) (backupFile, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -217,20 +247,95 @@ func backupPathContext(ctx context.Context, target, destination string) (backupF
 	item.Mode = uint32(info.Mode().Perm())
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
+		if err := consumeBackupEntry(budget); err != nil {
+			return backupFile{}, err
+		}
 		item.Kind = "symlink"
 		item.LinkTarget, err = os.Readlink(target)
 	case info.IsDir():
 		item.Kind = "directory"
 		item.BackupFile = destination
-		err = copyTreeContext(ctx, target, destination)
+		err = copyTreeBackupContext(ctx, target, destination, budget)
 	case info.Mode().IsRegular():
+		if err := consumeBackupEntry(budget); err != nil {
+			return backupFile{}, err
+		}
 		item.Kind = "file"
 		item.BackupFile = destination
-		err = copyFileContext(ctx, target, destination, info.Mode())
+		err = copyBackupFileContext(ctx, target, destination, info.Mode(), budget)
 	default:
 		err = fmt.Errorf("unsupported file type %s", info.Mode())
 	}
 	return item, err
+}
+
+func consumeBackupEntry(budget *backupBudget) error {
+	if budget == nil {
+		return nil
+	}
+	if budget.remainingEntries <= 0 {
+		return ErrBackupScanLimit
+	}
+	budget.remainingEntries--
+	return nil
+}
+
+func copyBackupFileContext(ctx context.Context, source, destination string, mode fs.FileMode, budget *backupBudget) error {
+	if budget == nil {
+		return copyFileContext(ctx, source, destination, mode)
+	}
+	written, err := copyFileContextLimited(ctx, source, destination, mode, budget.remainingBytes)
+	if err != nil {
+		return err
+	}
+	budget.remainingBytes -= written
+	return nil
+}
+
+func copyTreeBackupContext(ctx context.Context, source, destination string, budget *backupBudget) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := consumeBackupEntry(budget); err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case info.IsDir():
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(target, info.Mode().Perm())
+		case info.Mode().IsRegular():
+			return copyBackupFileContext(ctx, path, target, info.Mode(), budget)
+		default:
+			return fmt.Errorf("unsupported file type %s", info.Mode())
+		}
+	})
 }
 
 func (e *Engine) ApplyOperations(operations []Operation, dryRun bool) (map[string]any, error) {
@@ -987,23 +1092,28 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 }
 
 func copyFileContext(ctx context.Context, src, dst string, mode fs.FileMode) error {
+	_, err := copyFileContextLimited(ctx, src, dst, mode, -1)
+	return err
+}
+
+func copyFileContextLimited(ctx context.Context, src, dst string, mode fs.FileMode, maxBytes int64) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	input, err := os.Open(src)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer input.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return 0, err
 	}
 	output, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
 	if err != nil {
-		return err
+		return 0, err
 	}
 	ok := false
 	defer func() {
@@ -1012,17 +1122,25 @@ func copyFileContext(ctx context.Context, src, dst string, mode fs.FileMode) err
 			_ = os.Remove(dst)
 		}
 	}()
-	if _, err := io.Copy(output, contextReader{ctx: ctx, reader: input}); err != nil {
-		return err
+	reader := io.Reader(contextReader{ctx: ctx, reader: input})
+	if maxBytes >= 0 {
+		reader = io.LimitReader(reader, maxBytes+1)
+	}
+	written, err := io.Copy(output, reader)
+	if err != nil {
+		return written, err
+	}
+	if maxBytes >= 0 && written > maxBytes {
+		return written, fmt.Errorf("backup data exceeds remaining quota of %d bytes", maxBytes)
 	}
 	if err := output.Sync(); err != nil {
-		return err
+		return written, err
 	}
 	if err := output.Close(); err != nil {
-		return err
+		return written, err
 	}
 	ok = true
-	return nil
+	return written, nil
 }
 
 func copyTree(src, dst string) error {
