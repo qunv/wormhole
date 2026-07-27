@@ -176,12 +176,22 @@ Community MCP modules store only argument names and bounded result metadata in l
 Configuration is assembled in this order:
 
 ```text
-Default()
-  → JSON unmarshal from config.json
-  → environment overrides
-  → normalize + validate
-  → CLI options for the current invocation
+primary runtime
+  Default()
+    → JSON unmarshal from config.json
+    → environment overrides
+    → normalize + validate
+    → CLI options for the current invocation
+
+named runtime
+  primary effective config
+    → recursive JSON object merge from workspaces/<id>/config.json
+    → registry-owned workspace root
+    → daemon-owned listener, authentication, Origin, and tunnel fields
+    → normalize + validate
 ```
+
+Named workspace files are partial overrides, not generated full snapshots. JSON objects merge recursively, including individual `mcpServers` and their nested policy/environment maps. Arrays and scalar values replace inherited values, explicit `false` is preserved, and `null` removes the inherited key. A missing file is equivalent to `{}`. Legacy full workspace configs remain valid because a complete JSON object is also a valid override, although fields present in those files continue to shadow later global changes until removed.
 
 ### Configuration locations
 
@@ -248,7 +258,7 @@ workspaces.json
   <id> → workspace root, config path, data directory, enabled
 
 workspaces/<id>/config.json
-  non-secret workspace runtime configuration
+  non-secret partial workspace runtime override
 
 shared daemon
   /mcp/session
@@ -259,7 +269,7 @@ shared daemon
     → Runtime[id]
 ```
 
-`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, schema migrations through version 3, and the registry/config fingerprint used by the supervisor. The ID `default` remains reserved for named registrations, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named configs are loaded without ambient environment overrides, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the primary config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint.
+`internal/workspaceregistry` owns schema validation, stable ordering, atomic persistence, schema migrations through version 3, and the registry/config fingerprint used by the supervisor. The ID `default` remains reserved for named registrations, and two registrations cannot share a config path or data directory. Registry identity is authoritative for the workspace root. Named overrides are merged over the already effective primary config without reapplying ambient environment variables, then the daemon copies global listener security fields such as host, port, bearer token, approval token, and allowed Origins from the primary config. Process-level `AGENT_WORKSPACE` or `PORT` values therefore cannot repoint a named endpoint. New registrations persist only workspace-specific deltas; refreshing a registration removes obsolete listener, identity, and tunnel fields left by legacy full snapshots.
 
 Each runtime owns a separate workspace manager, state store, approval manager, patch engine, managed-process registry, profile, memory project, workspace-prefixed session identity, policy, request limits, and workspace-local handlers. The primary runtime uses the application state directory; named runtimes use `instances/<id>` as their state root. This keeps notes, tasks, audit, approvals, backups, patch history, and managed processes isolated even when two registrations point at repositories with similar contents.
 

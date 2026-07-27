@@ -53,21 +53,37 @@ func TestWorkspaceAddCreatesSharedDaemonEndpoint(t *testing.T) {
 		t.Fatalf("phase-one compatibility warning missing: %s", output.String())
 	}
 
-	instanceConfig, err := config.LoadFile(entry.ConfigPath)
+	override, err := config.ReadOverrideFile(entry.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, inherited := range []string{"workspace", "port", "host", "noTunnel", "tunnelId"} {
+		if _, exists := override[inherited]; exists {
+			t.Fatalf("daemon-owned field %q was duplicated in workspace override: %#v", inherited, override)
+		}
+	}
+	if override["mode"] != "full" || override["policy"] != "full" {
+		t.Fatalf("runtime options were not saved as overrides: %#v", override)
+	}
+	items, err := loadNamedWorkspaceConfigs(defaultConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("named configs = %d, want 1", len(items))
+	}
+	instanceConfig := items[0].Config
 	if instanceConfig.Workspace != root || instanceConfig.Port != defaultConfig.Port {
-		t.Fatalf("unexpected instance config: workspace=%q port=%d", instanceConfig.Workspace, instanceConfig.Port)
+		t.Fatalf("unexpected effective config: workspace=%q port=%d", instanceConfig.Workspace, instanceConfig.Port)
 	}
 	if !instanceConfig.NoTunnel || instanceConfig.TunnelID != "" {
 		t.Fatalf("named workspace owns tunnel settings: noTunnel=%v tunnelID=%q", instanceConfig.NoTunnel, instanceConfig.TunnelID)
 	}
 	if instanceConfig.Mode != "full" || instanceConfig.Policy != "full" {
-		t.Fatalf("runtime options were not saved: mode=%q policy=%q", instanceConfig.Mode, instanceConfig.Policy)
+		t.Fatalf("runtime options were not applied: mode=%q policy=%q", instanceConfig.Mode, instanceConfig.Policy)
 	}
 	if len(instanceConfig.ExtraRoots) != 1 || instanceConfig.ExtraRoots[0] != extraRoot {
-		t.Fatalf("extra roots were not saved: %#v", instanceConfig.ExtraRoots)
+		t.Fatalf("extra roots were not applied: %#v", instanceConfig.ExtraRoots)
 	}
 	for _, warning := range []string{"--no-tunnel ignored", "--profile ignored"} {
 		if !strings.Contains(output.String(), warning) {
@@ -113,13 +129,13 @@ func TestLoadNamedWorkspaceConfigsUsesRegistryIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := registry.Workspaces["api"]
-	cfg, err := config.LoadFile(entry.ConfigPath)
+	override, err := config.ReadOverrideFile(entry.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Workspace = t.TempDir()
-	cfg.Port = 9999
-	if err := config.SaveFile(entry.ConfigPath, cfg); err != nil {
+	override["workspace"] = t.TempDir()
+	override["port"] = 9999
+	if err := config.SaveOverrideFile(entry.ConfigPath, defaultConfig, override); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENT_WORKSPACE", t.TempDir())
@@ -134,6 +150,30 @@ func TestLoadNamedWorkspaceConfigsUsesRegistryIdentity(t *testing.T) {
 	}
 	if items[0].Config.Workspace != root || items[0].Config.Port != defaultConfig.Port {
 		t.Fatalf("registry identity was not authoritative: %#v", items[0])
+	}
+}
+
+func TestNamedWorkspaceInheritsLaterGlobalChanges(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	cfg.MCPServers["postgres"] = config.MCPServerConfig{Command: "uvx", StartupMode: config.MCPStartupModeEager}
+	app := App{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
+	if err := app.workspaceAdd(cfg, options{Rest: []string{"add", "api", t.TempDir()}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.MCPServers["postgres"] = config.MCPServerConfig{Command: "uvx", StartupMode: config.MCPStartupModeLazy}
+	items, err := loadNamedWorkspaceConfigs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("named configs = %d, want 1", len(items))
+	}
+	server := items[0].Config.MCPServers["postgres"]
+	if server.StartupMode != config.MCPStartupModeLazy {
+		t.Fatalf("named workspace retained stale global MCP config: %#v", server)
 	}
 }
 
@@ -181,12 +221,12 @@ func TestDaemonConfigIDChangesWithNamedWorkspaceSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := registry.Workspaces["api"]
-	namedConfig, err := config.LoadFile(entry.ConfigPath)
+	override, err := config.ReadOverrideFile(entry.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	namedConfig.Memory.SecretEnv = "API_MEMORY_SECRET"
-	if err := config.SaveFile(entry.ConfigPath, namedConfig); err != nil {
+	override["memory"] = map[string]any{"secretEnv": "API_MEMORY_SECRET"}
+	if err := config.SaveOverrideFile(entry.ConfigPath, cfg, override); err != nil {
 		t.Fatal(err)
 	}
 
@@ -223,16 +263,17 @@ func TestStartupWaitTimeoutIncludesNamedWorkspaceDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := registry.Workspaces["api"]
-	namedConfig, err := config.LoadFile(entry.ConfigPath)
+	override, err := config.ReadOverrideFile(entry.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	namedConfig.Memory.Enabled = true
-	namedConfig.Memory.Provider = "agentmemory"
-	namedConfig.Memory.Required = true
-	namedConfig.Memory.TimeoutMS = 2_000
-	namedConfig.MCPServers["slow"] = config.MCPServerConfig{Command: "mcp-slow", StartupTimeoutMS: 3_000}
-	if err := config.SaveFile(entry.ConfigPath, namedConfig); err != nil {
+	override["memory"] = map[string]any{
+		"enabled": true, "provider": "agentmemory", "required": true, "timeoutMs": 2_000,
+	}
+	override["mcpServers"] = map[string]any{
+		"slow": map[string]any{"command": "mcp-slow", "startupTimeoutMs": 3_000},
+	}
+	if err := config.SaveOverrideFile(entry.ConfigPath, cfg, override); err != nil {
 		t.Fatal(err)
 	}
 

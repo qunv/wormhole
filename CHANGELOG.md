@@ -6,11 +6,13 @@ All notable changes to Codebridge are documented in this file.
 
 ### Added
 
+- Added recursively merged partial configuration overrides for named workspaces, including explicit array replacement, `false` values, and `null` deletion of inherited keys.
 - Added per-upstream `workspaceIds` scoping and `startupMode` values `eager`, `background`, and `lazy`.
 - Added bounded, owner-only persistent upstream tool catalogs for deferred typed-tool registration.
 
 ### Changed
 
+- New named workspace registrations now persist only workspace-specific deltas and inherit later global memory, MCP, policy, and limit changes.
 - Initialized workspace runtimes concurrently and based the supervisor timeout on the slowest workspace dependency chain.
 - Single-flighted shared upstream MCP creation and cached recent startup failures for `failureCooldownMs`.
 - Refreshed deferred tool catalogs on first connection while keeping the active downstream tool contract immutable until restart.

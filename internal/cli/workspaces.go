@@ -125,32 +125,34 @@ func (a App) registerWorkspace(defaultConfig config.Config, rawID, rawRoot strin
 		CreatedAt: createdAt, UpdatedAt: now,
 	}
 
-	instanceConfig := defaultConfig
+	override := map[string]any{}
 	if exists {
-		if loaded, loadErr := config.LoadFile(previous.ConfigPath); loadErr == nil {
-			instanceConfig = loaded
+		override, err = config.ReadOverrideFile(previous.ConfigPath)
+		if err != nil {
+			return workspaceregistry.Registration{}, false, fmt.Errorf("load workspace %q override: %w", id, err)
 		}
 	}
-	instanceConfig.Workspace = root
-	instanceConfig.Port = defaultConfig.Port
-	instanceConfig.Host = defaultConfig.Host
-	instanceConfig.AuthToken = defaultConfig.AuthToken
-	instanceConfig.AllowedOrigins = append([]string(nil), defaultConfig.AllowedOrigins...)
+	// Registry identity and listener/tunnel security belong to the shared
+	// daemon. Remove legacy snapshot fields whenever a workspace registration is
+	// refreshed so the persisted document converges toward a minimal override.
+	for _, field := range []string{
+		"workspace", "port", "host", "authToken", "approvalToken", "allowedOrigins",
+		"noTunnel", "tunnelBin", "tunnelId", "organizationId", "profile", "profileDir", "runtimeKeyEnv",
+	} {
+		delete(override, field)
+	}
+	// Extra roots are workspace-specific. A newly registered workspace starts
+	// with none even when the primary workspace has global extra roots.
 	if len(opts.ExtraRoots) > 0 || !exists || opts.Force {
-		instanceConfig.ExtraRoots = append([]string(nil), opts.ExtraRoots...)
+		override["extraRoots"] = append([]string(nil), opts.ExtraRoots...)
 	}
 	if opts.Mode != "" {
-		instanceConfig.Mode = opts.Mode
+		override["mode"] = opts.Mode
 	}
 	if opts.Policy != "" {
-		instanceConfig.Policy = opts.Policy
+		override["policy"] = opts.Policy
 	}
-	// Named workspaces are endpoints of the shared daemon; they never own a
-	// separate tunnel or listener.
-	instanceConfig.NoTunnel = true
-	instanceConfig.TunnelID = ""
-
-	if err := config.SaveFile(entry.ConfigPath, instanceConfig); err != nil {
+	if err := config.SaveOverrideFile(entry.ConfigPath, defaultConfig, override); err != nil {
 		return workspaceregistry.Registration{}, false, err
 	}
 	registry.Workspaces[id] = entry
@@ -415,7 +417,7 @@ func loadNamedWorkspaceConfigs(defaultConfig config.Config) ([]namedWorkspaceCon
 	entries := workspaceregistry.Enabled(registry)
 	result := make([]namedWorkspaceConfig, 0, len(entries))
 	for _, entry := range entries {
-		cfg, err := config.LoadFile(entry.ConfigPath)
+		cfg, err := config.LoadOverrideFile(entry.ConfigPath, defaultConfig)
 		if err != nil {
 			return nil, fmt.Errorf("load workspace %q config: %w", entry.ID, err)
 		}
