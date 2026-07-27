@@ -405,22 +405,25 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 }
 
 func startupWaitTimeout(cfg config.Config) time.Duration {
-	timeout := 10*time.Second + startupDependencyTimeout(cfg)
+	primaryID := workspaceregistry.IDFromPath(cfg.Workspace)
+	dependencyTimeout := startupDependencyTimeout(cfg, primaryID)
 	if named, err := loadNamedWorkspaceConfigs(cfg); err == nil {
 		for _, item := range named {
-			timeout += startupDependencyTimeout(item.Config)
+			dependencyTimeout = max(dependencyTimeout, startupDependencyTimeout(item.Config, item.Registration.ID))
 		}
 	}
-	return timeout
+	// Workspace runtimes initialize concurrently, while dependencies inside one
+	// runtime remain sequential. Budget for the slowest workspace, not their sum.
+	return 10*time.Second + dependencyTimeout
 }
 
-func startupDependencyTimeout(cfg config.Config) time.Duration {
+func startupDependencyTimeout(cfg config.Config, workspaceID string) time.Duration {
 	var timeout time.Duration
 	if cfg.Memory.Enabled && cfg.Memory.Required {
 		timeout += time.Duration(cfg.Memory.TimeoutMS) * time.Millisecond
 	}
 	for _, serverConfig := range cfg.MCPServers {
-		if serverConfig.IsEnabled() {
+		if serverConfig.IsEnabled() && serverConfig.AppliesToWorkspace(workspaceID) {
 			timeout += upstreammcp.StartupWaitTimeout(serverConfig)
 		}
 	}

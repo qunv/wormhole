@@ -147,6 +147,68 @@ func TestMCPServersBoundConcurrencyCacheAndCooldown(t *testing.T) {
 	}
 }
 
+func TestMCPServerStartupModeNormalizeValidateAndRequireEager(t *testing.T) {
+	cfg := Default()
+	server := validStdioServer("uvx")
+	server.StartupMode = " LAZY "
+	cfg.MCPServers["deferred"] = server
+	normalize(&cfg)
+
+	normalized := cfg.MCPServers["deferred"]
+	if normalized.StartupMode != MCPStartupModeLazy || normalized.EffectiveStartupMode() != MCPStartupModeLazy {
+		t.Fatalf("startup mode normalized to %q effective=%q", normalized.StartupMode, normalized.EffectiveStartupMode())
+	}
+	if err := cfg.Validate(false); err != nil {
+		t.Fatalf("valid startup mode rejected: %v", err)
+	}
+
+	normalized.Required = true
+	if got := normalized.EffectiveStartupMode(); got != MCPStartupModeEager {
+		t.Fatalf("required server effective startup mode = %q, want eager", got)
+	}
+
+	server.StartupMode = "later"
+	server.Required = true
+	cfg.MCPServers["deferred"] = server
+	normalize(&cfg)
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "startupMode") {
+		t.Fatalf("invalid startup mode was not rejected: %v", err)
+	}
+}
+
+func TestMCPServerWorkspaceIDsNormalizeValidateAndApply(t *testing.T) {
+	cfg := Default()
+	server := validStdioServer("uvx")
+	server.WorkspaceIDs = []string{" API ", "remotee"}
+	cfg.MCPServers["scoped"] = server
+	normalize(&cfg)
+
+	normalized := cfg.MCPServers["scoped"]
+	if got := strings.Join(normalized.WorkspaceIDs, ","); got != "api,remotee" {
+		t.Fatalf("workspace IDs normalized to %q", got)
+	}
+	if !normalized.AppliesToWorkspace("API") || normalized.AppliesToWorkspace("other") {
+		t.Fatalf("unexpected workspace scope behavior: %#v", normalized.WorkspaceIDs)
+	}
+	if err := cfg.Validate(false); err != nil {
+		t.Fatalf("valid workspace scope rejected: %v", err)
+	}
+
+	server.WorkspaceIDs = []string{"bad/id"}
+	cfg.MCPServers["scoped"] = server
+	normalize(&cfg)
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "workspaceIds") {
+		t.Fatalf("invalid workspace ID was not rejected: %v", err)
+	}
+
+	server.WorkspaceIDs = []string{"*"}
+	cfg.MCPServers["scoped"] = server
+	normalize(&cfg)
+	if scoped := cfg.MCPServers["scoped"]; !scoped.AppliesToWorkspace("anything") {
+		t.Fatal("workspace wildcard did not preserve global scope")
+	}
+}
+
 func TestDisabledMCPServerDoesNotRequireCommand(t *testing.T) {
 	cfg := Default()
 	cfg.MCPServers["optional"] = MCPServerConfig{Enabled: enabled(false)}

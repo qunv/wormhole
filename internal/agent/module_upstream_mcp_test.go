@@ -162,6 +162,43 @@ func TestMultipleMCPServersWithSameToolsUseDistinctNamespaces(t *testing.T) {
 	}
 }
 
+func TestUpstreamMCPWorkspaceScopeSkipsUnrelatedRuntimes(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	upstream := newAgentUpstreamHTTPServer(t)
+	shared := NewSharedServices("test")
+	defer shared.Close()
+
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
+	server := agentUpstreamConfig(upstream.URL)
+	server.WorkspaceIDs = []string{"target"}
+	cfg.MCPServers["community"] = server
+
+	other, err := NewWorkspaceContextWithSharedServices(
+		context.Background(), "other", t.TempDir(), cfg, "test", "pro", "other-config", shared, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, ok := other.Module("mcp_community"); ok {
+		t.Fatal("workspace-scoped upstream module was registered in an unrelated runtime")
+	}
+
+	targetCfg := cfg
+	targetCfg.Workspace = t.TempDir()
+	target, err := NewWorkspaceContextWithSharedServices(
+		context.Background(), "target", t.TempDir(), targetCfg, "test", "pro", "target-config", shared, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	if _, ok := target.Module("mcp_community"); !ok {
+		t.Fatal("workspace-scoped upstream module was not registered in its target runtime")
+	}
+}
+
 func TestOptionalAndRequiredUpstreamStartupBehavior(t *testing.T) {
 	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
 	base := config.Default()
@@ -182,12 +219,13 @@ func TestOptionalAndRequiredUpstreamStartupBehavior(t *testing.T) {
 	if warnings := runtime.StartupWarnings(); len(warnings) != 1 || !strings.Contains(warnings[0], "was skipped") {
 		t.Fatalf("optional startup warning = %#v", warnings)
 	}
-	if joined := strings.Join(startupEvents, "\n"); !strings.Contains(joined, "mcp:connecting missing") || !strings.Contains(joined, "warning:optional upstream MCP server") {
+	if joined := strings.Join(startupEvents, "\n"); !strings.Contains(joined, "mcp:preparing missing") || !strings.Contains(joined, "warning:optional upstream MCP server") {
 		t.Fatalf("startup reporter did not expose upstream progress: %s", joined)
 	}
 	runtime.Close()
 
 	missing.Required = true
+	missing.StartupMode = config.MCPStartupModeLazy
 	base.MCPServers["missing"] = missing
 	if runtime, err := New(base, "test", "pro", "test-config"); err == nil {
 		runtime.Close()

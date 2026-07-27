@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"codebridge/internal/agent"
 	"codebridge/internal/assets"
@@ -181,7 +182,10 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	var reporterMu sync.Mutex
 	reporter := func(stage, message string) {
+		reporterMu.Lock()
+		defer reporterMu.Unlock()
 		fmt.Fprintf(a.Stdout, "[startup] %-9s %s\n", stage, message)
 	}
 	reporter("boot", fmt.Sprintf("Codebridge %s pid=%d", a.Version, os.Getpid()))
@@ -190,65 +194,99 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 	} else {
 		reporter("state", "gc skipped because another daemon is active")
 	}
-	shared := agent.NewSharedServices(a.Version)
-	primaryID := workspaceregistry.IDFromPath(cfg.Workspace)
-	primaryRuntime, err := agent.NewWorkspaceContextWithSharedServices(
-		ctx, primaryID, "", cfg, a.Version, a.Tier, configID, shared, reporter,
-	)
-	if err != nil {
-		_ = shared.Close()
-		reporter("failed", err.Error())
-		return err
-	}
 
 	namedConfigs, err := loadNamedWorkspaceConfigs(cfg)
 	if err != nil {
-		primaryRuntime.Close()
-		_ = shared.Close()
 		reporter("failed", err.Error())
 		return err
 	}
-	namedRuntimes := make(map[string]*agent.Runtime, len(namedConfigs))
+	primaryID := workspaceregistry.IDFromPath(cfg.Workspace)
+	type runtimeStartup struct {
+		id       string
+		dataDir  string
+		config   config.Config
+		configID string
+		primary  bool
+	}
+	startups := []runtimeStartup{{
+		id: primaryID, config: cfg, configID: configID, primary: true,
+	}}
 	for _, item := range namedConfigs {
 		id := item.Registration.ID
 		if id == primaryID {
 			if sameWorkspacePath(item.Config.Workspace, cfg.Workspace) {
 				continue
 			}
-			for _, runtime := range namedRuntimes {
-				runtime.Close()
+			err := fmt.Errorf("workspace id %q conflicts with the primary workspace %s", id, cfg.Workspace)
+			reporter("failed", err.Error())
+			return err
+		}
+		startups = append(startups, runtimeStartup{
+			id: id, dataDir: item.Registration.DataDir, config: item.Config,
+			configID: item.Config.ConfigID(executable, assets.Widget()),
+		})
+	}
+
+	shared := agent.NewSharedServices(a.Version)
+	type runtimeStartupResult struct {
+		runtime *agent.Runtime
+		err     error
+	}
+	results := make([]runtimeStartupResult, len(startups))
+	var startupWG sync.WaitGroup
+	for index, startup := range startups {
+		startupWG.Add(1)
+		go func(index int, startup runtimeStartup) {
+			defer startupWG.Done()
+			workspaceReporter := reporter
+			if !startup.primary {
+				workspaceReporter = func(stage, message string) {
+					reporter(stage, "workspace="+startup.id+" "+message)
+				}
 			}
-			primaryRuntime.Close()
-			_ = shared.Close()
-			return fmt.Errorf("workspace id %q conflicts with the primary workspace %s", id, cfg.Workspace)
+			results[index].runtime, results[index].err = agent.NewWorkspaceContextWithSharedServices(
+				ctx, startup.id, startup.dataDir, startup.config,
+				a.Version, a.Tier, startup.configID, shared, workspaceReporter,
+			)
+		}(index, startup)
+	}
+	startupWG.Wait()
+
+	var startupErr error
+	for index, result := range results {
+		if result.err == nil || startupErr != nil {
+			continue
 		}
-		workspaceReporter := func(stage, message string) {
-			reporter(stage, "workspace="+id+" "+message)
+		startup := startups[index]
+		startupErr = result.err
+		if startup.primary {
+			reporter("failed", result.err.Error())
+		} else {
+			reporter("failed", fmt.Sprintf("workspace=%s %v", startup.id, result.err))
 		}
-		childConfigID := item.Config.ConfigID(executable, assets.Widget())
-		child, runtimeErr := agent.NewWorkspaceContextWithSharedServices(
-			ctx, id, item.Registration.DataDir, item.Config,
-			a.Version, a.Tier, childConfigID, shared, workspaceReporter,
-		)
-		if runtimeErr != nil {
-			for _, runtime := range namedRuntimes {
-				runtime.Close()
+	}
+	if startupErr != nil {
+		for _, result := range results {
+			if result.runtime != nil {
+				result.runtime.Close()
 			}
-			primaryRuntime.Close()
-			_ = shared.Close()
-			reporter("failed", fmt.Sprintf("workspace=%s %v", id, runtimeErr))
-			return runtimeErr
 		}
-		namedRuntimes[id] = child
+		_ = shared.Close()
+		return startupErr
+	}
+
+	primaryRuntime := results[0].runtime
+	namedRuntimes := make(map[string]*agent.Runtime, len(results)-1)
+	for index := 1; index < len(results); index++ {
+		namedRuntimes[startups[index].id] = results[index].runtime
 	}
 	defer func() {
-		for _, runtime := range namedRuntimes {
-			runtime.Close()
+		for index := len(results) - 1; index >= 0; index-- {
+			results[index].runtime.Close()
 		}
-		primaryRuntime.Close()
 		_ = shared.Close()
 	}()
-	reporter("server", fmt.Sprintf("opening http://%s:%d with %d workspace endpoint(s)", cfg.Host, cfg.Port, 1+len(namedRuntimes)))
+	reporter("server", fmt.Sprintf("opening http://%s:%d with %d workspace endpoint(s)", cfg.Host, cfg.Port, len(results)))
 	return server.NewMulti(primaryRuntime, namedRuntimes).ListenAndServe(ctx)
 }
 

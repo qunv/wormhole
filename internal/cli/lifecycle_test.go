@@ -275,6 +275,25 @@ func TestStartupWaitTimeoutIncludesConfiguredDependencies(t *testing.T) {
 	}
 }
 
+func TestStartupDependencyTimeoutHonorsMCPWorkspaceScope(t *testing.T) {
+	cfg := config.Default()
+	cfg.MCPServers["target"] = config.MCPServerConfig{
+		Transport: "streamable-http", URL: "http://127.0.0.1:9000/mcp",
+		StartupTimeoutMS: 3_000, WorkspaceIDs: []string{"target"},
+	}
+	cfg.MCPServers["other"] = config.MCPServerConfig{
+		Transport: "streamable-http", URL: "http://127.0.0.1:9001/mcp",
+		StartupTimeoutMS: 4_000, WorkspaceIDs: []string{"other"},
+	}
+
+	if got, want := startupDependencyTimeout(cfg, "target"), 3*time.Second; got != want {
+		t.Fatalf("target dependency timeout = %s, want %s", got, want)
+	}
+	if got, want := startupDependencyTimeout(cfg, "unrelated"), time.Duration(0); got != want {
+		t.Fatalf("unrelated dependency timeout = %s, want %s", got, want)
+	}
+}
+
 func TestStartupLogFollowerStreamsOnlyStartupLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launcher.log")
 	if err := os.WriteFile(path, []byte("old line\n"), 0o600); err != nil {

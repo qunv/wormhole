@@ -33,15 +33,16 @@ const (
 func (r *Runtime) registerConfiguredUpstreamMCP(ctx context.Context, reporter StartupReporter) error {
 	for _, serverName := range config.SortedMCPServerNames(r.Config.MCPServers) {
 		serverConfig := r.Config.MCPServers[serverName]
-		if !serverConfig.IsEnabled() {
+		if !serverConfig.IsEnabled() || !serverConfig.AppliesToWorkspace(r.WorkspaceID) {
 			continue
 		}
 		startedAt := time.Now()
 		reportStartup(reporter, "mcp", fmt.Sprintf(
-			"connecting %s transport=%s required=%t timeout=%s",
+			"preparing %s transport=%s required=%t startup=%s timeout=%s",
 			serverName,
 			serverConfig.EffectiveTransport(),
 			serverConfig.Required,
+			serverConfig.EffectiveStartupMode(),
 			time.Duration(serverConfig.StartupTimeoutMS)*time.Millisecond,
 		))
 		lease, err := r.shared.acquireUpstream(ctx, r, serverName, serverConfig)
@@ -66,10 +67,21 @@ func (r *Runtime) registerConfiguredUpstreamMCP(ctx context.Context, reporter St
 		if lease.ContractReused {
 			resourceState = "reused client and contract"
 		}
+		status := "connected"
+		catalogState := "live"
+		if lease.Deferred {
+			status = "registered"
+			catalogState = "cached"
+		} else if lease.Bootstrapped {
+			catalogState = "bootstrapped"
+		}
 		reportStartup(reporter, "mcp", fmt.Sprintf(
-			"connected %s tools=%d resources=%s in %s",
+			"%s %s tools=%d startup=%s catalog=%s resources=%s in %s",
+			status,
 			serverName,
 			len(module.Specs()),
+			lease.StartupMode,
+			catalogState,
 			resourceState,
 			time.Since(startedAt).Round(time.Millisecond),
 		))
@@ -111,15 +123,23 @@ func resolveUpstreamCWD(runtime *Runtime, serverName string, cfg config.MCPServe
 }
 
 func newUpstreamMCPModuleFromClient(serverName string, cfg config.MCPServerConfig, client *upstreammcp.Client) (*upstreamMCPModule, error) {
-	module := &upstreamMCPModule{
-		name: "mcp_" + serverName, serverName: serverName, client: client,
-		upstream: map[string]string{}, readOnly: map[string]bool{}, policy: map[string]string{},
-		declaredArgs: map[string]map[string]bool{},
-	}
+	module := newUpstreamMCPModule(serverName, client)
 	if err := module.buildSpecs(cfg, client.Tools()); err != nil {
 		return nil, err
 	}
 	return module, nil
+}
+
+func validateUpstreamMCPToolCatalog(serverName string, cfg config.MCPServerConfig, tools []*mcp.Tool) error {
+	return newUpstreamMCPModule(serverName, nil).buildSpecs(cfg, tools)
+}
+
+func newUpstreamMCPModule(serverName string, client *upstreammcp.Client) *upstreamMCPModule {
+	return &upstreamMCPModule{
+		name: "mcp_" + serverName, serverName: serverName, client: client,
+		upstream: map[string]string{}, readOnly: map[string]bool{}, policy: map[string]string{},
+		declaredArgs: map[string]map[string]bool{},
+	}
 }
 
 func (m *upstreamMCPModule) Name() string      { return m.name }
@@ -184,7 +204,7 @@ func (m *upstreamMCPModule) AuditMetadata(tool string, _ map[string]any, value a
 		"server": m.serverName, "module": m.name, "transport": m.client.Transport(),
 		"upstream_tool": m.upstream[tool], "read_only": m.readOnly[tool], "policy": m.policy[tool],
 	}
-	if result, ok := value.(*mcp.CallToolResult); ok {
+	if result, ok := value.(*mcp.CallToolResult); ok && result != nil {
 		metadata["upstream_is_error"] = result.IsError
 		metadata["content_items"] = len(result.Content)
 		metadata["structured_content"] = result.StructuredContent != nil

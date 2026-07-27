@@ -28,27 +28,33 @@ import (
 type SharedServices struct {
 	version string
 
-	mu               sync.Mutex
-	closed           bool
-	memoryProviders  map[string]memory.Provider
-	memoryRecorders  map[string]*memory.Recorder
-	auditWriters     map[string]*state.AuditWriter
-	upstreamClients  map[string]*upstreammcp.Client
-	upstreamModules  map[string]*upstreamMCPModule
-	memoryAcquires   uint64
-	memoryReuses     uint64
-	recorderAcquires uint64
-	recorderReuses   uint64
-	auditAcquires    uint64
-	auditReuses      uint64
-	upstreamAcquires uint64
-	upstreamReuses   uint64
-	contractAcquires uint64
-	contractReuses   uint64
-	closeOnce        sync.Once
-	closeErr         error
-	memoryFactory    func(config.MemoryConfig) (memory.Provider, error)
-	upstreamFactory  func(context.Context, string, config.MCPServerConfig, string, string) (*upstreammcp.Client, error)
+	mu                        sync.Mutex
+	closed                    bool
+	memoryProviders           map[string]memory.Provider
+	memoryRecorders           map[string]*memory.Recorder
+	auditWriters              map[string]*state.AuditWriter
+	upstreamClients           map[string]*upstreammcp.Client
+	upstreamModules           map[string]*upstreamMCPModule
+	upstreamPending           map[string]*sharedUpstreamPending
+	upstreamFailures          map[string]sharedUpstreamFailure
+	upstreamBackgroundStarted map[string]bool
+	backgroundCtx             context.Context
+	backgroundCancel          context.CancelFunc
+	backgroundWG              sync.WaitGroup
+	memoryAcquires            uint64
+	memoryReuses              uint64
+	recorderAcquires          uint64
+	recorderReuses            uint64
+	auditAcquires             uint64
+	auditReuses               uint64
+	upstreamAcquires          uint64
+	upstreamReuses            uint64
+	contractAcquires          uint64
+	contractReuses            uint64
+	closeOnce                 sync.Once
+	closeErr                  error
+	memoryFactory             func(config.MemoryConfig) (memory.Provider, error)
+	upstreamFactory           func(context.Context, string, config.MCPServerConfig, string, string) (*upstreammcp.Client, error)
 }
 
 type sharedMemoryLease struct {
@@ -62,18 +68,36 @@ type sharedUpstreamLease struct {
 	Module         *upstreamMCPModule
 	ClientReused   bool
 	ContractReused bool
+	StartupMode    string
+	Deferred       bool
+	Bootstrapped   bool
+}
+
+type sharedUpstreamPending struct {
+	done chan struct{}
+}
+
+type sharedUpstreamFailure struct {
+	err     error
+	retryAt time.Time
 }
 
 func NewSharedServices(version string) *SharedServices {
+	backgroundCtx, backgroundCancel := context.WithCancel(context.Background())
 	return &SharedServices{
-		version:         version,
-		memoryProviders: map[string]memory.Provider{},
-		memoryRecorders: map[string]*memory.Recorder{},
-		auditWriters:    map[string]*state.AuditWriter{},
-		upstreamClients: map[string]*upstreammcp.Client{},
-		upstreamModules: map[string]*upstreamMCPModule{},
-		memoryFactory:   memoryfactory.New,
-		upstreamFactory: upstreammcp.New,
+		version:                   version,
+		memoryProviders:           map[string]memory.Provider{},
+		memoryRecorders:           map[string]*memory.Recorder{},
+		auditWriters:              map[string]*state.AuditWriter{},
+		upstreamClients:           map[string]*upstreammcp.Client{},
+		upstreamModules:           map[string]*upstreamMCPModule{},
+		upstreamPending:           map[string]*sharedUpstreamPending{},
+		upstreamFailures:          map[string]sharedUpstreamFailure{},
+		upstreamBackgroundStarted: map[string]bool{},
+		backgroundCtx:             backgroundCtx,
+		backgroundCancel:          backgroundCancel,
+		memoryFactory:             memoryfactory.New,
+		upstreamFactory:           upstreammcp.New,
 	}
 }
 
@@ -207,75 +231,209 @@ func (s *SharedServices) acquireUpstream(ctx context.Context, runtime *Runtime, 
 		return sharedUpstreamLease{}, err
 	}
 	clientKey := upstreamClientResourceKey(serverName, cfg, cwd)
+	startupMode := cfg.EffectiveStartupMode()
+	catalogCached := false
+	bootstrapped := false
 
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return sharedUpstreamLease{}, errors.New("shared services are closed")
+	var client *upstreammcp.Client
+	var clientReused bool
+	if startupMode != config.MCPStartupModeEager {
+		catalog, catalogErr := upstreammcp.LoadToolCatalog(clientKey)
+		if catalogErr == nil {
+			catalogErr = validateUpstreamMCPToolCatalog(serverName, cfg, catalog.Tools)
+		}
+		if catalogErr == nil {
+			catalogCached = true
+			client, clientReused, err = s.acquireUpstreamClientWith(
+				ctx, cfg, clientKey, false,
+				func() (*upstreammcp.Client, error) {
+					return upstreammcp.NewDeferred(serverName, cfg, s.version, cwd, catalog.Tools)
+				},
+			)
+		} else {
+			// The first deferred startup must discover a typed tool contract once.
+			// Later starts can register it without opening the transport.
+			bootstrapped = true
+			client, clientReused, err = s.acquireEagerUpstreamClient(ctx, serverName, cfg, cwd, clientKey)
+		}
+	} else {
+		client, clientReused, err = s.acquireEagerUpstreamClient(ctx, serverName, cfg, cwd, clientKey)
 	}
-	client := s.upstreamClients[clientKey]
-	clientReused := client != nil
+	if err != nil {
+		return sharedUpstreamLease{}, err
+	}
+	if catalogCached {
+		if err := client.SetToolCatalogKey(clientKey); err != nil {
+			return sharedUpstreamLease{}, err
+		}
+	}
+	deferred := catalogCached && client.Deferred()
+
+	contractKey := upstreamContractResourceKey(clientKey, cfg)
+	s.mu.Lock()
+	module := s.upstreamModules[contractKey]
+	contractReused := module != nil
+	if contractReused {
+		s.contractAcquires++
+		s.contractReuses++
+	}
 	s.mu.Unlock()
 
-	if client == nil {
-		created, createErr := s.upstreamFactory(ctx, serverName, cfg, s.version, cwd)
-		if createErr != nil {
-			return sharedUpstreamLease{}, createErr
+	if module == nil {
+		module, err = newUpstreamMCPModuleFromClient(serverName, cfg, client)
+		if err != nil {
+			return sharedUpstreamLease{}, err
 		}
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
-			_ = created.Close()
 			return sharedUpstreamLease{}, errors.New("shared services are closed")
 		}
+		if existing := s.upstreamModules[contractKey]; existing != nil {
+			module = existing
+			contractReused = true
+			s.contractReuses++
+		} else {
+			s.upstreamModules[contractKey] = module
+		}
+		s.contractAcquires++
+		s.mu.Unlock()
+	}
+
+	if startupMode == config.MCPStartupModeBackground && catalogCached {
+		s.startUpstreamBackground(clientKey, client)
+	}
+	return sharedUpstreamLease{
+		Module: module, ClientReused: clientReused, ContractReused: contractReused,
+		StartupMode: startupMode, Deferred: deferred, Bootstrapped: bootstrapped,
+	}, nil
+}
+
+type upstreamClientCreator func() (*upstreammcp.Client, error)
+
+func (s *SharedServices) acquireEagerUpstreamClient(ctx context.Context, serverName string, cfg config.MCPServerConfig, cwd, clientKey string) (*upstreammcp.Client, bool, error) {
+	client, reused, err := s.acquireUpstreamClientWith(
+		ctx, cfg, clientKey, true,
+		func() (*upstreammcp.Client, error) {
+			return s.upstreamFactory(ctx, serverName, cfg, s.version, cwd)
+		},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	// An eager runtime may race with a cached deferred runtime for the same
+	// connection key. Ensure the pooled client satisfies eager semantics.
+	if err := client.EnsureConnected(ctx, true); err != nil {
+		return nil, false, err
+	}
+	_ = upstreammcp.SaveToolCatalog(clientKey, client.Tools())
+	return client, reused, nil
+}
+
+func (s *SharedServices) acquireUpstreamClientWith(ctx context.Context, cfg config.MCPServerConfig, clientKey string, cacheFailures bool, create upstreamClientCreator) (*upstreammcp.Client, bool, error) {
+	for {
+		now := time.Now()
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return nil, false, errors.New("shared services are closed")
+		}
+		if client := s.upstreamClients[clientKey]; client != nil {
+			s.upstreamAcquires++
+			s.upstreamReuses++
+			s.mu.Unlock()
+			return client, true, nil
+		}
+		if failure, ok := s.upstreamFailures[clientKey]; ok {
+			if cacheFailures && now.Before(failure.retryAt) {
+				s.mu.Unlock()
+				return nil, false, failure.err
+			}
+			if !now.Before(failure.retryAt) {
+				delete(s.upstreamFailures, clientKey)
+			}
+		}
+		if pending := s.upstreamPending[clientKey]; pending != nil {
+			done := pending.done
+			s.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, false, ctx.Err()
+			}
+		}
+		pending := &sharedUpstreamPending{done: make(chan struct{})}
+		s.upstreamPending[clientKey] = pending
+		s.mu.Unlock()
+
+		created, createErr := create()
+		s.mu.Lock()
+		delete(s.upstreamPending, clientKey)
+		if s.closed {
+			close(pending.done)
+			s.mu.Unlock()
+			if created != nil {
+				_ = created.Close()
+			}
+			return nil, false, errors.New("shared services are closed")
+		}
+		if createErr != nil {
+			if cacheFailures && ctx.Err() == nil {
+				cooldown := time.Duration(cfg.FailureCooldownMS) * time.Millisecond
+				if cooldown <= 0 {
+					cooldown = time.Duration(config.DefaultMCPFailureCooldownMS) * time.Millisecond
+				}
+				s.upstreamFailures[clientKey] = sharedUpstreamFailure{err: createErr, retryAt: time.Now().Add(cooldown)}
+			}
+			close(pending.done)
+			s.mu.Unlock()
+			if created != nil {
+				_ = created.Close()
+			}
+			return nil, false, createErr
+		}
+		delete(s.upstreamFailures, clientKey)
+		client := created
+		clientReused := false
+		closeCreated := false
 		if existing := s.upstreamClients[clientKey]; existing != nil {
 			client = existing
 			clientReused = true
-			_ = created.Close()
+			closeCreated = true
 		} else {
-			client = created
 			s.upstreamClients[clientKey] = client
 		}
+		s.upstreamAcquires++
+		if clientReused {
+			s.upstreamReuses++
+		}
+		close(pending.done)
 		s.mu.Unlock()
+		if closeCreated {
+			_ = created.Close()
+		}
+		return client, clientReused, nil
 	}
+}
 
+func (s *SharedServices) startUpstreamBackground(clientKey string, client *upstreammcp.Client) {
 	s.mu.Lock()
-	s.upstreamAcquires++
-	if clientReused {
-		s.upstreamReuses++
+	if s.closed || s.upstreamBackgroundStarted[clientKey] {
+		s.mu.Unlock()
+		return
 	}
+	s.upstreamBackgroundStarted[clientKey] = true
+	ctx := s.backgroundCtx
+	s.backgroundWG.Add(1)
 	s.mu.Unlock()
 
-	contractKey := upstreamContractResourceKey(clientKey, cfg)
-	s.mu.Lock()
-	if module := s.upstreamModules[contractKey]; module != nil {
-		s.contractAcquires++
-		s.contractReuses++
-		s.mu.Unlock()
-		return sharedUpstreamLease{Module: module, ClientReused: clientReused, ContractReused: true}, nil
-	}
-	s.mu.Unlock()
-
-	module, err := newUpstreamMCPModuleFromClient(serverName, cfg, client)
-	if err != nil {
-		return sharedUpstreamLease{}, err
-	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return sharedUpstreamLease{}, errors.New("shared services are closed")
-	}
-	contractReused := false
-	if existing := s.upstreamModules[contractKey]; existing != nil {
-		module = existing
-		contractReused = true
-		s.contractReuses++
-	} else {
-		s.upstreamModules[contractKey] = module
-	}
-	s.contractAcquires++
-	s.mu.Unlock()
-	return sharedUpstreamLease{Module: module, ClientReused: clientReused, ContractReused: contractReused}, nil
+	go func() {
+		defer s.backgroundWG.Done()
+		if err := client.EnsureConnected(ctx, true); err == nil {
+			_ = upstreammcp.SaveToolCatalog(clientKey, client.Tools())
+		}
+	}()
 }
 
 func (s *SharedServices) Stats() map[string]any {
@@ -297,7 +455,9 @@ func (s *SharedServices) Stats() map[string]any {
 		},
 		"upstream_mcp": map[string]any{
 			"clients": len(s.upstreamClients), "contracts": len(s.upstreamModules),
-			"client_acquires": s.upstreamAcquires, "client_reuses": s.upstreamReuses,
+			"pending": len(s.upstreamPending), "failure_cache": len(s.upstreamFailures),
+			"background_started": len(s.upstreamBackgroundStarted),
+			"client_acquires":    s.upstreamAcquires, "client_reuses": s.upstreamReuses,
 			"contract_acquires": s.contractAcquires, "contract_reuses": s.contractReuses,
 		},
 	}
@@ -310,6 +470,9 @@ func (s *SharedServices) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		if s.backgroundCancel != nil {
+			s.backgroundCancel()
+		}
 		clients := make([]*upstreammcp.Client, 0, len(s.upstreamClients))
 		for _, client := range s.upstreamClients {
 			clients = append(clients, client)
@@ -327,6 +490,7 @@ func (s *SharedServices) Close() error {
 			providers = append(providers, provider)
 		}
 		s.mu.Unlock()
+		s.backgroundWG.Wait()
 
 		var errs []error
 		for _, writer := range auditWriters {
@@ -399,6 +563,8 @@ func upstreamClientResourceKey(serverName string, cfg config.MCPServerConfig, cw
 	connection := cfg
 	connection.Enabled = nil
 	connection.Required = false
+	connection.StartupMode = ""
+	connection.WorkspaceIDs = nil
 	connection.AllowedTools = nil
 	connection.DeniedTools = nil
 	connection.CWD = ""

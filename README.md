@@ -382,6 +382,8 @@ Example:
         "DATABASE_URI": "POSTGRES_PROD_MCP_DATABASE_URI"
       },
       "required": false,
+      "workspaceIds": ["codebridge"],
+      "startupMode": "lazy",
       "policy": {
         "default": "approval",
         "readOnlyTools": ["list_schemas", "list_tables", "describe_table"]
@@ -390,6 +392,18 @@ Example:
   }
 }
 ```
+
+`workspaceIds` limits the server to named runtimes that actually use it. An empty list or `"*"` preserves the previous behavior of exposing it in every workspace.
+
+`startupMode` controls readiness behavior:
+
+- `eager` is the backward-compatible default and connects before the daemon becomes ready.
+- `background` registers a cached tool contract immediately, then connects and refreshes it asynchronously.
+- `lazy` registers a cached tool contract immediately and connects on the first tool call.
+
+Required servers always behave as `eager`. The first `background` or `lazy` startup without a cache performs one eager discovery so Codebridge can publish typed tools; later starts use the cache. Deferred clients refresh `tools/list` after connecting, and the refreshed contract is applied on the next Codebridge restart.
+
+Tool catalogs are stored owner-only under `~/.codebridge/state/upstream-mcp/catalogs`. They contain only bounded tool names, descriptions, input schemas, and annotations—not credentials, calls, arguments, results, or arbitrary upstream metadata. Codebridge retains at most 64 catalogs and prunes entries older than 90 days when saving a catalog.
 
 Keep credentials in `.env` or the process environment, not `config.json`. Restart Codebridge after changing upstream servers so their tools are rediscovered.
 

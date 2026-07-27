@@ -161,6 +161,61 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 	}
 }
 
+func TestDeferredClientConnectsOnFirstCall(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	var requests atomic.Int64
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return testMCPServer() },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		mcpHandler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
+		HealthCacheMS: 5_000, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	cachedTools := []*mcp.Tool{{
+		Name: "echo.read", Title: "Echo read", Description: "Cached echo contract.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"message": map[string]any{"type": "string"}},
+		},
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}}
+	client, err := NewDeferred("deferred-http", cfg, "test", t.TempDir(), cachedTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogKey := strings.Repeat("c", 32)
+	if err := client.SetToolCatalogKey(catalogKey); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if !client.Deferred() || requests.Load() != 0 || len(client.Tools()) != 1 {
+		t.Fatalf("deferred client opened transport during construction: deferred=%t requests=%d tools=%d", client.Deferred(), requests.Load(), len(client.Tools()))
+	}
+	if health := client.Health(context.Background()); health["available"] != false || health["deferred"] != true {
+		t.Fatalf("unexpected deferred health: %#v", health)
+	}
+
+	result, err := client.Call(context.Background(), "echo.read", map[string]any{"message": "lazy"}, true)
+	if err != nil || result.IsError {
+		t.Fatalf("deferred first call failed: err=%v result=%#v", err, result)
+	}
+	if client.Deferred() || requests.Load() == 0 || len(client.Tools()) != 2 {
+		t.Fatalf("first call did not discover live contract: deferred=%t requests=%d tools=%d", client.Deferred(), requests.Load(), len(client.Tools()))
+	}
+	catalog, err := LoadToolCatalog(catalogKey)
+	if err != nil || len(catalog.Tools) != 2 {
+		t.Fatalf("first call did not refresh persistent catalog: tools=%d err=%v", len(catalog.Tools), err)
+	}
+}
+
 func TestHealthDiagnosticsDoNotExposeConfiguredSecrets(t *testing.T) {
 	sensitiveValue := "fixture-" + strings.Repeat("x", 24)
 	t.Setenv("CODEBRIDGE_UPSTREAM_TEST_SECRET", sensitiveValue)

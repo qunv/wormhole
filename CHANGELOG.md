@@ -4,6 +4,21 @@ All notable changes to Codebridge are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added per-upstream `workspaceIds` scoping and `startupMode` values `eager`, `background`, and `lazy`.
+- Added bounded, owner-only persistent upstream tool catalogs for deferred typed-tool registration.
+
+### Changed
+
+- Initialized workspace runtimes concurrently and based the supervisor timeout on the slowest workspace dependency chain.
+- Single-flighted shared upstream MCP creation and cached recent startup failures for `failureCooldownMs`.
+- Refreshed deferred tool catalogs on first connection while keeping the active downstream tool contract immutable until restart.
+
+### Fixed
+
+- Prevented upstream error auditing from dereferencing a typed-nil MCP result.
+
 ## [1.0.1] - 2026-07-26
 
 ### Added

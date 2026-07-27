@@ -57,6 +57,8 @@ type Client struct {
 	session          *clientSessionState
 	tools            []*mcp.Tool
 	closed           bool
+	deferred         bool
+	catalogKey       string
 	connectedAt      time.Time
 	lastError        string
 	reconnects       int
@@ -126,15 +128,19 @@ func StartupWaitTimeout(cfg config.MCPServerConfig) time.Duration {
 	return timeout
 }
 
-func New(ctx context.Context, name string, cfg config.MCPServerConfig, version, cwd string) (*Client, error) {
+func newClient(name string, cfg config.MCPServerConfig, version, cwd string) *Client {
 	cfg = effectiveClientConfig(cfg)
-	client := &Client{
+	return &Client{
 		name: name, cfg: cfg, version: version, cwd: cwd,
 		stderr: newBoundedCounter(stderrLimit), callSlots: make(chan struct{}, cfg.MaxConcurrency),
 	}
+}
+
+func New(ctx context.Context, name string, cfg config.MCPServerConfig, version, cwd string) (*Client, error) {
+	client := newClient(name, cfg, version, cwd)
 	client.connectMu.Lock()
 	defer client.connectMu.Unlock()
-	startupCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.StartupTimeoutMS)*time.Millisecond)
+	startupCtx, cancel := context.WithTimeout(ctx, time.Duration(client.cfg.StartupTimeoutMS)*time.Millisecond)
 	defer cancel()
 	if err := client.connectLocked(startupCtx, true); err != nil {
 		return nil, err
@@ -142,9 +148,45 @@ func New(ctx context.Context, name string, cfg config.MCPServerConfig, version, 
 	return client, nil
 }
 
+// NewDeferred creates an upstream client with a previously validated tool
+// catalog but without opening a transport. The first call, or an explicit
+// EnsureConnected, establishes the MCP session.
+func NewDeferred(name string, cfg config.MCPServerConfig, version, cwd string, tools []*mcp.Tool) (*Client, error) {
+	client := newClient(name, cfg, version, cwd)
+	if len(tools) == 0 {
+		return nil, errors.New("deferred upstream MCP client requires a non-empty tool catalog")
+	}
+	if len(tools) > client.cfg.MaxTools {
+		return nil, fmt.Errorf("deferred upstream MCP tool catalog exceeds maxTools=%d", client.cfg.MaxTools)
+	}
+	client.tools = append([]*mcp.Tool(nil), tools...)
+	client.deferred = true
+	return client, nil
+}
+
 func (c *Client) Name() string { return c.name }
 
 func (c *Client) Transport() string { return c.cfg.EffectiveTransport() }
+
+// Deferred reports whether the client currently has only a cached tool
+// contract and has not established a live upstream session yet.
+func (c *Client) Deferred() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.deferred
+}
+
+// SetToolCatalogKey enables automatic catalog refresh after a deferred client
+// completes its first live tools/list discovery.
+func (c *Client) SetToolCatalogKey(key string) error {
+	if _, err := ToolCatalogPath(key); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.catalogKey = key
+	c.mu.Unlock()
+	return nil
+}
 
 func (c *Client) Tools() []*mcp.Tool {
 	c.mu.RLock()
@@ -323,6 +365,7 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 	if discover {
 		c.tools = tools
 	}
+	c.deferred = false
 	c.connectedAt = time.Now().UTC()
 	c.lastError = ""
 	c.consecutiveFails = 0
@@ -342,20 +385,53 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 	return nil
 }
 
-func (c *Client) borrowSessionOrReconnect(ctx context.Context) (*clientSessionState, error) {
+// EnsureConnected establishes a session if one is not currently available.
+// When a new connection is made with discover=true, its live tool catalog is refreshed atomically.
+func (c *Client) EnsureConnected(ctx context.Context, discover bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if state, err := c.borrowCurrentSession(); err == nil {
-		return state, nil
+		c.releaseSession(state)
+		return nil
 	}
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
 	if state, err := c.borrowCurrentSession(); err == nil {
-		return state, nil
+		c.releaseSession(state)
+		return nil
 	}
 	if err := c.circuitError(); err != nil {
 		c.circuitRejected.Add(1)
-		return nil, err
+		return err
 	}
-	if err := c.reconnectLocked(ctx); err != nil {
+	c.mu.RLock()
+	wasConnected := !c.connectedAt.IsZero()
+	wasDeferred := c.deferred
+	catalogKey := c.catalogKey
+	c.mu.RUnlock()
+	discover = discover || wasDeferred
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.cfg.StartupTimeoutMS)*time.Millisecond)
+	defer cancel()
+	if err := c.connectLocked(timeoutCtx, discover); err != nil {
+		return err
+	}
+	if wasConnected {
+		c.mu.Lock()
+		c.reconnects++
+		c.mu.Unlock()
+	}
+	if discover && catalogKey != "" {
+		_ = SaveToolCatalog(catalogKey, c.Tools())
+	}
+	return nil
+}
+
+func (c *Client) borrowSessionOrReconnect(ctx context.Context) (*clientSessionState, error) {
+	if state, err := c.borrowCurrentSession(); err == nil {
+		return state, nil
+	}
+	if err := c.EnsureConnected(ctx, false); err != nil {
 		return nil, err
 	}
 	return c.borrowCurrentSession()
@@ -398,18 +474,6 @@ func (c *Client) sessionIsCurrent(state *clientSessionState) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return state != nil && c.session == state && !state.retired && state.session != nil
-}
-
-func (c *Client) reconnectLocked(ctx context.Context) error {
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.cfg.StartupTimeoutMS)*time.Millisecond)
-	defer cancel()
-	if err := c.connectLocked(timeoutCtx, false); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	c.reconnects++
-	c.mu.Unlock()
-	return nil
 }
 
 func (c *Client) callSession(ctx context.Context, session *mcp.ClientSession, tool string, args map[string]any) (*mcp.CallToolResult, error) {
@@ -528,10 +592,12 @@ func (c *Client) status(available bool, errorText string) map[string]any {
 	consecutiveFailures := c.consecutiveFails
 	circuitOpenUntil := c.circuitOpenUntil
 	breakerTrips := c.breakerTrips
+	deferred := c.deferred
 	c.mu.RUnlock()
 	stderrBytes, stderrTruncated := c.stderr.Stats()
 	result := map[string]any{
 		"server": c.name, "transport": c.cfg.EffectiveTransport(), "available": available,
+		"deferred":   deferred,
 		"tool_count": toolCount, "reconnect_count": reconnects,
 		"max_concurrency": c.cfg.MaxConcurrency, "queued_calls": c.queuedCalls.Load(),
 		"in_flight_calls": c.inFlightCalls.Load(), "max_in_flight_calls": c.maxInFlightCalls.Load(),

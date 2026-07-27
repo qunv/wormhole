@@ -15,6 +15,10 @@ import (
 )
 
 const (
+	MCPStartupModeEager      = "eager"
+	MCPStartupModeBackground = "background"
+	MCPStartupModeLazy       = "lazy"
+
 	DefaultMCPStartupTimeoutMS  = 15_000
 	DefaultMCPCallTimeoutMS     = 30_000
 	DefaultMCPHealthTimeoutMS   = 3_000
@@ -41,17 +45,19 @@ type MCPServerConfig struct {
 	EnvRefs    map[string]string `json:"envRefs,omitempty"`
 	InheritEnv []string          `json:"inheritEnv,omitempty"`
 
+	WorkspaceIDs []string `json:"workspaceIds,omitempty"`
 	AllowedTools []string `json:"allowedTools,omitempty"`
 	DeniedTools  []string `json:"deniedTools,omitempty"`
 
-	Required          bool `json:"required,omitempty"`
-	StartupTimeoutMS  int  `json:"startupTimeoutMs,omitempty"`
-	CallTimeoutMS     int  `json:"callTimeoutMs,omitempty"`
-	HealthTimeoutMS   int  `json:"healthTimeoutMs,omitempty"`
-	HealthCacheMS     int  `json:"healthCacheMs,omitempty"`
-	FailureCooldownMS int  `json:"failureCooldownMs,omitempty"`
-	MaxConcurrency    int  `json:"maxConcurrency,omitempty"`
-	MaxTools          int  `json:"maxTools,omitempty"`
+	Required          bool   `json:"required,omitempty"`
+	StartupMode       string `json:"startupMode,omitempty"`
+	StartupTimeoutMS  int    `json:"startupTimeoutMs,omitempty"`
+	CallTimeoutMS     int    `json:"callTimeoutMs,omitempty"`
+	HealthTimeoutMS   int    `json:"healthTimeoutMs,omitempty"`
+	HealthCacheMS     int    `json:"healthCacheMs,omitempty"`
+	FailureCooldownMS int    `json:"failureCooldownMs,omitempty"`
+	MaxConcurrency    int    `json:"maxConcurrency,omitempty"`
+	MaxTools          int    `json:"maxTools,omitempty"`
 
 	Policy MCPServerPolicyConfig `json:"policy,omitempty"`
 }
@@ -64,10 +70,47 @@ type MCPServerPolicyConfig struct {
 	AlwaysApproveTools []string `json:"alwaysApproveTools,omitempty"`
 }
 
-var mcpServerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,23}$`)
+var (
+	mcpServerNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,23}$`)
+	mcpWorkspaceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+)
 
 func (c MCPServerConfig) IsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
+}
+
+// AppliesToWorkspace reports whether this upstream MCP server belongs to the
+// runtime identified by workspaceID. An empty list and the wildcard preserve
+// the historical behavior of exposing the server in every workspace.
+func (c MCPServerConfig) AppliesToWorkspace(workspaceID string) bool {
+	if len(c.WorkspaceIDs) == 0 {
+		return true
+	}
+	workspaceID = strings.ToLower(strings.TrimSpace(workspaceID))
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	for _, configured := range c.WorkspaceIDs {
+		configured = strings.ToLower(strings.TrimSpace(configured))
+		if configured == "*" || configured == workspaceID {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveStartupMode returns the startup behavior for an upstream MCP
+// server. Required servers always remain eager so daemon readiness still
+// guarantees their availability.
+func (c MCPServerConfig) EffectiveStartupMode() string {
+	if c.Required {
+		return MCPStartupModeEager
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.StartupMode))
+	if mode == "" {
+		return MCPStartupModeEager
+	}
+	return mode
 }
 
 func (c MCPServerConfig) EffectiveTransport() string {
@@ -92,6 +135,7 @@ func normalizeMCPServers(c *Config) {
 		server.Command = strings.TrimSpace(server.Command)
 		server.CWD = strings.TrimSpace(server.CWD)
 		server.URL = strings.TrimSpace(server.URL)
+		server.StartupMode = strings.ToLower(strings.TrimSpace(server.StartupMode))
 		if server.StartupTimeoutMS == 0 {
 			server.StartupTimeoutMS = DefaultMCPStartupTimeoutMS
 		}
@@ -117,6 +161,7 @@ func normalizeMCPServers(c *Config) {
 		if server.Policy.Default == "" {
 			server.Policy.Default = "approval"
 		}
+		server.WorkspaceIDs = cleanWorkspaceIDList(server.WorkspaceIDs)
 		server.AllowedTools = cleanStringList(server.AllowedTools)
 		server.DeniedTools = cleanStringList(server.DeniedTools)
 		server.Policy.ReadOnlyTools = cleanStringList(server.Policy.ReadOnlyTools)
@@ -160,6 +205,14 @@ func validateMCPServers(c Config) error {
 			}
 		default:
 			return fmt.Errorf("mcpServers.%s.transport must be stdio or streamable-http", name)
+		}
+		switch server.StartupMode {
+		case "", MCPStartupModeEager, MCPStartupModeBackground, MCPStartupModeLazy:
+		default:
+			return fmt.Errorf("mcpServers.%s.startupMode must be eager, background, or lazy", name)
+		}
+		if err := validateMCPWorkspaceIDs(name, server.WorkspaceIDs); err != nil {
+			return err
 		}
 		if err := validateMCPServerValues(name, server); err != nil {
 			return err
@@ -215,6 +268,23 @@ func validateMCPServers(c Config) error {
 		if err := validateMCPToolLists(name, server); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateMCPWorkspaceIDs(name string, values []string) error {
+	if len(values) > 256 {
+		return fmt.Errorf("mcpServers.%s.workspaceIds is limited to 256 entries", name)
+	}
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value != "*" && !mcpWorkspaceIDPattern.MatchString(value) {
+			return fmt.Errorf("mcpServers.%s.workspaceIds value %q must be * or match [a-z0-9][a-z0-9_-]{0,31}", name, value)
+		}
+		if seen[value] {
+			return fmt.Errorf("mcpServers.%s.workspaceIds contains duplicate workspace %q", name, value)
+		}
+		seen[value] = true
 	}
 	return nil
 }
@@ -386,6 +456,16 @@ func validHTTPHeaderName(value string) bool {
 		return false
 	}
 	return true
+}
+
+func cleanWorkspaceIDList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func cleanStringList(values []string) []string {

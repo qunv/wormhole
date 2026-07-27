@@ -209,6 +209,11 @@ func TestStartupWaitTimeoutIncludesNamedWorkspaceDependencies(t *testing.T) {
 	configureWorkspaceTestPaths(t)
 	cfg := config.Default()
 	cfg.Workspace = t.TempDir()
+	primaryID := workspaceregistry.IDFromPath(cfg.Workspace)
+	cfg.MCPServers["primary"] = config.MCPServerConfig{
+		Transport: "streamable-http", URL: "http://127.0.0.1:9000/mcp",
+		StartupTimeoutMS: 4_000, WorkspaceIDs: []string{primaryID},
+	}
 	app := App{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
 	if err := app.workspaceAdd(cfg, options{Rest: []string{"add", "api", t.TempDir()}}); err != nil {
 		t.Fatal(err)

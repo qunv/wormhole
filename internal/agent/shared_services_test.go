@@ -11,6 +11,7 @@ import (
 
 	"codebridge/internal/config"
 	"codebridge/internal/memory"
+	"codebridge/internal/upstreammcp"
 )
 
 type sharedTestMemoryProvider struct {
@@ -325,6 +326,181 @@ func TestSharedServicesReuseUpstreamClientAndContract(t *testing.T) {
 	upstreamStats := stats["upstream_mcp"].(map[string]any)
 	if upstreamStats["clients"] != 1 || upstreamStats["contracts"] != 1 {
 		t.Fatalf("unexpected shared upstream stats: %#v", upstreamStats)
+	}
+}
+
+func TestSharedServicesSingleflightConcurrentUpstreamCreation(t *testing.T) {
+	upstream := newAgentUpstreamHTTPServer(t)
+	shared := NewSharedServices("test")
+	defer shared.Close()
+
+	var created atomic.Int64
+	shared.upstreamFactory = func(ctx context.Context, name string, cfg config.MCPServerConfig, version, cwd string) (*upstreammcp.Client, error) {
+		created.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		return upstreammcp.New(ctx, name, cfg, version, cwd)
+	}
+	base := config.Default()
+	base.NoTunnel, base.Policy = true, "full"
+	base.MCPServers["community"] = agentUpstreamConfig(upstream.URL)
+	roots := []string{t.TempDir(), t.TempDir()}
+	dataDirs := []string{t.TempDir(), t.TempDir()}
+
+	type result struct {
+		runtime *Runtime
+		err     error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for index, id := range []string{"first", "second"} {
+		index, id := index, id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cfg := base
+			cfg.Workspace = roots[index]
+			runtime, err := NewWorkspaceContextWithSharedServices(
+				context.Background(), id, dataDirs[index], cfg, "test", "pro", id+"-config", shared, nil,
+			)
+			results <- result{runtime: runtime, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		result.runtime.Close()
+	}
+	if got := created.Load(); got != 1 {
+		t.Fatalf("concurrent upstream factory calls = %d, want 1", got)
+	}
+}
+
+func TestSharedServicesCacheUpstreamCreationFailureDuringCooldown(t *testing.T) {
+	shared := NewSharedServices("test")
+	defer shared.Close()
+
+	marker := errors.New("upstream unavailable")
+	var created atomic.Int64
+	shared.upstreamFactory = func(context.Context, string, config.MCPServerConfig, string, string) (*upstreammcp.Client, error) {
+		created.Add(1)
+		return nil, marker
+	}
+	base := config.Default()
+	base.NoTunnel = true
+	server := agentUpstreamConfig("http://127.0.0.1:1/mcp")
+	server.FailureCooldownMS = 5_000
+	base.MCPServers["community"] = server
+
+	for _, id := range []string{"first", "second", "third"} {
+		cfg := base
+		cfg.Workspace = t.TempDir()
+		runtime, err := NewWorkspaceContextWithSharedServices(
+			context.Background(), id, t.TempDir(), cfg, "test", "pro", id+"-config", shared, nil,
+		)
+		if err != nil {
+			t.Fatalf("optional failed upstream prevented runtime %s: %v", id, err)
+		}
+		runtime.Close()
+	}
+	if got := created.Load(); got != 1 {
+		t.Fatalf("upstream factory calls during failure cooldown = %d, want 1", got)
+	}
+}
+
+func TestLazyUpstreamBootstrapsCatalogThenDefersLaterStartup(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	upstream := newAgentUpstreamHTTPServer(t)
+
+	base := config.Default()
+	base.NoTunnel, base.Policy = true, "full"
+	serverConfig := agentUpstreamConfig(upstream.URL)
+	serverConfig.StartupMode = config.MCPStartupModeLazy
+	base.MCPServers["community"] = serverConfig
+
+	bootstrapShared := NewSharedServices("test")
+	var bootstrapCalls atomic.Int64
+	bootstrapShared.upstreamFactory = func(ctx context.Context, name string, cfg config.MCPServerConfig, version, cwd string) (*upstreammcp.Client, error) {
+		bootstrapCalls.Add(1)
+		return upstreammcp.New(ctx, name, cfg, version, cwd)
+	}
+	bootstrapRuntime := newRuntimeWithSharedForTest(t, bootstrapShared, "bootstrap", base)
+	moduleValue, _ := bootstrapRuntime.Module("mcp_community")
+	if moduleValue.(*upstreamMCPModule).client.Deferred() {
+		t.Fatal("cache-miss lazy startup did not bootstrap eagerly")
+	}
+	bootstrapRuntime.Close()
+	if err := bootstrapShared.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := bootstrapCalls.Load(); got != 1 {
+		t.Fatalf("bootstrap factory calls = %d, want 1", got)
+	}
+	clientKey := upstreamClientResourceKey("community", serverConfig, "")
+	if catalog, err := upstreammcp.LoadToolCatalog(clientKey); err != nil || len(catalog.Tools) != 2 {
+		t.Fatalf("bootstrap catalog missing: tools=%d err=%v", len(catalog.Tools), err)
+	}
+
+	upstream.Close()
+	lazyShared := NewSharedServices("test")
+	defer lazyShared.Close()
+	var lazyFactoryCalls atomic.Int64
+	lazyShared.upstreamFactory = func(context.Context, string, config.MCPServerConfig, string, string) (*upstreammcp.Client, error) {
+		lazyFactoryCalls.Add(1)
+		return nil, errors.New("lazy startup unexpectedly invoked eager factory")
+	}
+	lazyRuntime := newRuntimeWithSharedForTest(t, lazyShared, "lazy", base)
+	defer lazyRuntime.Close()
+	lazyModuleValue, _ := lazyRuntime.Module("mcp_community")
+	lazyModule := lazyModuleValue.(*upstreamMCPModule)
+	if !lazyModule.client.Deferred() || lazyFactoryCalls.Load() != 0 {
+		t.Fatalf("cached lazy startup was not deferred: deferred=%t factory_calls=%d", lazyModule.client.Deferred(), lazyFactoryCalls.Load())
+	}
+	if _, err := lazyRuntime.Handle(context.Background(), "community__read_data", map[string]any{"query": "first-call"}); err == nil {
+		t.Fatal("first lazy call unexpectedly succeeded after upstream shutdown")
+	}
+}
+
+func TestBackgroundUpstreamUsesCatalogAndConnectsAsynchronously(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	upstream := newAgentUpstreamHTTPServer(t)
+
+	seedConfig := config.Default()
+	seedConfig.NoTunnel, seedConfig.Policy = true, "full"
+	serverConfig := agentUpstreamConfig(upstream.URL)
+	seedConfig.MCPServers["community"] = serverConfig
+	seedShared := NewSharedServices("test")
+	seedRuntime := newRuntimeWithSharedForTest(t, seedShared, "seed", seedConfig)
+	seedRuntime.Close()
+	if err := seedShared.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	serverConfig.StartupMode = config.MCPStartupModeBackground
+	backgroundConfig := seedConfig
+	backgroundConfig.MCPServers = map[string]config.MCPServerConfig{"community": serverConfig}
+	backgroundShared := NewSharedServices("test")
+	defer backgroundShared.Close()
+	var factoryCalls atomic.Int64
+	backgroundShared.upstreamFactory = func(context.Context, string, config.MCPServerConfig, string, string) (*upstreammcp.Client, error) {
+		factoryCalls.Add(1)
+		return nil, errors.New("background startup unexpectedly invoked eager factory")
+	}
+	backgroundRuntime := newRuntimeWithSharedForTest(t, backgroundShared, "background", backgroundConfig)
+	defer backgroundRuntime.Close()
+	moduleValue, _ := backgroundRuntime.Module("mcp_community")
+	module := moduleValue.(*upstreamMCPModule)
+	deadline := time.Now().Add(2 * time.Second)
+	for module.client.Deferred() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if module.client.Deferred() || factoryCalls.Load() != 0 {
+		t.Fatalf("background connection did not complete from cache: deferred=%t factory_calls=%d", module.client.Deferred(), factoryCalls.Load())
+	}
+	if _, err := backgroundRuntime.Handle(context.Background(), "community__read_data", map[string]any{"query": "background"}); err != nil {
+		t.Fatalf("background-connected upstream call failed: %v", err)
 	}
 }
 
