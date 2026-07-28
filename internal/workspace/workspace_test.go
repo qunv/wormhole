@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -51,6 +53,41 @@ func TestIsRootRecognizesCanonicalSymlinkTarget(t *testing.T) {
 	}
 	if !manager.IsRoot(resolved) {
 		t.Fatalf("canonical root %q was not recognized", resolved)
+	}
+}
+
+func TestNewRejectsMissingOrNonDirectoryRootsWithoutCreatingThem(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	if _, err := New(missing, nil, nil); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("missing primary root was accepted: %v", err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("missing primary root was created: %v", err)
+	}
+
+	primary := t.TempDir()
+	missingExtra := filepath.Join(t.TempDir(), "missing-extra")
+	if _, err := New(primary, []string{missingExtra}, nil); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("missing extra root was accepted: %v", err)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(file, nil, nil); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("file primary root was accepted: %v", err)
+	}
+}
+
+func TestTreeContextPropagatesCancellation(t *testing.T) {
+	manager, err := New(t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, err := manager.TreeContext(ctx, ".", 3, 100); !errors.Is(err, context.Canceled) {
+		t.Fatalf("TreeContext cancellation = %v, want context.Canceled", err)
 	}
 }
 

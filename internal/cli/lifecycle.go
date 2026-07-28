@@ -31,12 +31,14 @@ import (
 )
 
 type processState struct {
-	ServerPID int       `json:"serverPid,omitempty"`
-	TunnelPID int       `json:"tunnelPid,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	ConfigID  string    `json:"configId"`
-	Port      int       `json:"port"`
-	Workspace string    `json:"workspace"`
+	ServerPID      int       `json:"serverPid,omitempty"`
+	ServerIdentity string    `json:"serverIdentity,omitempty"`
+	TunnelPID      int       `json:"tunnelPid,omitempty"`
+	TunnelIdentity string    `json:"tunnelIdentity,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	ConfigID       string    `json:"configId"`
+	Port           int       `json:"port"`
+	Workspace      string    `json:"workspace"`
 }
 
 type startupLogFollower struct {
@@ -46,6 +48,12 @@ type startupLogFollower struct {
 }
 
 func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
+	return withLifecycleLock(ctx, "start", func() error {
+		return a.startUnlocked(ctx, cfg, opts)
+	})
+}
+
+func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options) error {
 	if err := cfg.Validate(true); err != nil {
 		return err
 	}
@@ -58,19 +66,35 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	if err != nil {
 		return err
 	}
-	configID, err := daemonConfigID(cfg, executable, assets.Widget())
+	runtimeKey := strings.TrimSpace(opts.RuntimeKey)
+	if runtimeKey == "" && cfg.RuntimeKeyEnv != "" {
+		runtimeKey = os.Getenv(cfg.RuntimeKeyEnv)
+	}
+	identityInputs := config.NewIdentityInputs(executable, assets.Widget(), runtimeKey)
+	configID, err := daemonConfigIDWithInputs(cfg, identityInputs)
 	if err != nil {
 		return err
 	}
 	state := readState()
 	health := readHealth(cfg.Port)
-	existingPID := numberValue(healthValue(health, "pid"))
-	if existingPID == 0 && state.Port == cfg.Port && pidAlive(state.ServerPID) {
-		existingPID = state.ServerPID
+	healthPID, healthIdentity, healthOwned := ownedHealthProcess(state, health, cfg.Port)
+	if health != nil && !healthOwned {
+		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Codebridge process state; refusing to reuse or stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
-	existingConfigID := fmt.Sprint(healthValue(health, "config_id"))
+	stateServerValid := state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
+	stateOwnershipEstablished := healthOwned || stateServerValid
+	existingPID := healthPID
+	existingIdentity := healthIdentity
+	if existingPID == 0 && stateServerValid {
+		existingPID = state.ServerPID
+		existingIdentity = state.ServerIdentity
+	}
+	existingConfigID := ""
+	if healthOwned {
+		existingConfigID = fmt.Sprint(healthValue(health, "config_id"))
+	}
 	if existingConfigID == "<nil>" || existingConfigID == "" {
-		if state.Port == cfg.Port && existingPID == state.ServerPID {
+		if existingPID == state.ServerPID && (stateServerValid || healthOwned) {
 			existingConfigID = state.ConfigID
 		}
 	}
@@ -83,10 +107,10 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 				reason = "stale server state detected"
 			}
 			fmt.Fprintf(a.Stdout, "[server] %s; stopping PID %d\n", reason, existingPID)
-			if err := stopPID(existingPID); err != nil && pidAlive(existingPID) {
+			if err := stopPID(existingPID); err != nil && processStillMatches(existingPID, existingIdentity) {
 				return fmt.Errorf("stop existing MCP server PID %d: %w", existingPID, err)
 			}
-			if !waitForServerRelease(cfg.Host, cfg.Port, existingPID, 12*time.Second) {
+			if !waitForServerRelease(cfg.Host, cfg.Port, existingPID, existingIdentity, 12*time.Second) {
 				return fmt.Errorf("existing MCP server PID %d did not release %s", existingPID, net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)))
 			}
 			state.ServerPID = 0
@@ -104,7 +128,7 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 			logOffset = 0
 		}
 		fmt.Fprintf(a.Stdout, "[server] starting Codebridge for %s\n", cfg.Workspace)
-		serverCmd, err = a.spawnServer(executable, cfg, opts.Background)
+		serverCmd, err = a.spawnServer(executable, cfg, configID, identityInputs.RuntimeKeyFingerprint, opts.Background)
 		if err != nil {
 			return err
 		}
@@ -128,19 +152,42 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	} else {
 		state.ServerPID = existingPID
 	}
+	state.ServerIdentity, err = processIdentity(state.ServerPID)
+	if err != nil {
+		if serverCmd != nil {
+			_ = stopPID(serverCmd.Process.Pid)
+		}
+		return fmt.Errorf("capture MCP server process identity for PID %d: %w", state.ServerPID, err)
+	}
 	fmt.Fprintf(a.Stdout, "[server] MCP OK: http://127.0.0.1:%d/mcp\n", cfg.Port)
 	fmt.Fprintf(a.Stdout, "[server] Session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionEndpoint)
 	fmt.Fprintf(a.Stdout, "[server] Fast session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionFastEndpoint)
 
 	var tunnelCmd *exec.Cmd
+	tunnelPID, tunnelIdentity, tunnelOwned := ownedTunnelProcess(state, stateOwnershipEstablished)
+	if state.TunnelPID > 0 && !tunnelOwned && pidAlive(state.TunnelPID) {
+		if serverCmd != nil {
+			_ = stopPID(serverCmd.Process.Pid)
+		}
+		return fmt.Errorf("tunnel PID %d is alive but is not owned by the current Codebridge process state; refusing to start a duplicate tunnel", state.TunnelPID)
+	}
+	if tunnelOwned {
+		state.TunnelPID, state.TunnelIdentity = tunnelPID, tunnelIdentity
+	}
 	if !cfg.NoTunnel {
-		if state.TunnelPID > 0 && pidAlive(state.TunnelPID) && state.ConfigID == configID {
-			fmt.Fprintf(a.Stdout, "[tunnel] reusing PID %d\n", state.TunnelPID)
+		if tunnelOwned && state.ConfigID == configID {
+			fmt.Fprintf(a.Stdout, "[tunnel] reusing PID %d\n", tunnelPID)
 		} else {
-			if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
-				_ = stopPID(state.TunnelPID)
+			if tunnelOwned {
+				if err := stopPID(tunnelPID); err != nil && processStillMatches(tunnelPID, tunnelIdentity) {
+					return fmt.Errorf("stop existing tunnel PID %d: %w", tunnelPID, err)
+				}
+				if !waitForProcessExit(tunnelPID, tunnelIdentity, 5*time.Second) {
+					return fmt.Errorf("existing tunnel PID %d did not exit", tunnelPID)
+				}
+				state.TunnelPID, state.TunnelIdentity = 0, ""
 			}
-			tunnelCmd, err = a.spawnTunnel(cfg, opts, opts.Background)
+			tunnelCmd, err = a.spawnTunnel(cfg, runtimeKey, opts.Background)
 			if err != nil {
 				if serverCmd != nil {
 					_ = stopPID(serverCmd.Process.Pid)
@@ -148,17 +195,39 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 				return err
 			}
 			state.TunnelPID = tunnelCmd.Process.Pid
+			state.TunnelIdentity, err = processIdentity(state.TunnelPID)
+			if err != nil {
+				_ = stopPID(state.TunnelPID)
+				if serverCmd != nil {
+					_ = stopPID(serverCmd.Process.Pid)
+				}
+				return fmt.Errorf("capture tunnel process identity for PID %d: %w", state.TunnelPID, err)
+			}
 		}
 	} else {
-		if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
-			fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d (--no-tunnel)\n", state.TunnelPID)
-			_ = stopPID(state.TunnelPID)
+		if tunnelOwned {
+			fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d (--no-tunnel)\n", tunnelPID)
+			if err := stopPID(tunnelPID); err != nil && processStillMatches(tunnelPID, tunnelIdentity) {
+				return fmt.Errorf("stop tunnel PID %d: %w", tunnelPID, err)
+			}
+			if !waitForProcessExit(tunnelPID, tunnelIdentity, 5*time.Second) {
+				return fmt.Errorf("tunnel PID %d did not exit", tunnelPID)
+			}
 		}
 		state.TunnelPID = 0
+		state.TunnelIdentity = ""
 	}
 	state.UpdatedAt, state.ConfigID, state.Port, state.Workspace = time.Now().UTC(), configID, cfg.Port, cfg.Workspace
 	if err := writeState(state); err != nil {
-		return err
+		// Only stop processes created by this invocation. Reused server/tunnel
+		// processes remain owned by the last successfully persisted state.
+		if tunnelCmd != nil {
+			_ = stopPID(tunnelCmd.Process.Pid)
+		}
+		if serverCmd != nil {
+			_ = stopPID(serverCmd.Process.Pid)
+		}
+		return fmt.Errorf("persist process state: %w", err)
 	}
 	if opts.Background {
 		fmt.Fprintln(a.Stdout, "Running in background.")
@@ -177,19 +246,53 @@ func (a App) start(ctx context.Context, cfg config.Config, opts options) error {
 	}
 	select {
 	case <-ctx.Done():
-		if tunnelCmd != nil {
-			_ = stopPID(tunnelCmd.Process.Pid)
-		}
-		if serverCmd != nil {
-			_ = stopPID(serverCmd.Process.Pid)
-		}
-		return nil
+		return cleanupStartedProcesses(state, serverCmd, tunnelCmd)
 	case err := <-wait:
-		return err
+		if err == nil {
+			err = errors.New("server or tunnel process exited unexpectedly")
+		}
+		return errors.Join(err, cleanupStartedProcesses(state, serverCmd, tunnelCmd))
 	}
 }
 
-func (a App) spawnServer(executable string, cfg config.Config, background bool) (*exec.Cmd, error) {
+func cleanupStartedProcesses(state processState, serverCmd, tunnelCmd *exec.Cmd) error {
+	var errs []error
+	if tunnelCmd != nil {
+		if processStillMatches(state.TunnelPID, state.TunnelIdentity) {
+			if err := stopPID(tunnelCmd.Process.Pid); err != nil && processStillMatches(state.TunnelPID, state.TunnelIdentity) {
+				errs = append(errs, fmt.Errorf("stop started tunnel PID %d: %w", tunnelCmd.Process.Pid, err))
+			}
+		}
+		if waitForProcessExit(state.TunnelPID, state.TunnelIdentity, 5*time.Second) {
+			state.TunnelPID, state.TunnelIdentity = 0, ""
+		} else {
+			errs = append(errs, fmt.Errorf("started tunnel PID %d did not exit", state.TunnelPID))
+		}
+	}
+	if serverCmd != nil {
+		if processStillMatches(state.ServerPID, state.ServerIdentity) {
+			if err := stopPID(serverCmd.Process.Pid); err != nil && processStillMatches(state.ServerPID, state.ServerIdentity) {
+				errs = append(errs, fmt.Errorf("stop started server PID %d: %w", serverCmd.Process.Pid, err))
+			}
+		}
+		if waitForProcessExit(state.ServerPID, state.ServerIdentity, 5*time.Second) {
+			state.ServerPID, state.ServerIdentity = 0, ""
+		} else {
+			errs = append(errs, fmt.Errorf("started server PID %d did not exit", state.ServerPID))
+		}
+	}
+	state.UpdatedAt = time.Now().UTC()
+	if state.ServerPID == 0 && state.TunnelPID == 0 {
+		if err := os.Remove(config.PIDPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove stopped process state: %w", err))
+		}
+	} else if err := writeState(state); err != nil {
+		errs = append(errs, fmt.Errorf("persist surviving process state: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func (a App) spawnServer(executable string, cfg config.Config, configID, runtimeKeyFingerprint string, background bool) (*exec.Cmd, error) {
 	cmd := exec.Command(executable, "serve")
 	cmd.Env = append(os.Environ(),
 		"AGENT_WORKSPACE="+cfg.Workspace,
@@ -216,20 +319,18 @@ func (a App) spawnServer(executable string, cfg config.Config, background bool) 
 		"CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
 		"CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
 		"CODEBRIDGE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
+		"CODEBRIDGE_DAEMON_CONFIG_ID="+configID,
+		"CODEBRIDGE_RUNTIME_KEY_FINGERPRINT="+runtimeKeyFingerprint,
 	)
 	return a.startChild("server", cmd, background)
 }
 
-func (a App) spawnTunnel(cfg config.Config, opts options, background bool) (*exec.Cmd, error) {
+func (a App) spawnTunnel(cfg config.Config, runtimeKey string, background bool) (*exec.Cmd, error) {
 	if cfg.TunnelID == "" {
 		return nil, errors.New("tunnel ID is required; run setup, pass --tunnel-id, or use --no-tunnel")
 	}
 	if _, err := os.Stat(cfg.TunnelBin); err != nil {
 		return nil, fmt.Errorf("tunnel-client not found at %s", cfg.TunnelBin)
-	}
-	runtimeKey := opts.RuntimeKey
-	if runtimeKey == "" {
-		runtimeKey = os.Getenv(cfg.RuntimeKeyEnv)
 	}
 	if runtimeKey == "" {
 		return nil, fmt.Errorf("missing Runtime API key; set %s or run codebridge key set", cfg.RuntimeKeyEnv)
@@ -286,28 +387,67 @@ func (a App) startChild(label string, cmd *exec.Cmd, background bool) (*exec.Cmd
 	return cmd, nil
 }
 
-func (a App) stop(cfg config.Config, _ options) error {
+func (a App) stop(cfg config.Config, opts options) error {
+	return withLifecycleLock(context.Background(), "stop", func() error {
+		return a.stopUnlocked(cfg, opts)
+	})
+}
+
+func (a App) stopUnlocked(cfg config.Config, _ options) error {
 	state := readState()
 	health := readHealth(cfg.Port)
-	serverPID := state.ServerPID
-	if health != nil {
-		serverPID = numberValue(health["pid"])
+	healthPID, healthIdentity, healthOwned := ownedHealthProcess(state, health, cfg.Port)
+	serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
+	if health != nil && !healthOwned {
+		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Codebridge process state; refusing to stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
-	if state.TunnelPID > 0 && pidAlive(state.TunnelPID) {
-		fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d\n", state.TunnelPID)
-		_ = stopPID(state.TunnelPID)
+	tunnelPID, tunnelIdentity, tunnelOwned := ownedTunnelProcess(state, healthOwned || serverStateValid)
+	if state.TunnelPID > 0 && !tunnelOwned && pidAlive(state.TunnelPID) {
+		return fmt.Errorf("tunnel PID %d is alive but is not owned by the current Codebridge process state; refusing to stop it", state.TunnelPID)
 	}
-	if serverPID > 0 && pidAlive(serverPID) {
+	var errs []error
+
+	if tunnelOwned {
+		fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d\n", tunnelPID)
+		if err := stopPID(tunnelPID); err != nil && processStillMatches(tunnelPID, tunnelIdentity) {
+			errs = append(errs, fmt.Errorf("stop tunnel PID %d: %w", tunnelPID, err))
+		} else if !waitForProcessExit(tunnelPID, tunnelIdentity, 5*time.Second) {
+			errs = append(errs, fmt.Errorf("tunnel PID %d did not exit", tunnelPID))
+		}
+	} else if state.TunnelPID > 0 {
+		fmt.Fprintf(a.Stdout, "[tunnel] ignored stale PID %d because it is no longer alive\n", state.TunnelPID)
+	}
+
+	serverPID := healthPID
+	serverIdentity := healthIdentity
+	if serverStateValid {
+		serverPID, serverIdentity = state.ServerPID, state.ServerIdentity
+	} else if health == nil && state.ServerPID > 0 {
+		fmt.Fprintf(a.Stdout, "[server] ignored stale PID %d because its process identity does not match\n", state.ServerPID)
+	}
+	if serverPID > 0 {
 		fmt.Fprintf(a.Stdout, "[server] stopping PID %d\n", serverPID)
-		_ = stopPID(serverPID)
+		if err := stopPID(serverPID); err != nil && processStillMatches(serverPID, serverIdentity) {
+			errs = append(errs, fmt.Errorf("stop server PID %d: %w", serverPID, err))
+		} else if !waitForProcessExit(serverPID, serverIdentity, 5*time.Second) {
+			errs = append(errs, fmt.Errorf("server PID %d did not exit", serverPID))
+		}
 	}
-	_ = os.Remove(config.PIDPath())
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	if err := os.Remove(config.PIDPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove process state: %w", err)
+	}
 	fmt.Fprintln(a.Stdout, "Stopped.")
 	return nil
 }
 
 func (a App) status(cfg config.Config, opts options) error {
 	state, health := readState(), readHealth(cfg.Port)
+	_, _, serverOwned := ownedHealthProcess(state, health, cfg.Port)
+	serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
+	_, _, tunnelOwned := ownedTunnelProcess(state, serverOwned || serverStateValid)
 	value := map[string]any{
 		"workspace":   cfg.Workspace,
 		"config_path": config.ConfigPath(), "pid_path": config.PIDPath(), "log_path": config.ServerLogPath(),
@@ -315,9 +455,10 @@ func (a App) status(cfg config.Config, opts options) error {
 		"mcp_url":              fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
 		"session_mcp_url":      fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint),
 		"session_fast_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionFastEndpoint), "server": health,
+		"server_owned": serverOwned,
 		"pids": map[string]any{
-			"server": state.ServerPID, "server_alive": pidAlive(state.ServerPID),
-			"tunnel": state.TunnelPID, "tunnel_alive": pidAlive(state.TunnelPID),
+			"server": state.ServerPID, "server_alive": health != nil || processMatches(state.ServerPID, state.ServerIdentity),
+			"tunnel": state.TunnelPID, "tunnel_alive": tunnelOwned,
 		},
 	}
 	if opts.JSON {
@@ -331,7 +472,7 @@ func (a App) status(cfg config.Config, opts options) error {
 	} else {
 		fmt.Fprintf(a.Stdout, "Server:  ONLINE %v (%v/%v) pid=%v\n", health["version"], health["mode"], health["policy"], health["pid"])
 	}
-	fmt.Fprintf(a.Stdout, "Tunnel:  %s\n", ternary(pidAlive(state.TunnelPID), fmt.Sprintf("running pid=%d", state.TunnelPID), "offline"))
+	fmt.Fprintf(a.Stdout, "Tunnel:  %s\n", ternary(processMatches(state.TunnelPID, state.TunnelIdentity), fmt.Sprintf("running pid=%d", state.TunnelPID), "offline"))
 	return nil
 }
 
@@ -900,15 +1041,90 @@ func portAvailable(host string, port int) bool {
 	return true
 }
 
-func waitForServerRelease(host string, port, pid int, timeout time.Duration) bool {
+func ownedHealthProcess(state processState, health map[string]any, port int) (int, string, bool) {
+	if health == nil || state.Port != port {
+		return 0, "", false
+	}
+	pid := numberValue(healthValue(health, "pid"))
+	if pid <= 0 || state.ServerPID != pid {
+		return 0, "", false
+	}
+	healthConfigID := fmt.Sprint(healthValue(health, "config_id"))
+	if healthConfigID != "" && healthConfigID != "<nil>" && state.ConfigID != "" && healthConfigID != state.ConfigID {
+		return 0, "", false
+	}
+	if state.ServerIdentity != "" {
+		if !processMatches(pid, state.ServerIdentity) {
+			return 0, "", false
+		}
+		return pid, state.ServerIdentity, true
+	}
+	// One-time migration for process state written before identity fingerprints
+	// were introduced. PID, port, and ConfigID must still match health.
+	identity, err := processIdentity(pid)
+	if err != nil {
+		return 0, "", false
+	}
+	return pid, identity, true
+}
+
+func ownedTunnelProcess(state processState, stateOwned bool) (int, string, bool) {
+	if state.TunnelPID <= 0 {
+		return 0, "", false
+	}
+	if state.TunnelIdentity != "" {
+		if !processMatches(state.TunnelPID, state.TunnelIdentity) {
+			return 0, "", false
+		}
+		return state.TunnelPID, state.TunnelIdentity, true
+	}
+	if !stateOwned {
+		return 0, "", false
+	}
+	// Legacy tunnel state can be adopted only when the server state from the
+	// same document was independently verified through health or identity.
+	identity, err := processIdentity(state.TunnelPID)
+	if err != nil {
+		return 0, "", false
+	}
+	return state.TunnelPID, identity, true
+}
+
+func waitForServerRelease(host string, port, pid int, identity string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if !pidAlive(pid) && portAvailable(host, port) {
+		if !processStillMatches(pid, identity) && portAvailable(host, port) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return !pidAlive(pid) && portAvailable(host, port)
+	return !processStillMatches(pid, identity) && portAvailable(host, port)
+}
+
+func waitForProcessExit(pid int, identity string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !processStillMatches(pid, identity) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return !processStillMatches(pid, identity)
+}
+
+func processMatches(pid int, identity string) bool {
+	return identity != "" && processStillMatches(pid, identity)
+}
+
+func processStillMatches(pid int, identity string) bool {
+	if pid <= 0 {
+		return false
+	}
+	if identity == "" {
+		return pidAlive(pid)
+	}
+	current, err := processIdentity(pid)
+	return err == nil && current == identity
 }
 
 func waitForHealth(port int, timeout time.Duration) map[string]any {
@@ -932,11 +1148,11 @@ func readState() processState {
 }
 
 func writeState(state processState) error {
-	if err := os.MkdirAll(filepath.Dir(config.PIDPath()), 0o700); err != nil {
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
 		return err
 	}
-	raw, _ := json.MarshalIndent(state, "", "  ")
-	return os.WriteFile(config.PIDPath(), append(raw, '\n'), 0o600)
+	return atomicWriteFile(config.PIDPath(), append(raw, '\n'), 0o600)
 }
 
 func numberValue(value any) int {

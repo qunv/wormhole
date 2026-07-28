@@ -268,6 +268,8 @@ codebridge workspace list
 codebridge workspace status loyalty-api
 codebridge workspace stop loyalty-api
 codebridge workspace start loyalty-api
+codebridge workspace compact loyalty-api --dry-run
+codebridge workspace compact loyalty-api
 codebridge workspace remove admin-web
 ```
 
@@ -341,12 +343,13 @@ primary runtime: defaults → config.json → environment → CLI options
 named runtime:   primary effective config → workspaces/<id>/config.json override → registry/listener ownership
 ```
 
-Named workspace files are partial overrides rather than full snapshots. A newly registered workspace normally stores only `extraRoots` and explicitly supplied workspace options, so later global memory, MCP, limits, and policy changes are inherited automatically. Objects merge recursively, arrays replace the inherited array, `false` remains an explicit override, and `null` removes an inherited key.
+Named workspace files are versioned partial overrides rather than full snapshots. A newly registered workspace normally stores only `schemaVersion`, `extraRoots`, and explicitly supplied workspace options, so later global memory, MCP, limits, and policy changes are inherited automatically. Objects merge recursively, arrays replace the inherited array, `false` remains an explicit override, and `null` removes an inherited key. Unknown fields and duplicate JSON keys are rejected instead of being silently ignored.
 
 For example, this workspace uses another database URI while inheriting the global command, startup mode, timeouts, and tool policy:
 
 ```json
 {
+  "schemaVersion": 1,
   "mcpServers": {
     "postgres_prod": {
       "envRefs": {
@@ -357,7 +360,7 @@ For example, this workspace uses another database URI while inheriting the globa
 }
 ```
 
-To disable one inherited server for a workspace, use `"enabled": false`; to remove it from the effective map entirely, set that server entry to `null`. Existing full workspace config files remain valid, but every field present in them is treated as an explicit override. Remove duplicated fields, or reduce the file to `{}`, to inherit current global values.
+To disable one inherited server for a workspace, use `"enabled": false`; to remove it from the effective map entirely, set that server entry to `null`. Existing full workspace config files remain valid, but every field present in them is treated as an explicit override. Use `codebridge workspace compact <id> --dry-run` to preview removal of values that merely duplicate the current global config, then rerun without `--dry-run` to persist the compact version. An explicit `extraRoots: []` is preserved so future global roots do not leak into that workspace.
 
 Minimal tunnel-related configuration:
 

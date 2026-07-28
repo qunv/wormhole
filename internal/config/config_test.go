@@ -172,8 +172,8 @@ func TestSaveDoesNotPersistSecrets(t *testing.T) {
 	t.Setenv("CODEBRIDGE_CONFIG_PATH", path)
 	cfg := Default()
 	cfg.Workspace = t.TempDir()
-	cfg.AuthToken = "auth-secret"
-	cfg.ApprovalToken = "approval-secret"
+	cfg.AuthToken = strings.Repeat("a", 16)
+	cfg.ApprovalToken = strings.Repeat("p", 16)
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +233,66 @@ func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
 	}
 }
 
+func TestConfigIDIncludesEffectiveSecurityLimitsAndTunnelIdentity(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "codebridge")
+	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	widget := []byte("widget")
+	base := Default()
+	baseID := base.ConfigID(binary, widget)
+
+	mutations := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"auth token", func(cfg *Config) { cfg.AuthToken = strings.Repeat("a", 16) }},
+		{"approval token", func(cfg *Config) { cfg.ApprovalToken = strings.Repeat("p", 16) }},
+		{"host", func(cfg *Config) { cfg.Host = "localhost" }},
+		{"origins", func(cfg *Config) { cfg.AllowedOrigins = []string{"https://example.test"} }},
+		{"audit arguments", func(cfg *Config) { cfg.AuditArgs = !cfg.AuditArgs }},
+		{"body limit", func(cfg *Config) { cfg.MaxBodyBytes++ }},
+		{"process limit", func(cfg *Config) { cfg.MaxProcesses++ }},
+		{"tunnel id", func(cfg *Config) { cfg.TunnelID = "another-tunnel" }},
+		{"profile directory", func(cfg *Config) { cfg.ProfileDir = filepath.Join(t.TempDir(), "profiles") }},
+	}
+	for _, test := range mutations {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			test.mutate(&cfg)
+			if got := cfg.ConfigID(binary, widget); got == baseID {
+				t.Fatalf("ConfigID did not change after %s changed", test.name)
+			}
+		})
+	}
+
+	first := base.ConfigIDWithInputs(NewIdentityInputs(binary, widget, strings.Repeat("r", 16)+"1"))
+	second := base.ConfigIDWithInputs(NewIdentityInputs(binary, widget, strings.Repeat("r", 16)+"2"))
+	if first == second {
+		t.Fatal("ConfigID did not change when the tunnel Runtime API key changed")
+	}
+}
+
+func TestConfigIDDoesNotEmbedRawSecrets(t *testing.T) {
+	cfg := Default()
+	cfg.AuthToken = strings.Repeat("a", 24)
+	cfg.ApprovalToken = strings.Repeat("p", 24)
+	runtimeSecret := strings.Repeat("r", 24)
+	inputs := NewIdentityInputs("missing", []byte("widget"), runtimeSecret)
+	identity := cfg.ConfigIDWithInputs(inputs)
+	for _, secret := range []string{cfg.AuthToken, cfg.ApprovalToken, runtimeSecret} {
+		if strings.Contains(identity, secret) {
+			t.Fatalf("ConfigID leaked raw secret %q", secret)
+		}
+	}
+}
+
 func TestValidateRejectsSecretsInsideMemoryOptions(t *testing.T) {
 	cfg := Default()
 	cfg.Memory.Enabled = true
 	cfg.Memory.Provider = "agentmemory"
 	cfg.Memory.Options = map[string]any{
-		"transport": map[string]any{"apiKey": "must-not-be-persisted"},
+		"transport": map[string]any{"apiKey": strings.Repeat("k", 24)},
 	}
 	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "memory.secretEnv") {
 		t.Fatalf("expected sensitive memory option to be rejected, got %v", err)
@@ -246,6 +300,25 @@ func TestValidateRejectsSecretsInsideMemoryOptions(t *testing.T) {
 	cfg.Memory.Options = map[string]any{"contextFallback": true, "contextPath": "/agentmemory/context"}
 	if err := cfg.Validate(false); err != nil {
 		t.Fatalf("safe memory options rejected: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownAndDuplicateConfigFields(t *testing.T) {
+	for name, raw := range map[string]string{
+		"unknown top level":        `{"workspace":".","workspaceId":"api"}`,
+		"unknown nested MCP field": `{"workspace":".","mcpServers":{"postgres":{"command":"uvx","workspaceId":["api"]}}}`,
+		"duplicate top level":      `{"workspace":".","mode":"safe","mode":"full"}`,
+		"duplicate nested":         `{"workspace":".","mcpServers":{"postgres":{"command":"uvx","startupMode":"lazy","startupMode":"eager"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadFile(path); err == nil {
+				t.Fatalf("invalid config was accepted: %s", raw)
+			}
+		})
 	}
 }
 

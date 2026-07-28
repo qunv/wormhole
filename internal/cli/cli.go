@@ -131,8 +131,12 @@ func (a App) Run(ctx context.Context, argv []string) error {
 				a.printAutoWorkspace(entry, created, enabled, cfg.Port)
 			}
 		}
-		_ = a.stop(cfg, opts)
-		return a.start(ctx, cfg, opts)
+		return withLifecycleLock(ctx, "restart", func() error {
+			if err := a.stopUnlocked(cfg, opts); err != nil {
+				return err
+			}
+			return a.startUnlocked(ctx, cfg, opts)
+		})
 	case "stop":
 		return a.stop(cfg, opts)
 	case "status":
@@ -173,12 +177,24 @@ func (a App) Run(ctx context.Context, argv []string) error {
 	}
 }
 
+func serveConfigID(cfg config.Config, inputs config.IdentityInputs) (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("CODEBRIDGE_DAEMON_CONFIG_ID")); configured != "" {
+		return configured, nil
+	}
+	return daemonConfigIDWithInputs(cfg, inputs)
+}
+
 func (a App) serve(ctx context.Context, cfg config.Config) error {
 	if err := cfg.Validate(true); err != nil {
 		return err
 	}
 	executable, _ := os.Executable()
-	configID, err := daemonConfigID(cfg, executable, assets.Widget())
+	widget := assets.Widget()
+	identityInputs := config.NewIdentityInputs(executable, widget, os.Getenv(cfg.RuntimeKeyEnv))
+	if fingerprint := strings.TrimSpace(os.Getenv("CODEBRIDGE_RUNTIME_KEY_FINGERPRINT")); fingerprint != "" {
+		identityInputs.RuntimeKeyFingerprint = fingerprint
+	}
+	configID, err := serveConfigID(cfg, identityInputs)
 	if err != nil {
 		return err
 	}
@@ -223,7 +239,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		}
 		startups = append(startups, runtimeStartup{
 			id: id, dataDir: item.Registration.DataDir, config: item.Config,
-			configID: item.Config.ConfigID(executable, assets.Widget()),
+			configID: item.Config.ConfigIDWithInputs(identityInputs),
 		})
 	}
 
@@ -305,6 +321,7 @@ Usage:
   codebridge workspace add <id> <path> [--extra-root <path>] [--force]
   codebridge workspace list [--json]
   codebridge workspace start|stop|status <id>
+  codebridge workspace compact <id> [--dry-run] [--json]
   codebridge workspace remove <id> [--force]
   codebridge tunnel [status|install]
   codebridge keys                Print Tunnel/API-key setup URLs

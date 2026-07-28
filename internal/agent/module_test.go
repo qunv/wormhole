@@ -256,6 +256,40 @@ func TestBalancedPolicyRequiresApprovalForExternalWriteTool(t *testing.T) {
 	}
 }
 
+func TestSafeModeBlocksExplicitQualityCommandsBeforeApproval(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Mode, cfg.Policy = t.TempDir(), true, "safe", "balanced"
+	runtime, err := New(cfg, "test", "pro", "test-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	err = runtime.enforcePolicy("run_tests", map[string]any{"command": "go test ./..."})
+	if err == nil || !strings.Contains(err.Error(), "disabled in safe mode") {
+		t.Fatalf("explicit safe-mode quality command was not blocked: %v", err)
+	}
+	if err := runtime.enforcePolicy("run_tests", map[string]any{}); err != nil {
+		t.Fatalf("detected safe-mode quality command unexpectedly required approval: %v", err)
+	}
+}
+
+func TestBalancedPolicyRequiresApprovalForExplicitQualityCommand(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Mode, cfg.Policy = t.TempDir(), true, "full", "balanced"
+	runtime, err := New(cfg, "test", "pro", "test-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	command := "go test ./..."
+	err = runtime.enforcePolicy("run_tests", map[string]any{"command": command})
+	if err == nil || !strings.Contains(err.Error(), "run_tests:"+command) {
+		t.Fatalf("explicit quality command did not require exact approval: %v", err)
+	}
+}
+
 func TestToolExposureUsesModuleOwnership(t *testing.T) {
 	runtime := &Runtime{Config: config.Config{Tools: config.ToolExposureConfig{AllowedGroups: []string{"kubernetes"}}}}
 	if err := runtime.RegisterModule(testModule("kubernetes", "kubernetes_get")); err != nil {

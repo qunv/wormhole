@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -245,6 +246,45 @@ func TestDaemonConfigIDChangesWithNamedWorkspaceSecret(t *testing.T) {
 	}
 }
 
+func TestServeConfigIDUsesSupervisorValueWithoutRecomputing(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	t.Setenv("CODEBRIDGE_DAEMON_CONFIG_ID", "supervisor-config-id")
+	if err := os.MkdirAll(filepath.Dir(workspaceregistry.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workspaceregistry.Path(), []byte("invalid registry"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := serveConfigID(config.Default(), config.IdentityInputs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "supervisor-config-id" {
+		t.Fatalf("serve config ID = %q, want supervisor value", got)
+	}
+}
+
+func TestDaemonConfigIDChangesWithRuntimeKeyFingerprint(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	binary := filepath.Join(t.TempDir(), "codebridge")
+	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	first, err := daemonConfigIDWithInputs(cfg, config.NewIdentityInputs(binary, []byte("widget"), "first-runtime-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := daemonConfigIDWithInputs(cfg, config.NewIdentityInputs(binary, []byte("widget"), "second-runtime-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("daemon config ID did not change with Runtime API key")
+	}
+}
+
 func TestStartupWaitTimeoutIncludesNamedWorkspaceDependencies(t *testing.T) {
 	configureWorkspaceTestPaths(t)
 	cfg := config.Default()
@@ -326,6 +366,83 @@ func TestTunnelProfileIncludesEnabledWorkspaceChannels(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCompactSupportsDryRunAndPersistsMinimalOverride(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	cfg.AuthToken = strings.Repeat("t", 16)
+	app := App{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
+	if err := app.workspaceAdd(cfg, options{Rest: []string{"add", "api", t.TempDir()}}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := registry.Workspaces["api"]
+	if err := saveWorkspaceOverride(entry.ConfigPath, cfg, map[string]any{
+		"mode": cfg.Mode, "policy": "strict", "extraRoots": []any{}, "host": "0.0.0.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	app.Stdout = &output
+	if err := app.workspaceCompact(cfg, "api", options{DryRun: true, JSON: true}); err != nil {
+		t.Fatal(err)
+	}
+	beforeDryRun, err := config.ReadOverrideFile(entry.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := beforeDryRun["mode"]; !exists {
+		t.Fatal("dry-run mutated the override")
+	}
+	if err := app.workspaceCompact(cfg, "api", options{}); err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := config.ReadOverrideFile(entry.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := compacted["mode"]; exists {
+		t.Fatalf("equal mode snapshot remained: %#v", compacted)
+	}
+	if _, exists := compacted["host"]; exists {
+		t.Fatalf("daemon-owned host remained: %#v", compacted)
+	}
+	if compacted["policy"] != "strict" || compacted["extraRoots"] == nil {
+		t.Fatalf("meaningful overrides were lost: %#v", compacted)
+	}
+}
+
+func TestWorkspaceCompactVersionsUnchangedLegacyOverride(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	app := App{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
+	if err := app.workspaceAdd(cfg, options{Rest: []string{"add", "api", t.TempDir()}}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := registry.Workspaces["api"]
+	if err := os.WriteFile(entry.ConfigPath, []byte("{\n  \"extraRoots\": []\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.workspaceCompact(cfg, "api", options{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(entry.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"schemaVersion": 1`) {
+		t.Fatalf("unchanged legacy override was not versioned: %s", raw)
+	}
+}
+
 func TestWorkspaceRemoveForceDeletesConfigButKeepsState(t *testing.T) {
 	configureWorkspaceTestPaths(t)
 	cfg := config.Default()
@@ -365,6 +482,54 @@ func TestWorkspaceRemoveForceDeletesConfigButKeepsState(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRegistrationRollsBackOverrideWhenRegistrySaveFails(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	app := App{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
+	originalSave := saveWorkspaceRegistry
+	saveWorkspaceRegistry = func(workspaceregistry.Registry) error { return errors.New("registry unavailable") }
+	t.Cleanup(func() { saveWorkspaceRegistry = originalSave })
+
+	_, _, err := app.registerWorkspace(cfg, "api", t.TempDir(), options{}, false)
+	if err == nil || !strings.Contains(err.Error(), "registry unavailable") {
+		t.Fatalf("registry failure was not returned: %v", err)
+	}
+	if _, err := os.Stat(workspaceregistry.ConfigPath("api")); !os.IsNotExist(err) {
+		t.Fatalf("new override remained after registry rollback: %v", err)
+	}
+}
+
+func TestWorkspaceRemoveRestoresConfigWhenRegistrySaveFails(t *testing.T) {
+	configureWorkspaceTestPaths(t)
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	app := App{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
+	if err := app.workspaceAdd(cfg, options{Rest: []string{"add", "api", t.TempDir()}}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := registry.Workspaces["api"]
+	before, err := os.ReadFile(entry.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalSave := saveWorkspaceRegistry
+	saveWorkspaceRegistry = func(workspaceregistry.Registry) error { return errors.New("registry unavailable") }
+	t.Cleanup(func() { saveWorkspaceRegistry = originalSave })
+	if err := app.workspaceRemove(cfg, "api", options{Force: true}); err == nil {
+		t.Fatal("expected registry save failure")
+	}
+	after, err := os.ReadFile(entry.ConfigPath)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("workspace config was not restored: before=%q after=%q err=%v", before, after, err)
+	}
+}
+
 func TestWorkspaceLifecycleRejectsUnknownActionWithoutMutation(t *testing.T) {
 	configureWorkspaceTestPaths(t)
 	cfg := config.Default()
@@ -400,6 +565,7 @@ func TestWorkspaceHealthMap(t *testing.T) {
 func configureWorkspaceTestPaths(t *testing.T) {
 	t.Helper()
 	base := t.TempDir()
+	t.Setenv("CODEBRIDGE_HOME", base)
 	switch runtime.GOOS {
 	case "windows":
 		t.Setenv("APPDATA", filepath.Join(base, "config"))

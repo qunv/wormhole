@@ -76,6 +76,27 @@ func TestSymbolScanUsesLoadedInventoryInsteadOfWalkingAgain(t *testing.T) {
 	}
 }
 
+func TestChangedGoPackageRejectsShellSensitivePaths(t *testing.T) {
+	for file, want := range map[string]string{
+		"main.go":             ".",
+		"internal/api/api.go": "./internal/api",
+		"pkg-name/x_test.go":  "./pkg-name",
+	} {
+		got, ok := changedGoPackage(file)
+		if !ok || got != want {
+			t.Errorf("changedGoPackage(%q) = %q, %t; want %q, true", file, got, ok, want)
+		}
+	}
+	for _, file := range []string{
+		"dir name/file.go", "dir;touch-pwned/file.go", "dir$(touch-pwned)/file.go",
+		`"quoted path/file.go"`, "../outside/file.go",
+	} {
+		if got, ok := changedGoPackage(file); ok {
+			t.Errorf("changedGoPackage(%q) = %q, true; want rejection", file, got)
+		}
+	}
+}
+
 func hasSymbol(symbols []map[string]any, name string) bool {
 	for _, symbol := range symbols {
 		if symbol["name"] == name {

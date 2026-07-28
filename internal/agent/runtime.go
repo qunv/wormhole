@@ -374,6 +374,9 @@ func (r *Runtime) enforcePolicy(tool string, args map[string]any) error {
 	if policyTools[tool] {
 		return nil
 	}
+	if r.Config.Mode != "full" && explicitQualityCommand(tool, args) {
+		return errors.New("explicit quality commands are disabled in safe mode; omit command to use the detected/profile command or switch to mode=full")
+	}
 
 	spec, registered := r.ToolSpec(tool)
 	if r.Config.Policy == "strict" && registered && !spec.ReadOnly {
@@ -441,6 +444,10 @@ func approvalAction(tool string, args map[string]any) string {
 		if security.Classify(command).NeedsApproval {
 			return tool + ":" + command
 		}
+	case "run_tests", "run_build", "run_lint", "run_changed_tests":
+		if command := strings.TrimSpace(stringArg(args, "command", "")); command != "" {
+			return tool + ":" + command
+		}
 	case "run_commands":
 		var risky []any
 		for _, item := range arrayArg(args, "commands") {
@@ -466,6 +473,15 @@ func approvalAction(tool string, args map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func explicitQualityCommand(tool string, args map[string]any) bool {
+	switch tool {
+	case "run_tests", "run_build", "run_lint", "run_changed_tests":
+		return strings.TrimSpace(stringArg(args, "command", "")) != ""
+	default:
+		return false
+	}
 }
 
 func workspaceProfilePath(root string) string {

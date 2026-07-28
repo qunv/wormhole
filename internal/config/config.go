@@ -430,8 +430,16 @@ func loadFile(path string, useEnvironment bool) (Config, error) {
 		return cfg, err
 	}
 	if err == nil {
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return cfg, fmt.Errorf("parse config %s: %w", path, err)
+		object, parseErr := decodeConfigObject(raw, path)
+		if parseErr != nil {
+			return cfg, parseErr
+		}
+		cleanRaw, marshalErr := json.Marshal(object)
+		if marshalErr != nil {
+			return cfg, fmt.Errorf("parse config %s: %w", path, marshalErr)
+		}
+		if unmarshalErr := json.Unmarshal(cleanRaw, &cfg); unmarshalErr != nil {
+			return cfg, fmt.Errorf("parse config %s: %w", path, unmarshalErr)
 		}
 	}
 	migrateLegacyConfigPaths(&cfg)
@@ -563,38 +571,85 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (c Config) ConfigID(binaryPath string, widget []byte) string {
+// IdentityInputs contains process-wide hashes that are shared by every
+// workspace runtime. Construct it once per daemon reconciliation so large
+// binaries and embedded assets are not re-read for every named workspace.
+type IdentityInputs struct {
+	BinaryHash            string
+	WidgetHash            string
+	RuntimeKeyFingerprint string
+}
+
+// NewIdentityInputs computes the immutable process inputs used by ConfigID.
+// Secret values are reduced to one-way fingerprints and are never persisted.
+func NewIdentityInputs(binaryPath string, widget []byte, runtimeKey string) IdentityInputs {
 	binaryHash := "missing"
 	if raw, err := os.ReadFile(binaryPath); err == nil {
-		sum := sha256.Sum256(raw)
-		binaryHash = hex.EncodeToString(sum[:8])
+		binaryHash = bytesFingerprint(raw)
 	}
-	secretFingerprint := ""
-	if c.Memory.SecretEnv != "" {
-		if secret := os.Getenv(c.Memory.SecretEnv); secret != "" {
-			sum := sha256.Sum256([]byte(secret))
-			secretFingerprint = hex.EncodeToString(sum[:8])
-		}
+	widgetSum := sha256.Sum256(widget)
+	return IdentityInputs{
+		BinaryHash:            binaryHash,
+		WidgetHash:            hex.EncodeToString(widgetSum[:]),
+		RuntimeKeyFingerprint: secretFingerprint(runtimeKey),
 	}
-	mcpServerSecretFingerprints := MCPServerSecretFingerprints(c.MCPServers)
+}
+
+// ConfigID preserves the historical convenience API for callers that do not
+// own tunnel credentials. Daemon lifecycle code should reuse IdentityInputs.
+func (c Config) ConfigID(binaryPath string, widget []byte) string {
+	return c.ConfigIDWithInputs(NewIdentityInputs(binaryPath, widget, ""))
+}
+
+// ConfigIDWithInputs fingerprints the complete effective configuration. Raw
+// bearer, approval, memory, upstream, and tunnel credentials are replaced by
+// one-way fingerprints before the identity material is serialized.
+func (c Config) ConfigIDWithInputs(inputs IdentityInputs) string {
+	identityConfig := c
+	identityConfig.Workspace = filepath.Clean(identityConfig.Workspace)
+	identityConfig.ExtraRoots = append([]string(nil), identityConfig.ExtraRoots...)
+	for index := range identityConfig.ExtraRoots {
+		identityConfig.ExtraRoots[index] = filepath.Clean(identityConfig.ExtraRoots[index])
+	}
+	if identityConfig.TunnelBin != "" {
+		identityConfig.TunnelBin = filepath.Clean(identityConfig.TunnelBin)
+	}
+	if identityConfig.ProfileDir != "" {
+		identityConfig.ProfileDir = filepath.Clean(identityConfig.ProfileDir)
+	}
+
+	authFingerprint := secretFingerprint(identityConfig.AuthToken)
+	approvalFingerprint := secretFingerprint(identityConfig.ApprovalToken)
+	identityConfig.AuthToken = ""
+	identityConfig.ApprovalToken = ""
+	memorySecretFingerprint := ""
+	if identityConfig.Memory.SecretEnv != "" {
+		memorySecretFingerprint = secretFingerprint(os.Getenv(identityConfig.Memory.SecretEnv))
+	}
+
 	material, _ := json.Marshal(map[string]any{
-		"workspace":   filepath.Clean(c.Workspace),
-		"extraRoots":  c.ExtraRoots,
-		"mode":        c.Mode,
-		"policy":      c.Policy,
-		"port":        c.Port,
-		"authEnabled": c.AuthToken != "",
-		"binaryHash":  binaryHash,
-		"widgetHash":  fmt.Sprintf("%x", sha256.Sum256(widget)),
-		"memory": map[string]any{
-			"config": c.Memory, "secretFingerprint": secretFingerprint,
-		},
-		"mcpServers": map[string]any{
-			"config": c.MCPServers, "secretFingerprints": mcpServerSecretFingerprints,
-		},
-		"tools": c.Tools,
+		"config":                      identityConfig,
+		"authTokenFingerprint":        authFingerprint,
+		"approvalTokenFingerprint":    approvalFingerprint,
+		"memorySecretFingerprint":     memorySecretFingerprint,
+		"mcpServerSecretFingerprints": MCPServerSecretFingerprints(identityConfig.MCPServers),
+		"binaryHash":                  inputs.BinaryHash,
+		"widgetHash":                  inputs.WidgetHash,
+		"runtimeKeyFingerprint":       inputs.RuntimeKeyFingerprint,
 	})
 	sum := sha256.Sum256(material)
+	return hex.EncodeToString(sum[:8])
+}
+
+func secretFingerprint(value string) string {
+	if value == "" {
+		return ""
+	}
+	return bytesFingerprint([]byte(value))
+}
+
+func bytesFingerprint(value []byte) string {
+	sum := sha256.Sum256(value)
 	return hex.EncodeToString(sum[:8])
 }
 

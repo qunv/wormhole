@@ -45,6 +45,11 @@ func (a App) workspaceCommand(ctx context.Context, defaultConfig config.Config, 
 			return errors.New("usage: codebridge workspace remove <id>")
 		}
 		return a.workspaceRemove(defaultConfig, opts.Rest[1], opts)
+	case "compact":
+		if len(opts.Rest) < 2 {
+			return errors.New("usage: codebridge workspace compact <id> [--dry-run]")
+		}
+		return a.workspaceCompact(defaultConfig, opts.Rest[1], opts)
 	default:
 		return a.workspace(defaultConfig, opts)
 	}
@@ -80,6 +85,17 @@ func (a App) workspaceAdd(defaultConfig config.Config, opts options) error {
 }
 
 func (a App) registerWorkspace(defaultConfig config.Config, rawID, rawRoot string, opts options, replace bool) (workspaceregistry.Registration, bool, error) {
+	var entry workspaceregistry.Registration
+	var created bool
+	err := withLifecycleLock(context.Background(), "workspace register", func() error {
+		var err error
+		entry, created, err = a.registerWorkspaceUnlocked(defaultConfig, rawID, rawRoot, opts, replace)
+		return err
+	})
+	return entry, created, err
+}
+
+func (a App) registerWorkspaceUnlocked(defaultConfig config.Config, rawID, rawRoot string, opts options, replace bool) (workspaceregistry.Registration, bool, error) {
 	id := workspaceregistry.NormalizeID(rawID)
 	if err := workspaceregistry.ValidateID(id); err != nil {
 		return workspaceregistry.Registration{}, false, err
@@ -152,17 +168,36 @@ func (a App) registerWorkspace(defaultConfig config.Config, rawID, rawRoot strin
 	if opts.Policy != "" {
 		override["policy"] = opts.Policy
 	}
-	if err := config.SaveOverrideFile(entry.ConfigPath, defaultConfig, override); err != nil {
+	configSnapshot, err := captureWorkspaceFile(entry.ConfigPath)
+	if err != nil {
+		return workspaceregistry.Registration{}, false, fmt.Errorf("snapshot workspace %q override: %w", id, err)
+	}
+	if err := saveWorkspaceOverride(entry.ConfigPath, defaultConfig, override); err != nil {
 		return workspaceregistry.Registration{}, false, err
 	}
 	registry.Workspaces[id] = entry
-	if err := workspaceregistry.Save(registry); err != nil {
-		return workspaceregistry.Registration{}, false, err
+	if err := saveWorkspaceRegistry(registry); err != nil {
+		rollbackErr := configSnapshot.restore()
+		return workspaceregistry.Registration{}, false, errors.Join(
+			fmt.Errorf("save workspace registry: %w", err),
+			wrapOptionalError("rollback workspace override", rollbackErr),
+		)
 	}
 	return entry, !exists, nil
 }
 
 func (a App) ensureAutoWorkspace(defaultConfig config.Config, root string, opts options) (workspaceregistry.Registration, bool, bool, error) {
+	var entry workspaceregistry.Registration
+	var created, enabled bool
+	err := withLifecycleLock(context.Background(), "workspace auto-register", func() error {
+		var err error
+		entry, created, enabled, err = a.ensureAutoWorkspaceUnlocked(defaultConfig, root, opts)
+		return err
+	})
+	return entry, created, enabled, err
+}
+
+func (a App) ensureAutoWorkspaceUnlocked(defaultConfig config.Config, root string, opts options) (workspaceregistry.Registration, bool, bool, error) {
 	root = detectWorkspace(root)
 	if sameWorkspacePath(root, defaultConfig.Workspace) {
 		return workspaceregistry.Registration{ID: workspaceregistry.IDFromPath(root), Workspace: root, Enabled: true}, false, false, nil
@@ -177,12 +212,12 @@ func (a App) ensureAutoWorkspace(defaultConfig config.Config, root string, opts 
 			continue
 		}
 		wasEnabled := entry.Enabled
-		updated, _, registerErr := a.registerWorkspace(defaultConfig, id, root, opts, true)
+		updated, _, registerErr := a.registerWorkspaceUnlocked(defaultConfig, id, root, opts, true)
 		return updated, false, !wasEnabled, registerErr
 	}
 
 	id := autoWorkspaceID(registry, root)
-	entry, created, err := a.registerWorkspace(defaultConfig, id, root, opts, false)
+	entry, created, err := a.registerWorkspaceUnlocked(defaultConfig, id, root, opts, false)
 	return entry, created, created, err
 }
 
@@ -233,6 +268,12 @@ func canonicalWorkspacePath(path string) string {
 }
 
 func (a App) workspaceRemove(defaultConfig config.Config, rawID string, opts options) error {
+	return withLifecycleLock(context.Background(), "workspace remove", func() error {
+		return a.workspaceRemoveUnlocked(defaultConfig, rawID, opts)
+	})
+}
+
+func (a App) workspaceRemoveUnlocked(defaultConfig config.Config, rawID string, opts options) error {
 	id := workspaceregistry.NormalizeID(rawID)
 	registry, err := workspaceregistry.Load()
 	if err != nil {
@@ -242,19 +283,91 @@ func (a App) workspaceRemove(defaultConfig config.Config, rawID string, opts opt
 	if !exists {
 		return fmt.Errorf("workspace %q is not registered", id)
 	}
-	delete(registry.Workspaces, id)
-	if err := workspaceregistry.Save(registry); err != nil {
-		return err
-	}
+	var configSnapshot workspaceFileSnapshot
 	if opts.Force {
-		if err := os.Remove(entry.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		configSnapshot, err = captureWorkspaceFile(entry.ConfigPath)
+		if err != nil {
+			return fmt.Errorf("snapshot workspace config: %w", err)
+		}
+		if err := removeWorkspaceConfig(entry.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove workspace config: %w", err)
 		}
+	}
+	delete(registry.Workspaces, id)
+	if err := saveWorkspaceRegistry(registry); err != nil {
+		var rollbackErr error
+		if opts.Force {
+			rollbackErr = configSnapshot.restore()
+		}
+		return errors.Join(
+			fmt.Errorf("save workspace registry: %w", err),
+			wrapOptionalError("restore workspace config", rollbackErr),
+		)
 	}
 	fmt.Fprintf(a.Stdout, "Workspace %s removed from the daemon registry\n", id)
 	if readHealth(defaultConfig.Port) != nil {
 		fmt.Fprintln(a.Stdout, "Restart Codebridge to remove the active endpoint.")
 	}
+	return nil
+}
+
+func (a App) workspaceCompact(defaultConfig config.Config, rawID string, opts options) error {
+	return withLifecycleLock(context.Background(), "workspace compact", func() error {
+		return a.workspaceCompactUnlocked(defaultConfig, rawID, opts)
+	})
+}
+
+func (a App) workspaceCompactUnlocked(defaultConfig config.Config, rawID string, opts options) error {
+	id := workspaceregistry.NormalizeID(rawID)
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		return err
+	}
+	entry, exists := registry.Workspaces[id]
+	if !exists {
+		return fmt.Errorf("workspace %q is not registered", id)
+	}
+	override, err := config.ReadOverrideFile(entry.ConfigPath)
+	if err != nil {
+		return err
+	}
+	originalRaw, err := json.Marshal(override)
+	if err != nil {
+		return err
+	}
+	var original map[string]any
+	if err := json.Unmarshal(originalRaw, &original); err != nil {
+		return err
+	}
+	for _, field := range []string{
+		"workspace", "port", "host", "authToken", "approvalToken", "allowedOrigins",
+		"noTunnel", "tunnelBin", "tunnelId", "organizationId", "profile", "profileDir", "runtimeKeyEnv",
+	} {
+		delete(override, field)
+	}
+	compacted, err := config.CompactOverride(defaultConfig, override)
+	if err != nil {
+		return err
+	}
+	afterRaw, _ := json.Marshal(compacted)
+	changed := string(originalRaw) != string(afterRaw)
+	result := map[string]any{
+		"workspace": id, "config_path": entry.ConfigPath, "changed": changed,
+		"dry_run": opts.DryRun, "before": original, "after": compacted,
+	}
+	if !opts.DryRun {
+		// Always rewrite non-dry-run compactions so an unchanged legacy document
+		// still receives the current schemaVersion metadata.
+		if err := saveWorkspaceOverride(entry.ConfigPath, defaultConfig, compacted); err != nil {
+			return err
+		}
+	}
+	if opts.JSON || opts.DryRun {
+		raw, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Fprintln(a.Stdout, string(raw))
+		return nil
+	}
+	fmt.Fprintf(a.Stdout, "Workspace %s override compacted (changed=%t)\n", id, changed)
 	return nil
 }
 
@@ -306,10 +419,19 @@ func (a App) workspaceList(defaultConfig config.Config, opts options) error {
 }
 
 func (a App) workspaceLifecycle(ctx context.Context, defaultConfig config.Config, action, rawID string, opts options) error {
-	id := workspaceregistry.NormalizeID(rawID)
 	if action != "start" && action != "stop" && action != "status" {
 		return fmt.Errorf("unsupported workspace action: %s", action)
 	}
+	if action == "status" {
+		return a.workspaceLifecycleUnlocked(ctx, defaultConfig, action, rawID, opts)
+	}
+	return withLifecycleLock(ctx, "workspace "+action, func() error {
+		return a.workspaceLifecycleUnlocked(ctx, defaultConfig, action, rawID, opts)
+	})
+}
+
+func (a App) workspaceLifecycleUnlocked(ctx context.Context, defaultConfig config.Config, action, rawID string, opts options) error {
+	id := workspaceregistry.NormalizeID(rawID)
 	registry, err := workspaceregistry.Load()
 	if err != nil {
 		return err
@@ -342,7 +464,7 @@ func (a App) workspaceLifecycle(ctx context.Context, defaultConfig config.Config
 		entry.Enabled = desiredEnabled
 		entry.UpdatedAt = time.Now().UTC()
 		registry.Workspaces[id] = entry
-		if err := workspaceregistry.Save(registry); err != nil {
+		if err := saveWorkspaceRegistry(registry); err != nil {
 			return err
 		}
 	}
@@ -356,7 +478,7 @@ func (a App) workspaceLifecycle(ctx context.Context, defaultConfig config.Config
 			fmt.Fprintf(a.Stdout, "Workspace %s enabled\n", id)
 		}
 		fmt.Fprintln(a.Stdout, "Reconciling the shared daemon to activate the endpoint")
-		return a.start(ctx, defaultConfig, options{Background: true, RuntimeKey: opts.RuntimeKey})
+		return a.startUnlocked(ctx, defaultConfig, options{Background: true, RuntimeKey: opts.RuntimeKey})
 	}
 	if action == "stop" {
 		if changed {
@@ -364,7 +486,7 @@ func (a App) workspaceLifecycle(ctx context.Context, defaultConfig config.Config
 		}
 		if health != nil && (changed || online) {
 			fmt.Fprintln(a.Stdout, "Reconciling the shared daemon to unload the endpoint")
-			return a.start(ctx, defaultConfig, options{Background: true, RuntimeKey: opts.RuntimeKey})
+			return a.startUnlocked(ctx, defaultConfig, options{Background: true, RuntimeKey: opts.RuntimeKey})
 		}
 		if !changed {
 			fmt.Fprintf(a.Stdout, "Workspace %s is already disabled\n", id)
@@ -435,6 +557,10 @@ func loadNamedWorkspaceConfigs(defaultConfig config.Config) ([]namedWorkspaceCon
 }
 
 func daemonConfigID(cfg config.Config, binaryPath string, widget []byte) (string, error) {
+	return daemonConfigIDWithInputs(cfg, config.NewIdentityInputs(binaryPath, widget, ""))
+}
+
+func daemonConfigIDWithInputs(cfg config.Config, inputs config.IdentityInputs) (string, error) {
 	registryFingerprint, err := workspaceregistry.Fingerprint()
 	if err != nil {
 		return "", err
@@ -444,10 +570,10 @@ func daemonConfigID(cfg config.Config, binaryPath string, widget []byte) (string
 		return "", err
 	}
 	hash := sha256.New()
-	_, _ = hash.Write([]byte("default:" + cfg.ConfigID(binaryPath, widget) + "\n"))
+	_, _ = hash.Write([]byte("default:" + cfg.ConfigIDWithInputs(inputs) + "\n"))
 	_, _ = hash.Write([]byte("registry:" + registryFingerprint + "\n"))
 	for _, item := range named {
-		_, _ = hash.Write([]byte(item.Registration.ID + ":" + item.Config.ConfigID(binaryPath, widget) + "\n"))
+		_, _ = hash.Write([]byte(item.Registration.ID + ":" + item.Config.ConfigIDWithInputs(inputs) + "\n"))
 	}
 	return hex.EncodeToString(hash.Sum(nil)[:8]), nil
 }

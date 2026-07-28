@@ -5,7 +5,7 @@
 set -eu
 
 REPOSITORY="qunv/codebridge"
-DEFAULT_VERSION="v1.0.0"
+DEFAULT_VERSION="v1.0.1"
 VERSION="${CODEBRIDGE_VERSION:-$DEFAULT_VERSION}"
 INSTALL_DIR="${CODEBRIDGE_INSTALL_DIR:-$HOME/.local/bin}"
 DOWNLOAD_BASE_URL="${CODEBRIDGE_DOWNLOAD_BASE_URL:-}"
@@ -18,7 +18,7 @@ Usage:
   install.sh [--version VERSION] [--install-dir DIRECTORY]
 
 Options:
-  --version VERSION       Release tag to install. Default: v1.0.0
+  --version VERSION       Release tag to install. Default: v1.0.1
   --install-dir DIRECTORY Installation directory. Default: ~/.local/bin
   -h, --help              Show this help message
 

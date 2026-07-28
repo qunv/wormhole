@@ -6,12 +6,19 @@ All notable changes to Codebridge are documented in this file.
 
 ### Added
 
+- Added schema-versioned workspace overrides and `codebridge workspace compact <id> [--dry-run]` for safely converging legacy full snapshots toward inherited deltas.
+- Added duplicate-key and unknown-field rejection for global and workspace JSON configuration.
+- Added owner-identified lifecycle locking and platform process fingerprints for safe daemon/tunnel reconciliation.
+- Added Linux, macOS, Windows, race-detector, and installer-syntax CI jobs.
 - Added recursively merged partial configuration overrides for named workspaces, including explicit array replacement, `false` values, and `null` deletion of inherited keys.
 - Added per-upstream `workspaceIds` scoping and `startupMode` values `eager`, `background`, and `lazy`.
 - Added bounded, owner-only persistent upstream tool catalogs for deferred typed-tool registration.
 
 ### Changed
 
+- Daemon identity now fingerprints the complete effective config and all referenced secrets while hashing binary/widget inputs only once per reconciliation.
+- Explicit test/build/lint overrides require full mode and exact approval; all quality commands invalidate repository caches after execution.
+- Missing workspace roots now fail validation instead of being silently recreated.
 - New named workspace registrations now persist only workspace-specific deltas and inherit later global memory, MCP, policy, and limit changes.
 - Initialized workspace runtimes concurrently and based the supervisor timeout on the slowest workspace dependency chain.
 - Single-flighted shared upstream MCP creation and cached recent startup failures for `failureCooldownMs`.
@@ -19,6 +26,10 @@ All notable changes to Codebridge are documented in this file.
 
 ### Fixed
 
+- Prevented stale or recycled PIDs from being signaled and made stop failures visible instead of always printing success.
+- Rolled back workspace config changes when registry persistence fails, and restored force-removed configs when unregistering fails.
+- Propagated recursive tree traversal errors and cancellation instead of returning silently incomplete trees.
+- Preserved empty JSON arrays in strict config parsing so array-replacement overrides remain distinct from `null`.
 - Prevented upstream error auditing from dereferencing a typed-nil MCP result.
 
 ## [1.0.1] - 2026-07-26

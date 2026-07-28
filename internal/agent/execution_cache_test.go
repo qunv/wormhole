@@ -36,6 +36,28 @@ func TestCommandMayMutateWorkspace(t *testing.T) {
 	}
 }
 
+func TestQualityCommandAlwaysInvalidatesRepositoryCache(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	cfg.Mode = "full"
+	cfg.Policy = "full"
+	cfg.NoTunnel = true
+	cfg.Audit = false
+	runtime, err := New(cfg, "test", "pro", "quality-cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	before := runtime.currentRepositoryGeneration()
+	if _, err := runtime.runQualityCommand(context.Background(), "run_tests", map[string]any{"command": "pwd"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.currentRepositoryGeneration(); got != before+1 {
+		t.Fatalf("quality command generation = %d, want %d", got, before+1)
+	}
+}
+
 func TestRunCommandsInvalidatesRepositoryCacheOncePerMutatingBatch(t *testing.T) {
 	cfg := config.Default()
 	cfg.Workspace = t.TempDir()

@@ -57,8 +57,12 @@ func New(primary string, extra []string, ignored []string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(primary, 0o755); err != nil {
-		return nil, err
+	info, err := os.Stat(primary)
+	if err != nil {
+		return nil, fmt.Errorf("workspace root does not exist: %s: %w", primary, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("workspace root is not a directory: %s", primary)
 	}
 	roots := dedupe(append([]string{primary}, extra...))
 	realRoots := make([]string, 0, len(roots))
@@ -67,10 +71,17 @@ func New(primary string, extra []string, ignored []string) (*Manager, error) {
 		if err != nil {
 			return nil, err
 		}
+		rootInfo, err := os.Stat(abs)
+		if err != nil {
+			return nil, fmt.Errorf("workspace root does not exist: %s: %w", abs, err)
+		}
+		if !rootInfo.IsDir() {
+			return nil, fmt.Errorf("workspace root is not a directory: %s", abs)
+		}
 		roots[i] = abs
 		real, err := filepath.EvalSymlinks(abs)
 		if err != nil {
-			real = abs
+			return nil, fmt.Errorf("resolve workspace root %s: %w", abs, err)
 		}
 		realRoots = append(realRoots, real)
 	}
@@ -364,7 +375,7 @@ func (m *Manager) TreeContext(ctx context.Context, start string, depth, limit in
 		}
 		items, err := os.ReadDir(dir)
 		if err != nil {
-			return nil
+			return fmt.Errorf("read tree directory %s: %w", m.Relative(dir), err)
 		}
 		sort.Slice(items, func(i, j int) bool {
 			if items[i].IsDir() != items[j].IsDir() {
@@ -387,7 +398,9 @@ func (m *Manager) TreeContext(ctx context.Context, start string, depth, limit in
 			if item.IsDir() {
 				dirs++
 				entries = append(entries, rel+"/")
-				_ = walk(path, level+1)
+				if err := walk(path, level+1); err != nil {
+					return err
+				}
 			} else {
 				files++
 				entries = append(entries, rel)

@@ -4,12 +4,11 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
+	"reflect"
 )
 
 // ReadOverrideFile reads a partial configuration document. A missing file is
@@ -23,7 +22,7 @@ func ReadOverrideFile(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeConfigObject(raw, path)
+	return decodeWorkspaceOverrideObject(raw, path)
 }
 
 // LoadOverrideFile applies a partial JSON object over an already assembled
@@ -82,32 +81,16 @@ func SaveOverrideFile(path string, base Config, override map[string]any) error {
 	if _, err := ApplyOverride(base, clean); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(clean, "", "  ")
+	persisted := make(map[string]any, len(clean)+1)
+	for key, value := range clean {
+		persisted[key] = value
+	}
+	persisted["schemaVersion"] = CurrentWorkspaceOverrideSchemaVersion
+	raw, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWrite(path, append(raw, '\n'), 0o600)
-}
-
-func decodeConfigObject(raw []byte, source string) (map[string]any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", source, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, fmt.Errorf("parse config %s: trailing JSON value", source)
-		}
-		return nil, fmt.Errorf("parse config %s: %w", source, err)
-	}
-	object, ok := value.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("parse config %s: top-level value must be an object", source)
-	}
-	return object, nil
 }
 
 func cloneConfigObject(value map[string]any) (map[string]any, error) {
@@ -115,7 +98,59 @@ func cloneConfigObject(value map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeConfigObject(raw, "override")
+	return decodeWorkspaceOverrideObject(raw, "override")
+}
+
+// CompactOverride removes values that are identical to the current global
+// base so legacy full snapshots converge toward partial overrides. extraRoots
+// is intentionally preserved because an explicit empty list prevents future
+// global roots from leaking into a named workspace.
+func CompactOverride(base Config, override map[string]any) (map[string]any, error) {
+	clean, err := cloneConfigObject(override)
+	if err != nil {
+		return nil, err
+	}
+	baseRaw, err := json.Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	baseObject, err := decodeConfigObject(baseRaw, "base config")
+	if err != nil {
+		return nil, err
+	}
+	return compactOverrideObject(baseObject, clean, "$"), nil
+}
+
+func compactOverrideObject(base, override map[string]any, path string) map[string]any {
+	result := map[string]any{}
+	for key, value := range override {
+		childPath := path + "." + key
+		if value == nil {
+			result[key] = nil
+			continue
+		}
+		if childPath == "$.extraRoots" {
+			result[key] = value
+			continue
+		}
+		overrideObject, overrideIsObject := value.(map[string]any)
+		baseValue, baseExists := base[key]
+		baseObject, baseIsObject := baseValue.(map[string]any)
+		if overrideIsObject {
+			if !baseIsObject {
+				baseObject = map[string]any{}
+			}
+			compacted := compactOverrideObject(baseObject, overrideObject, childPath)
+			if len(compacted) > 0 {
+				result[key] = compacted
+			}
+			continue
+		}
+		if !baseExists || !reflect.DeepEqual(baseValue, value) {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func mergeConfigObject(target, override map[string]any) map[string]any {

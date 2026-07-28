@@ -191,7 +191,7 @@ named runtime
     → normalize + validate
 ```
 
-Named workspace files are partial overrides, not generated full snapshots. JSON objects merge recursively, including individual `mcpServers` and their nested policy/environment maps. Arrays and scalar values replace inherited values, explicit `false` is preserved, and `null` removes the inherited key. A missing file is equivalent to `{}`. Legacy full workspace configs remain valid because a complete JSON object is also a valid override, although fields present in those files continue to shadow later global changes until removed.
+Named workspace files are schema-versioned partial overrides, not generated full snapshots. JSON objects merge recursively, including individual `mcpServers` and their nested policy/environment maps. Arrays and scalar values replace inherited values, explicit `false` is preserved, and `null` removes the inherited key. A missing file is equivalent to `{}`. The parser rejects duplicate keys and unknown fields at any depth while stripping a narrow allowlist of released legacy fields during migration. Legacy full workspace configs remain valid because a complete JSON object is also a valid override, although fields present in those files continue to shadow later global changes until removed. `workspace compact` previews or removes values equal to the current global base while preserving explicit `extraRoots` semantics.
 
 ### Configuration locations
 
@@ -237,17 +237,19 @@ Memory-provider options are validated recursively. Keys containing `secret`, `pa
 
 Upstream MCP configuration follows the same separation. Sensitive environment variables use `envRefs`, and sensitive HTTP headers use `headerRefs`; both map a child-facing name to a source environment-variable name. Direct secret-like keys, sensitive `inheritEnv` entries, credential-bearing URLs, control bytes, transport-incompatible fields, conflicting policy lists, and case-insensitive header collisions are rejected during configuration validation.
 
+### Supervisor reconciliation and persistence safety
+
+Lifecycle operations use one owner-identified, stale-recoverable lock file so concurrent `start`, `stop`, `restart`, and workspace reconciliation cannot race process state. Process state records both PID and a platform-derived creation/executable identity; a PID without a matching identity is treated as stale and is never signaled. Stop errors are propagated and process state is removed only after owned processes exit.
+
+Named workspace registration stages the override before saving the registry and restores the previous file if registry persistence fails. Forced removal snapshots the config first and restores it if unregistering fails, preventing half-committed registry/config pairs.
+
+Workspace runtime construction validates every primary and extra root. It never creates a missing registered directory implicitly.
+
 ### Configuration identity and process reuse
 
-The supervisor creates `ConfigID` from:
+The supervisor creates `ConfigID` from the complete normalized effective configuration, including workspace roots, listener security, policy, audit settings, request/process limits, memory, upstream MCP, tool exposure, tunnel/profile metadata, binary hash, and widget hash. Raw bearer, approval, memory, upstream, and Runtime API credentials are never serialized into identity material; one-way shortened fingerprints are used instead. Binary and widget hashes are computed once and reused for every named runtime during one reconciliation.
 
-- workspace and extra roots;
-- mode, policy, port, and whether authentication is enabled;
-- binary hash and widget hash;
-- all non-secret memory configuration and a shortened fingerprint of the memory secret;
-- all non-secret upstream MCP configuration and shortened fingerprints of referenced environment/header secrets.
-
-When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server. Changing memory or upstream server configuration, package arguments, tool policy, environment references, or referenced secret values changes `ConfigID` and causes a new server to be created.
+When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server and compatible tunnel. The supervisor passes its precomputed aggregate ID to the child server, so runtime-only tunnel/profile overrides and secret fingerprints cannot diverge between the launcher and health response. A direct foreground `serve` still computes the identity locally. Changing a listener rule, token, limit, memory/upstream setting, package argument, tool policy, environment reference, referenced secret value, tunnel ID, or Runtime API key changes the identity and forces reconciliation.
 
 ### Named workspace endpoints
 

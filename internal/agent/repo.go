@@ -114,7 +114,7 @@ func (r *Runtime) handleRepo(ctx context.Context, name string, args map[string]a
 		}
 		return r.detectCommands(root), nil
 	case "run_tests", "run_build", "run_lint":
-		return r.runQualityCommand(ctx, name, args)
+		return r.runQualityCommand(ctx, name, args, false)
 	case "run_changed_tests":
 		return r.runChangedTests(ctx, args)
 	case "quality_gate":
@@ -485,30 +485,38 @@ func (r *Runtime) detectCommands(root string) map[string]any {
 	return map[string]any{"root": root, "source": source, "commands": commands}
 }
 
-func (r *Runtime) runQualityCommand(ctx context.Context, tool string, args map[string]any) (any, error) {
+func (r *Runtime) runQualityCommand(ctx context.Context, tool string, args map[string]any, trustedCommand bool) (any, error) {
 	root, err := r.Workspace.Resolve(stringArg(args, "cwd", "."))
 	if err != nil {
 		return nil, err
 	}
 	kind := strings.TrimPrefix(tool, "run_")
-	command := stringArg(args, "command", "")
+	command := strings.TrimSpace(stringArg(args, "command", ""))
 	if command == "" {
 		detected := r.detectCommands(root)
 		commands := detected["commands"].(map[string]string)
 		command = commands[kind]
+		trustedCommand = true
 	}
 	if command == "" {
 		return nil, fmt.Errorf("no %s command detected; provide command explicitly or configure .codebridge/profile.json", kind)
 	}
+	if !trustedCommand && r.Config.Mode != "full" {
+		return nil, errors.New("explicit quality commands are disabled in safe mode; omit command to use the detected/profile command or switch to mode=full")
+	}
 	entry := map[string]any{
 		"command": command, "cwd": r.Workspace.Relative(root),
 		"shell": stringArg(args, "shell", ""), "timeout_ms": intArg(args, "timeout_ms", 600_000),
-		"max_output_chars": intArg(args, "max_output_chars", 50_000), "internal_quality_command": true,
+		"max_output_chars":         intArg(args, "max_output_chars", 50_000),
+		"internal_quality_command": trustedCommand, "defer_cache_invalidation": true,
 	}
 	value, err := r.runCommand(ctx, entry)
 	if err != nil {
 		return nil, err
 	}
+	// Test, build, and lint commands can update generated sources, fixtures, or
+	// golden files even when their executable prefix appears read-only.
+	r.invalidateRepositoryCaches()
 	result := value.(map[string]any)
 	result["ok"] = result["exit_code"] == 0
 	result["kind"] = kind
@@ -525,7 +533,7 @@ func (r *Runtime) qualityGate(ctx context.Context, args map[string]any) (any, er
 	var results []any
 	ok := true
 	for _, kind := range requested {
-		value, err := r.runQualityCommand(ctx, "run_"+kind, map[string]any{"cwd": stringArg(args, "cwd", ".")})
+		value, err := r.runQualityCommand(ctx, "run_"+kind, map[string]any{"cwd": stringArg(args, "cwd", ".")}, true)
 		if err != nil {
 			results = append(results, map[string]any{"kind": kind, "ok": false, "error": err.Error()})
 			ok = false
@@ -540,8 +548,8 @@ func (r *Runtime) qualityGate(ctx context.Context, args map[string]any) (any, er
 }
 
 func (r *Runtime) runChangedTests(ctx context.Context, args map[string]any) (any, error) {
-	if command := stringArg(args, "command", ""); command != "" {
-		return r.runQualityCommand(ctx, "run_tests", args)
+	if command := strings.TrimSpace(stringArg(args, "command", "")); command != "" {
+		return r.runQualityCommand(ctx, "run_tests", args, false)
 	}
 	cwd, err := r.Workspace.Resolve(stringArg(args, "cwd", "."))
 	if err != nil {
@@ -551,12 +559,19 @@ func (r *Runtime) runChangedTests(ctx context.Context, args map[string]any) (any
 	command := ""
 	if fileExists(filepath.Join(cwd, "go.mod")) {
 		packages := map[string]bool{}
+		unsafePath := false
 		for _, path := range nonEmptyLines(changed.Stdout) {
-			if strings.HasSuffix(path, ".go") {
-				packages["./"+filepath.ToSlash(filepath.Dir(path))] = true
+			if !strings.HasSuffix(path, ".go") {
+				continue
 			}
+			pkg, ok := changedGoPackage(path)
+			if !ok {
+				unsafePath = true
+				break
+			}
+			packages[pkg] = true
 		}
-		if len(packages) > 0 {
+		if !unsafePath && len(packages) > 0 {
 			command = "go test " + strings.Join(sortedKeys(packages), " ")
 		}
 	}
@@ -564,7 +579,31 @@ func (r *Runtime) runChangedTests(ctx context.Context, args map[string]any) (any
 		detected := r.detectCommands(cwd)
 		command = detected["commands"].(map[string]string)["test"]
 	}
-	return r.runQualityCommand(ctx, "run_tests", map[string]any{"cwd": r.Workspace.Relative(cwd), "command": command})
+	return r.runQualityCommand(ctx, "run_tests", map[string]any{"cwd": r.Workspace.Relative(cwd), "command": command}, true)
+}
+
+func changedGoPackage(file string) (string, bool) {
+	if file == "" || filepath.IsAbs(file) || strings.HasPrefix(file, `"`) {
+		return "", false
+	}
+	clean := filepath.ToSlash(filepath.Clean(file))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	for _, character := range clean {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("/._-", character) {
+			continue
+		}
+		return "", false
+	}
+	directory := filepath.ToSlash(filepath.Dir(clean))
+	if directory == "." {
+		return ".", true
+	}
+	return "./" + directory, true
 }
 
 func (r *Runtime) reviewDiff(ctx context.Context, args map[string]any) (any, error) {

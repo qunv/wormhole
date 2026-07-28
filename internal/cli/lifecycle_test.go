@@ -19,6 +19,144 @@ import (
 	"codebridge/internal/config"
 )
 
+func TestLifecycleLockSerializesAndReleases(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	release, err := acquireLifecycleLock(context.Background(), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := acquireLifecycleLock(ctx, "second"); err == nil || !strings.Contains(err.Error(), "already running") {
+		release()
+		t.Fatalf("concurrent lifecycle lock was not rejected: %v", err)
+	}
+	release()
+	secondRelease, err := acquireLifecycleLock(context.Background(), "second")
+	if err != nil {
+		t.Fatalf("released lifecycle lock was not reusable: %v", err)
+	}
+	secondRelease()
+}
+
+func TestLifecycleLockDoesNotDeleteFreshPartialRecord(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	path := filepath.Join(config.AppDataDir(), "lifecycle.lock")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := acquireLifecycleLock(ctx, "contender"); err == nil || !strings.Contains(err.Error(), "initializes") {
+		t.Fatalf("fresh partial lifecycle lock was not treated as busy: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("fresh partial lifecycle lock was deleted: %v", err)
+	}
+}
+
+func TestLifecycleLockRecoversStaleRecord(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	path := filepath.Join(config.AppDataDir(), "lifecycle.lock")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(lifecycleLockRecord{PID: os.Getpid(), Identity: "stale", Token: "old", Operation: "old"})
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireLifecycleLock(context.Background(), "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+
+func TestProcessIdentityRejectsLegacyAndMismatchedPIDs(t *testing.T) {
+	identity, err := processIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity == "" || !processMatches(os.Getpid(), identity) {
+		t.Fatalf("current process identity was not recognized: %q", identity)
+	}
+	if processMatches(os.Getpid(), "") {
+		t.Fatal("legacy state without a process identity was trusted")
+	}
+	if processMatches(os.Getpid(), identity+"-stale") {
+		t.Fatal("mismatched process identity was trusted")
+	}
+}
+
+func TestOwnedHealthProcessRequiresMatchingStateAndMigratesLegacyIdentity(t *testing.T) {
+	identity, err := processIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := map[string]any{"pid": os.Getpid(), "config_id": "config"}
+	state := processState{ServerPID: os.Getpid(), ServerIdentity: identity, ConfigID: "config", Port: 8789}
+	pid, gotIdentity, owned := ownedHealthProcess(state, health, 8789)
+	if !owned || pid != os.Getpid() || gotIdentity != identity {
+		t.Fatalf("matching health was not owned: pid=%d identity=%q owned=%t", pid, gotIdentity, owned)
+	}
+	legacy := state
+	legacy.ServerIdentity = ""
+	if _, migratedIdentity, owned := ownedHealthProcess(legacy, health, 8789); !owned || migratedIdentity == "" {
+		t.Fatalf("legacy process identity was not migrated: identity=%q owned=%t", migratedIdentity, owned)
+	}
+	for name, mutate := range map[string]func(*processState){
+		"pid":       func(value *processState) { value.ServerPID++ },
+		"port":      func(value *processState) { value.Port++ },
+		"config id": func(value *processState) { value.ConfigID = "other" },
+		"identity":  func(value *processState) { value.ServerIdentity = "stale" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := state
+			mutate(&candidate)
+			if _, _, owned := ownedHealthProcess(candidate, health, 8789); owned {
+				t.Fatalf("mismatched %s was treated as owned", name)
+			}
+		})
+	}
+}
+
+func TestOwnedTunnelProcessMigratesOnlyWithVerifiedState(t *testing.T) {
+	identity, err := processIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := processState{TunnelPID: os.Getpid(), TunnelIdentity: identity}
+	if pid, gotIdentity, owned := ownedTunnelProcess(state, false); !owned || pid != os.Getpid() || gotIdentity != identity {
+		t.Fatalf("fingerprinted tunnel was not owned: pid=%d identity=%q owned=%t", pid, gotIdentity, owned)
+	}
+	legacy := processState{TunnelPID: os.Getpid()}
+	if _, _, owned := ownedTunnelProcess(legacy, false); owned {
+		t.Fatal("legacy tunnel was adopted without verified state")
+	}
+	if _, migratedIdentity, owned := ownedTunnelProcess(legacy, true); !owned || migratedIdentity == "" {
+		t.Fatalf("verified legacy tunnel was not migrated: identity=%q owned=%t", migratedIdentity, owned)
+	}
+}
+
+func TestProcessStateRoundTripPreservesIdentities(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	want := processState{
+		ServerPID: 11, ServerIdentity: "server-identity",
+		TunnelPID: 22, TunnelIdentity: "tunnel-identity",
+		ConfigID: "config", Port: 8789, Workspace: "/workspace", UpdatedAt: time.Now().UTC(),
+	}
+	if err := writeState(want); err != nil {
+		t.Fatal(err)
+	}
+	got := readState()
+	if got.ServerIdentity != want.ServerIdentity || got.TunnelIdentity != want.TunnelIdentity {
+		t.Fatalf("process identities were not preserved: %#v", got)
+	}
+}
+
 func TestLifecycleCommandBackgroundDefaults(t *testing.T) {
 	tests := map[string]bool{
 		"": true, "run": true, "here": true, "restart": true,

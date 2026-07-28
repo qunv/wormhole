@@ -139,7 +139,7 @@ func TestSaveOverrideFileStripsTokensAndValidatesEffectiveConfig(t *testing.T) {
 	base := Default()
 	path := filepath.Join(t.TempDir(), "config.json")
 	override := map[string]any{
-		"authToken": "auth-secret", "approvalToken": "approval-secret", "mode": "full",
+		"authToken": strings.Repeat("a", 16), "approvalToken": strings.Repeat("p", 16), "mode": "full",
 	}
 	if err := SaveOverrideFile(path, base, override); err != nil {
 		t.Fatal(err)
@@ -163,8 +163,72 @@ func TestSaveOverrideFileStripsTokensAndValidatesEffectiveConfig(t *testing.T) {
 	}
 }
 
-func TestReadOverrideFileRejectsNonObjectAndTrailingJSON(t *testing.T) {
-	for _, raw := range []string{`[]`, `{} {}`} {
+func TestSaveOverrideFileWritesAndReadStripsSchemaVersion(t *testing.T) {
+	base := Default()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := SaveOverrideFile(path, base, map[string]any{"mode": "full"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"schemaVersion": 1`) {
+		t.Fatalf("workspace override schema version missing: %s", raw)
+	}
+	override, err := ReadOverrideFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override["mode"] != "full" {
+		t.Fatalf("override content changed: %#v", override)
+	}
+	if _, exists := override["schemaVersion"]; exists {
+		t.Fatalf("schema metadata leaked into effective override: %#v", override)
+	}
+}
+
+func TestCompactOverrideRemovesSnapshotValuesButPreservesExtraRoots(t *testing.T) {
+	base := Default()
+	base.Mode = "safe"
+	base.Policy = "balanced"
+	compacted, err := CompactOverride(base, map[string]any{
+		"mode": "safe", "policy": "strict", "extraRoots": []any{},
+		"memory": map[string]any{"provider": base.Memory.Provider, "agentId": "workspace-agent"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := compacted["mode"]; exists {
+		t.Fatalf("equal snapshot value was not removed: %#v", compacted)
+	}
+	if compacted["policy"] != "strict" || compacted["extraRoots"] == nil {
+		t.Fatalf("meaningful workspace overrides were lost: %#v", compacted)
+	}
+	memory := compacted["memory"].(map[string]any)
+	if _, exists := memory["provider"]; exists || memory["agentId"] != "workspace-agent" {
+		t.Fatalf("nested compaction mismatch: %#v", memory)
+	}
+}
+
+func TestReadOverrideFileRejectsUnsupportedSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"schemaVersion":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadOverrideFile(path); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported schema version was accepted: %v", err)
+	}
+}
+
+func TestReadOverrideFileRejectsNonObjectTrailingUnknownAndDuplicateJSON(t *testing.T) {
+	for _, raw := range []string{
+		`[]`, `{} {}`,
+		`{"workspaceId":"api"}`,
+		`{"mcpServers":{"postgres":{"command":"uvx","workspaceId":["api"]}}}`,
+		`{"startupMode":"lazy","startupMode":"eager"}`,
+		`{"mcpServers":{"postgres":{"command":"uvx","startupMode":"lazy","startupMode":"eager"}}}`,
+	} {
 		path := filepath.Join(t.TempDir(), "config.json")
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatal(err)
