@@ -29,6 +29,7 @@ Required:
 
 Optional:
 
+- Node.js 24 and npm when changing the embedded Admin UI under `web/admin`;
 - `rg` for faster repository search;
 - `codegraph` for `codegraph_explore` development and testing;
 - GoReleaser for release and archive changes;
@@ -59,6 +60,14 @@ Run Codebridge locally without a tunnel:
 go run ./cmd/codebridge serve --no-tunnel
 ```
 
+When changing the Admin UI, verify and regenerate the committed embedded assets:
+
+```bash
+make admin-ui-check
+make admin-ui
+git diff --exit-code -- internal/adminui/dist
+```
+
 Use temporary directories or `CODEBRIDGE_HOME` when a test or manual workflow should not touch your normal configuration:
 
 ```bash
@@ -76,7 +85,10 @@ Keep changes inside the package that owns the behavior:
 | `cmd/codebridge` | Executable entrypoint and process exit behavior |
 | `internal/app` | Version metadata and application composition |
 | `internal/cli` | CLI grammar, setup, lifecycle, tunnel, and installation |
-| `internal/server` | HTTP routing, authentication, Origin policy, health, and limits |
+| `internal/server` | HTTP composition, authentication, Origin policy, health, and limits |
+| `internal/admin` | Local Admin API, CSRF/Host enforcement, revision-safe configuration and write-only secrets |
+| `internal/adminui` | Embedded production Admin UI assets |
+| `web/admin` | React, TypeScript, Vite, and Tailwind Admin UI source |
 | `internal/mcpserver` | MCP server construction, session routing, bindings, and result adaptation |
 | `internal/agent` | Tool modules, runtime dispatch, policy, audit, metrics, and shared services |
 | `internal/workspace` | Canonical paths, owning roots, search, and confinement |

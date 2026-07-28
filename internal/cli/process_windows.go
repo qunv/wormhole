@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -54,6 +55,25 @@ func processIdentity(pid int) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:16]), nil
+}
+
+func processLooksLikeCodebridgeChild(pid int, label string) bool {
+	if pid <= 0 {
+		return false
+	}
+	script := fmt.Sprintf("$p=Get-CimInstance Win32_Process -Filter 'ProcessId = %d'; if ($null -eq $p) { exit 3 }; [pscustomobject]@{ExecutablePath=$p.ExecutablePath;CommandLine=$p.CommandLine} | ConvertTo-Json -Compress", pid)
+	raw, err := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	if err != nil {
+		return false
+	}
+	var value struct {
+		ExecutablePath string `json:"ExecutablePath"`
+		CommandLine    string `json:"CommandLine"`
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return codebridgeChildCommandLine(value.ExecutablePath, value.CommandLine, label)
 }
 
 func stopPID(pid int) error {

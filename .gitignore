@@ -9,3 +9,5 @@
 *.prof
 .idea
 .codegraph
+/web/admin/node_modules/
+/web/admin/*.tsbuildinfo

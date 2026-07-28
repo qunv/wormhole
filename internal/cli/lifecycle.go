@@ -195,7 +195,11 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 				return err
 			}
 			state.TunnelPID = tunnelCmd.Process.Pid
-			state.TunnelIdentity, err = processIdentity(state.TunnelPID)
+			if opts.Background {
+				state.TunnelIdentity, err = captureChildProcessIdentity(state.TunnelPID, "tunnel", 2*time.Second)
+			} else {
+				state.TunnelIdentity, err = processIdentity(state.TunnelPID)
+			}
 			if err != nil {
 				_ = stopPID(state.TunnelPID)
 				if serverCmd != nil {
@@ -1073,21 +1077,100 @@ func ownedTunnelProcess(state processState, stateOwned bool) (int, string, bool)
 		return 0, "", false
 	}
 	if state.TunnelIdentity != "" {
-		if !processMatches(state.TunnelPID, state.TunnelIdentity) {
+		if processMatches(state.TunnelPID, state.TunnelIdentity) {
+			return state.TunnelPID, state.TunnelIdentity, true
+		}
+		// A detached wrapper can be fingerprinted during the fork/exec boundary,
+		// before /proc or the platform process table exposes its final argv. Adopt
+		// a new fingerprint only when the server state from the same document was
+		// independently verified and the PID is exactly our tunnel wrapper.
+		if !stateOwned || !processLooksLikeCodebridgeChild(state.TunnelPID, "tunnel") {
 			return 0, "", false
 		}
-		return state.TunnelPID, state.TunnelIdentity, true
+		identity, err := captureChildProcessIdentity(state.TunnelPID, "tunnel", 500*time.Millisecond)
+		if err != nil {
+			return 0, "", false
+		}
+		return state.TunnelPID, identity, true
 	}
 	if !stateOwned {
 		return 0, "", false
 	}
-	// Legacy tunnel state can be adopted only when the server state from the
-	// same document was independently verified through health or identity.
+	// One-time migration for process state written before identity fingerprints
+	// were introduced. The server state from the same document must already be
+	// independently verified through health or identity.
 	identity, err := processIdentity(state.TunnelPID)
 	if err != nil {
 		return 0, "", false
 	}
 	return state.TunnelPID, identity, true
+}
+
+func captureChildProcessIdentity(pid int, label string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var previous string
+	var lastErr error
+	for {
+		if processLooksLikeCodebridgeChild(pid, label) {
+			identity, err := processIdentity(pid)
+			if err == nil {
+				if identity == previous && identity != "" {
+					return identity, nil
+				}
+				previous = identity
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = fmt.Errorf("process %d is not a Codebridge %s child", pid, label)
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("process identity did not stabilize")
+	}
+	return "", lastErr
+}
+
+func codebridgeChildInvocation(executable string, args []string, label string) bool {
+	if label != "server" && label != "tunnel" || len(args) < 6 {
+		return false
+	}
+	if !sameProcessExecutable(executable) {
+		return false
+	}
+	return args[1] == "__child" && args[2] == label && filepath.Clean(args[3]) == filepath.Clean(childLogPath(label))
+}
+
+func codebridgeChildCommandLine(executable, commandLine, label string) bool {
+	if label != "server" && label != "tunnel" || !sameProcessExecutable(executable) {
+		return false
+	}
+	return strings.Contains(commandLine, "__child "+label+" ") && strings.Contains(commandLine, childLogPath(label))
+}
+
+func sameProcessExecutable(candidate string) bool {
+	current, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	canonical := func(value string) string {
+		value = filepath.Clean(strings.TrimSpace(value))
+		if absolute, err := filepath.Abs(value); err == nil {
+			value = absolute
+		}
+		if resolved, err := filepath.EvalSymlinks(value); err == nil {
+			value = resolved
+		}
+		if runtime.GOOS == "windows" {
+			value = strings.ToLower(value)
+		}
+		return value
+	}
+	return canonical(candidate) == canonical(current)
 }
 
 func waitForServerRelease(host string, port, pid int, identity string, timeout time.Duration) bool {

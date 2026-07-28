@@ -5,8 +5,10 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 DESTDIR ?=
 INSTALL ?= install
+NPM ?= npm
+ADMIN_UI_DIR := web/admin
 
-.PHONY: all build install test vet check clean run
+.PHONY: all build install test vet check admin-ui admin-ui-check clean run
 
 all: check build
 
@@ -26,6 +28,12 @@ vet:
 	go vet ./...
 
 check: test vet
+
+admin-ui:
+	cd $(ADMIN_UI_DIR) && $(NPM) ci && $(NPM) run build
+
+admin-ui-check:
+	cd $(ADMIN_UI_DIR) && $(NPM) ci && $(NPM) run check
 
 run:
 	go run ./cmd/codebridge serve --no-tunnel

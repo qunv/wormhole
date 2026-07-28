@@ -155,6 +155,19 @@ func assertMissing(t *testing.T, path string) {
 	}
 }
 
+func TestAdminJSONParsingPreservesDefaultsForOmittedFields(t *testing.T) {
+	cfg, err := ParseJSON([]byte(`{"workspace":"/tmp","mode":"safe","policy":"balanced","port":8789,"host":"127.0.0.1"}`), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Audit || !cfg.AuditArgs {
+		t.Fatalf("omitted audit defaults were lost: audit=%t auditArgs=%t", cfg.Audit, cfg.AuditArgs)
+	}
+	if cfg.MaxProcesses != Default().MaxProcesses || cfg.Memory.TokenBudget != Default().Memory.TokenBudget {
+		t.Fatalf("omitted resource defaults were lost: %#v", cfg)
+	}
+}
+
 func TestValidateRequiresAuthForNonLoopbackHost(t *testing.T) {
 	cfg := Default()
 	cfg.Host = "0.0.0.0"

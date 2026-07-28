@@ -1,0 +1,511 @@
+// Codebridge
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package admin
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"codebridge/internal/agent"
+	"codebridge/internal/config"
+	"codebridge/internal/workspaceregistry"
+)
+
+func TestAdminWorkspaceBrowserIsDirectoryOnlyAndHomeConfined(t *testing.T) {
+	home := t.TempDir()
+	setAdminUserHome(t, home)
+	visible := filepath.Join(home, "visible")
+	hidden := filepath.Join(home, ".hidden")
+	if err := os.MkdirAll(visible, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "not-a-directory.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := newAdminHandler(t, nil)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/workspaces/browse", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("browse home = %d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"name":"visible"`) || strings.Contains(body, ".hidden") || strings.Contains(body, "not-a-directory.txt") {
+		t.Fatalf("unexpected directory browser response: %s", body)
+	}
+
+	outside := filepath.Dir(home)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/workspaces/browse?path="+url.QueryEscape(outside), nil))
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "browse_outside_home") {
+		t.Fatalf("browse outside home = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminCanRegisterAndRemoveWorkspaceWithRevisionSafety(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	workspace := t.TempDir()
+
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces", nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("workspace list = %d %s", listResponse.Code, listResponse.Body.String())
+	}
+	cookie := csrfCookie(t, listResponse.Result())
+	var list struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+
+	createBody, _ := json.Marshal(map[string]string{"id": "api", "workspace": workspace})
+	createRequest := localRequest(http.MethodPost, apiPrefix+"/workspaces", strings.NewReader(string(createBody)))
+	secureAdminWrite(createRequest, cookie, list.Revision)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("workspace create = %d %s", createResponse.Code, createResponse.Body.String())
+	}
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, exists := registry.Workspaces["api"]
+	if !exists || entry.Workspace != workspace || !entry.Enabled {
+		t.Fatalf("workspace was not registered: %#v", registry.Workspaces)
+	}
+	if _, err := os.Stat(entry.ConfigPath); err != nil {
+		t.Fatalf("workspace override was not created: %v", err)
+	}
+
+	listResponse = httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces", nil))
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	removeRequest := localRequest(http.MethodDelete, apiPrefix+"/workspaces/api", nil)
+	secureAdminWrite(removeRequest, csrfCookie(t, listResponse.Result()), list.Revision)
+	removeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(removeResponse, removeRequest)
+	if removeResponse.Code != http.StatusOK {
+		t.Fatalf("workspace remove = %d %s", removeResponse.Code, removeResponse.Body.String())
+	}
+	registry, err = workspaceregistry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := registry.Workspaces["api"]; exists {
+		t.Fatalf("workspace remains registered: %#v", registry.Workspaces)
+	}
+	if _, err := os.Stat(entry.ConfigPath); err != nil {
+		t.Fatalf("workspace override should be preserved by default: %v", err)
+	}
+	if !strings.Contains(removeResponse.Body.String(), `"statePreserved":true`) {
+		t.Fatalf("remove response did not document preserved state: %s", removeResponse.Body.String())
+	}
+
+	listResponse = httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces", nil))
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	createRequest = localRequest(http.MethodPost, apiPrefix+"/workspaces", strings.NewReader(string(createBody)))
+	secureAdminWrite(createRequest, csrfCookie(t, listResponse.Result()), list.Revision)
+	createResponse = httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("workspace re-register = %d %s", createResponse.Code, createResponse.Body.String())
+	}
+
+	listResponse = httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces", nil))
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	removeRequest = localRequest(http.MethodDelete, apiPrefix+"/workspaces/api?deleteConfig=true", nil)
+	secureAdminWrite(removeRequest, csrfCookie(t, listResponse.Result()), list.Revision)
+	removeResponse = httptest.NewRecorder()
+	handler.ServeHTTP(removeResponse, removeRequest)
+	if removeResponse.Code != http.StatusOK {
+		t.Fatalf("workspace remove with config = %d %s", removeResponse.Code, removeResponse.Body.String())
+	}
+	if _, err := os.Stat(entry.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("workspace override was not deleted: %v", err)
+	}
+}
+
+func TestAdminWorkspaceCreateRejectsPrimaryRoot(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces", nil))
+	cookie := csrfCookie(t, listResponse.Result())
+	var list struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"id": "duplicate", "workspace": handler.Runtime.Workspace.Primary})
+	request := localRequest(http.MethodPost, apiPrefix+"/workspaces", strings.NewReader(string(body)))
+	secureAdminWrite(request, cookie, list.Revision)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "workspace_is_primary") {
+		t.Fatalf("primary workspace registration = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminRejectsRemoteClientsAndUntrustedHosts(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8789/admin/", nil)
+	request.RemoteAddr = "192.0.2.10:31337"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "loopback_only") {
+		t.Fatalf("remote request = %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://evil.example/admin/", nil)
+	request.RemoteAddr = "127.0.0.1:31337"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "invalid_host") {
+		t.Fatalf("untrusted host request = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminAssetsSetSecurityHeadersAndCSRFCookie(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	request := localRequest(http.MethodGet, "/admin/", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("asset status = %d body=%s", response.Code, response.Body.String())
+	}
+	for header, want := range map[string]string{
+		"Content-Security-Policy": "default-src 'self'",
+		"X-Frame-Options":         "DENY",
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+	} {
+		if got := response.Header().Get(header); !strings.Contains(got, want) {
+			t.Fatalf("%s = %q, want substring %q", header, got, want)
+		}
+	}
+	cookie := csrfCookie(t, response.Result())
+	if !validCSRFToken(cookie.Value) || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("unexpected CSRF cookie: %#v", cookie)
+	}
+	if !strings.Contains(response.Body.String(), `<div id="root"></div>`) {
+		t.Fatalf("admin asset did not contain application root: %s", response.Body.String())
+	}
+}
+
+func TestAdminConfigFallsBackToActiveRuntimeWhenFileIsMissing(t *testing.T) {
+	t.Setenv("CODEBRIDGE_HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	cfg.NoTunnel = true
+	cfg.Policy = "strict"
+	runtime, err := agent.NewWorkspaceContextWithReporter(
+		context.Background(), "default", config.AppDataDir(), cfg, "test", "pro", "config-id", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runtime.Close)
+	if _, err := os.Stat(config.ConfigPath()); !os.IsNotExist(err) {
+		t.Fatalf("expected no persisted config, got %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	New(runtime, nil).ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/config", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("fallback config status = %d body=%s", response.Code, response.Body.String())
+	}
+	var snapshot configSnapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Config.Workspace != cfg.Workspace || snapshot.Config.Policy != "strict" {
+		t.Fatalf("fallback config did not use active runtime: %#v", snapshot.Config)
+	}
+}
+
+func TestAdminConfigWritesRequireSameOriginCSRFAndRevision(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.Host = "0.0.0.0"
+		cfg.AuthToken = "runtime-only-bearer"
+		cfg.ApprovalToken = "runtime-only-approval"
+	})
+
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, localRequest(http.MethodGet, apiPrefix+"/config", nil))
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("get config status = %d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+	cookie := csrfCookie(t, getResponse.Result())
+	if strings.Contains(getResponse.Body.String(), "runtime-only") {
+		t.Fatal("config API exposed a runtime-only token")
+	}
+	var snapshot configSnapshot
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Config.Policy = "strict"
+	body, _ := json.Marshal(snapshot.Config)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body))))
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "origin_rejected") {
+		t.Fatalf("write without origin = %d %s", response.Code, response.Body.String())
+	}
+
+	request := localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body)))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.AddCookie(cookie)
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusPreconditionFailed || !strings.Contains(response.Body.String(), "revision_conflict") {
+		t.Fatalf("write without revision = %d %s", response.Code, response.Body.String())
+	}
+
+	request = localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body)))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("If-Match", quoteETag(snapshot.Revision))
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid config write = %d %s", response.Code, response.Body.String())
+	}
+	persisted, err := config.LoadFileForEditing(
+		config.ConfigPath(), "runtime-only-bearer", "runtime-only-approval",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Policy != "strict" || persisted.AuthToken != "" || persisted.ApprovalToken != "" {
+		t.Fatalf("unexpected persisted config: policy=%q auth=%q approval=%q", persisted.Policy, persisted.AuthToken, persisted.ApprovalToken)
+	}
+
+	request = localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body)))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("If-Match", quoteETag(snapshot.Revision))
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale revision status = %d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminWorkspaceOverridesRejectOwnedFieldsAndUseRevisions(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	base, err := config.LoadFile(config.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "api"
+	entry := workspaceregistry.Registration{
+		ID: id, Workspace: t.TempDir(), ConfigPath: workspaceregistry.ConfigPath(id),
+		DataDir: workspaceregistry.DataDir(id), Enabled: true,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := config.SaveOverrideFile(entry.ConfigPath, base, map[string]any{"extraRoots": []any{}}); err != nil {
+		t.Fatal(err)
+	}
+	registry := workspaceregistry.Empty()
+	registry.Workspaces[id] = entry
+	if err := workspaceregistry.Save(registry); err != nil {
+		t.Fatal(err)
+	}
+
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces/"+id, nil))
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("get workspace = %d %s", getResponse.Code, getResponse.Body.String())
+	}
+	cookie := csrfCookie(t, getResponse.Result())
+	var payload struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(getResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+
+	request := localRequest(http.MethodPut, apiPrefix+"/workspaces/"+id, strings.NewReader(`{"workspace":"/tmp/escape"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("If-Match", quoteETag(payload.Revision))
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "workspace_owned_field") {
+		t.Fatalf("owned field write = %d %s", response.Code, response.Body.String())
+	}
+
+	request = localRequest(http.MethodPut, apiPrefix+"/workspaces/"+id, strings.NewReader(`{"policy":"strict","extraRoots":[]}`))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("If-Match", quoteETag(payload.Revision))
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid workspace write = %d %s", response.Code, response.Body.String())
+	}
+	override, err := config.ReadOverrideFile(entry.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override["policy"] != "strict" {
+		t.Fatalf("workspace policy was not persisted: %#v", override)
+	}
+}
+
+func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
+	const secretName = "CODEBRIDGE_TEST_MEMORY_SECRET"
+	const secretValue = "super-secret-value"
+	const externalValue = "external-secret-value"
+	t.Setenv(secretName, externalValue)
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.Memory.SecretEnv = secretName
+	})
+
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, localRequest(http.MethodGet, apiPrefix+"/secrets", nil))
+	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), secretName) {
+		t.Fatalf("get secrets = %d %s", getResponse.Code, getResponse.Body.String())
+	}
+	if !strings.Contains(getResponse.Body.String(), `"source":"environment"`) || strings.Contains(getResponse.Body.String(), externalValue) {
+		t.Fatalf("external secret state was incorrect or leaked: %s", getResponse.Body.String())
+	}
+	cookie := csrfCookie(t, getResponse.Result())
+
+	request := localRequest(http.MethodPut, apiPrefix+"/secrets/NOT_REFERENCED", strings.NewReader(`{"value":"x"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unreferenced secret status = %d body=%s", response.Code, response.Body.String())
+	}
+
+	request = localRequest(http.MethodPut, apiPrefix+"/secrets/"+secretName, strings.NewReader(`{"value":"`+secretValue+`"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), secretValue) {
+		t.Fatalf("secret write = %d %s", response.Code, response.Body.String())
+	}
+	raw, err := os.ReadFile(config.DotEnvPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), secretValue) {
+		t.Fatalf("secret was not stored in dotenv: %s", raw)
+	}
+
+	getResponse = httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, localRequest(http.MethodGet, apiPrefix+"/secrets", nil))
+	if strings.Contains(getResponse.Body.String(), secretValue) || !strings.Contains(getResponse.Body.String(), `"configured":true`) || !strings.Contains(getResponse.Body.String(), `"source":"dotenv"`) {
+		t.Fatalf("secret presence response leaked or omitted state: %s", getResponse.Body.String())
+	}
+
+	request = localRequest(http.MethodDelete, apiPrefix+"/secrets/"+secretName, nil)
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.AddCookie(cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("secret delete = %d %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(config.DotEnvPath()); !os.IsNotExist(err) {
+		t.Fatalf("dotenv still exists after deleting its only value: %v", err)
+	}
+}
+
+func newAdminHandler(t *testing.T, mutate func(*config.Config)) *Handler {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("CODEBRIDGE_HOME", home)
+	workspace := t.TempDir()
+	cfg := config.Default()
+	cfg.Workspace = workspace
+	cfg.NoTunnel = true
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := agent.NewWorkspaceContextWithReporter(
+		context.Background(), "default", config.AppDataDir(), cfg, "test", "pro", "config-id", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runtime.Close)
+	return New(runtime, nil)
+}
+
+func localRequest(method, target string, body *strings.Reader) *http.Request {
+	var request *http.Request
+	if body == nil {
+		request = httptest.NewRequest(method, "http://127.0.0.1:8789"+target, nil)
+	} else {
+		request = httptest.NewRequest(method, "http://127.0.0.1:8789"+target, body)
+	}
+	request.RemoteAddr = "127.0.0.1:31337"
+	return request
+}
+
+func csrfCookie(t *testing.T, response *http.Response) *http.Cookie {
+	t.Helper()
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == csrfCookieName {
+			return cookie
+		}
+	}
+	t.Fatal("CSRF cookie was not set")
+	return nil
+}
+
+func secureAdminWrite(request *http.Request, cookie *http.Cookie, revision string) {
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("If-Match", quoteETag(revision))
+	request.AddCookie(cookie)
+}
+
+func setAdminUserHome(t *testing.T, home string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+		return
+	}
+	t.Setenv("HOME", home)
+}

@@ -75,6 +75,45 @@ func TestLifecycleLockRecoversStaleRecord(t *testing.T) {
 	release()
 }
 
+func TestNormalizeLinuxExecutablePreservesIdentityAfterBinaryReplacement(t *testing.T) {
+	path := "/home/user/.local/bin/codebridge"
+	if got := normalizeLinuxExecutable(path + " (deleted)"); got != path {
+		t.Fatalf("normalizeLinuxExecutable() = %q, want %q", got, path)
+	}
+	if got := normalizeLinuxExecutable(path); got != path {
+		t.Fatalf("normalizeLinuxExecutable() changed active path to %q", got)
+	}
+}
+
+func TestCodebridgeChildInvocationRequiresExactExecutableAndArguments(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{executable, "__child", "tunnel", childLogPath("tunnel"), config.AppDataDir(), "/path/to/tunnel-client"}
+	if !codebridgeChildInvocation(executable, args, "tunnel") {
+		t.Fatalf("valid tunnel child invocation was rejected: %#v", args)
+	}
+	for name, mutate := range map[string]func([]string) []string{
+		"wrong executable": func(value []string) []string { value[0] = "/tmp/not-codebridge"; return value },
+		"wrong marker":     func(value []string) []string { value[1] = "serve"; return value },
+		"wrong label":      func(value []string) []string { value[2] = "server"; return value },
+		"wrong log":        func(value []string) []string { value[3] = "/tmp/tunnel.log"; return value },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := append([]string(nil), args...)
+			candidate = mutate(candidate)
+			executablePath := executable
+			if name == "wrong executable" {
+				executablePath = candidate[0]
+			}
+			if codebridgeChildInvocation(executablePath, candidate, "tunnel") {
+				t.Fatalf("invalid invocation was accepted: %#v", candidate)
+			}
+		})
+	}
+}
+
 func TestProcessIdentityRejectsLegacyAndMismatchedPIDs(t *testing.T) {
 	identity, err := processIdentity(os.Getpid())
 	if err != nil {
@@ -131,6 +170,11 @@ func TestOwnedTunnelProcessMigratesOnlyWithVerifiedState(t *testing.T) {
 	state := processState{TunnelPID: os.Getpid(), TunnelIdentity: identity}
 	if pid, gotIdentity, owned := ownedTunnelProcess(state, false); !owned || pid != os.Getpid() || gotIdentity != identity {
 		t.Fatalf("fingerprinted tunnel was not owned: pid=%d identity=%q owned=%t", pid, gotIdentity, owned)
+	}
+	stale := state
+	stale.TunnelIdentity = identity + "-stale"
+	if _, _, owned := ownedTunnelProcess(stale, true); owned {
+		t.Fatal("mismatched non-child tunnel process was adopted")
 	}
 	legacy := processState{TunnelPID: os.Getpid()}
 	if _, _, owned := ownedTunnelProcess(legacy, false); owned {

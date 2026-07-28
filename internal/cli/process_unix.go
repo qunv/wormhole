@@ -67,11 +67,56 @@ func linuxProcessIdentity(pid int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("inspect process %d executable: %w", pid, err)
 	}
+	executable = normalizeLinuxExecutable(executable)
 	commandLine, err := os.ReadFile(prefix + "/cmdline")
 	if err != nil {
 		return "", fmt.Errorf("inspect process %d command line: %w", pid, err)
 	}
 	return processIdentityDigest(strconv.Itoa(pid), fields[19], executable, string(commandLine)), nil
+}
+
+// Linux appends " (deleted)" to /proc/<pid>/exe after an installed binary
+// is atomically replaced while the old process is still running. The process
+// start time and command line remain unchanged, so the suffix must not make a
+// daemon lose ownership of itself during an upgrade.
+func normalizeLinuxExecutable(path string) string {
+	return strings.TrimSuffix(path, " (deleted)")
+}
+
+func processLooksLikeCodebridgeChild(pid int, label string) bool {
+	if pid <= 0 {
+		return false
+	}
+	if runtime.GOOS == "linux" {
+		prefix := "/proc/" + strconv.Itoa(pid)
+		executable, err := os.Readlink(prefix + "/exe")
+		if err != nil {
+			return false
+		}
+		raw, err := os.ReadFile(prefix + "/cmdline")
+		if err != nil {
+			return false
+		}
+		parts := bytes.Split(raw, []byte{0})
+		args := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if len(part) > 0 {
+				args = append(args, string(part))
+			}
+		}
+		return codebridgeChildInvocation(normalizeLinuxExecutable(executable), args, label)
+	}
+	current, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C", "TZ=UTC", "COLUMNS=4096")
+	raw, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return codebridgeChildCommandLine(current, strings.TrimSpace(string(raw)), label)
 }
 
 func processIdentityDigest(parts ...string) string {

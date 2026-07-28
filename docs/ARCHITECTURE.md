@@ -68,7 +68,9 @@ selected agent.Runtime.HandleSession
 | `internal/app` | Version/tier metadata and composition root |
 | `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
 | `internal/workspaceregistry` | Named workspace registry, schema migration, atomic persistence, and daemon fingerprint input |
-| `internal/server` | HTTP routing, health, authentication, Origin/CORS, and body limits |
+| `internal/server` | HTTP composition, MCP routing, health, authentication, Origin/CORS, and body limits |
+| `internal/admin` | Local-only Admin API, CSRF and Host enforcement, revision-safe config/registry writes, workspace lifecycle, overrides, and write-only secret management |
+| `internal/adminui` | Embedded production assets for the React administration application |
 | `internal/mcpserver` | MCP server construction, per-chat workspace bindings, session identity, widget resource, and result adapter |
 | `internal/agent` | Tool-module registry, shared runtime pipeline, policy, identity, audit, and functional module handlers |
 | `internal/workspace` | Canonical paths, configured roots, owning-root resolution, list/search/tree |
@@ -192,6 +194,28 @@ named runtime
 ```
 
 Named workspace files are schema-versioned partial overrides, not generated full snapshots. JSON objects merge recursively, including individual `mcpServers` and their nested policy/environment maps. Arrays and scalar values replace inherited values, explicit `false` is preserved, and `null` removes the inherited key. A missing file is equivalent to `{}`. The parser rejects duplicate keys and unknown fields at any depth while stripping a narrow allowlist of released legacy fields during migration. Legacy full workspace configs remain valid because a complete JSON object is also a valid override, although fields present in those files continue to shadow later global changes until removed. `workspace compact` previews or removes values equal to the current global base while preserving explicit `extraRoots` semantics.
+
+### Local administration surface
+
+The React/TypeScript administration application is compiled into `internal/adminui/dist` and embedded in the native binary. `internal/server` mounts it at `/admin/` and delegates the versioned `/admin/api/v1` surface to `internal/admin`.
+
+The admin surface is intentionally not governed by the MCP listener's bearer-token model. It has a narrower local control-plane boundary:
+
+```text
+browser on this machine
+  → loopback TCP source check
+  → localhost/loopback Host allowlist (DNS-rebinding defense)
+  → same-origin Origin check for writes
+  → strict SameSite CSRF cookie + custom request header
+  → bounded JSON body
+  → strict existing config parser and validator
+  → ETag/If-Match revision check
+  → owner-only atomic persistence
+```
+
+Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by `runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
+
+Named-workspace override writes use the existing schema-versioned format and reject daemon- or registry-owned fields. The Admin API can register and remove named workspaces using optimistic registry revisions and rollback-safe config/registry ordering. Directory browsing is bounded to directories under the current user's home and does not return file contents; users may still enter another existing absolute directory explicitly. Removing a registration preserves its instance state and, by default, its override file for later re-registration. Enable/disable, restart, and tunnel lifecycle remain CLI-owned operations so the browser cannot terminate or replace its own serving daemon.
 
 ### Configuration locations
 

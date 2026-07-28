@@ -302,6 +302,49 @@ http://127.0.0.1:8789/mcp/fast
 http://127.0.0.1:8789/mcp
 http://127.0.0.1:8789/healthz
 http://127.0.0.1:8789/internal/healthz
+http://127.0.0.1:8789/admin/
+```
+
+## Admin UI
+
+Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, and referenced secrets.
+
+Start Codebridge, print the URL, and open it in a local browser:
+
+```bash
+codebridge restart
+codebridge admin
+```
+
+The default URL is `http://127.0.0.1:8789/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
+
+Security boundaries are enforced by the Go server:
+
+- Admin routes accept only loopback clients and `localhost` or loopback-IP Host headers.
+- Every write requires an exact same-origin request and a CSRF token.
+- Configuration and workspace-registry saves use revision checks to prevent overwriting concurrent changes.
+- The workspace browser is directory-only, bounded, and confined to the current user's home directory; an existing absolute path may still be entered manually.
+- Runtime tokens are excluded from JSON configuration.
+- Referenced `.env` secrets are write-only; the UI can see only whether each value exists.
+- Changes are persisted atomically and require a Codebridge restart before active runtimes use them.
+
+The Admin UI can browse directories, register named workspaces, remove registrations, and optionally delete a workspace override file. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
+
+### Admin UI development
+
+The production assets are committed under `internal/adminui/dist` so normal Go builds remain single-step. Node.js is needed only when modifying the frontend:
+
+```bash
+make admin-ui-check
+make admin-ui
+```
+
+For a development server with API proxying:
+
+```bash
+cd web/admin
+npm install
+npm run dev
 ```
 
 ## Common commands
@@ -316,6 +359,7 @@ http://127.0.0.1:8789/internal/healthz
 | `codebridge logs` | Print bounded server and tunnel log tails |
 | `codebridge profile` | Regenerate the tunnel-client profile |
 | `codebridge tunnel install` | Download and verify OpenAI tunnel-client |
+| `codebridge admin` | Print the local Admin UI URL |
 | `codebridge key set` | Store the Runtime API key in `.env` |
 | `codebridge config get` | Print the effective non-secret configuration |
 | `codebridge state gc --dry-run` | Preview safe state cleanup |

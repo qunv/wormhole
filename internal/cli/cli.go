@@ -162,6 +162,9 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return err
 	case "tunnel":
 		return a.tunnelCommand(ctx, cfg, opts)
+	case "admin", "ui":
+		fmt.Fprintf(a.Stdout, "http://127.0.0.1:%d/admin/\n", cfg.Port)
+		return nil
 	case "keys":
 		fmt.Fprintln(a.Stdout, "https://platform.openai.com/settings/organization/tunnels")
 		fmt.Fprintln(a.Stdout, "https://platform.openai.com/settings/organization/api-keys")
@@ -324,6 +327,7 @@ Usage:
   codebridge workspace compact <id> [--dry-run] [--json]
   codebridge workspace remove <id> [--force]
   codebridge tunnel [status|install]
+  codebridge admin               Print the local Admin UI URL
   codebridge keys                Print Tunnel/API-key setup URLs
   codebridge profile            Write the tunnel-client YAML profile
   codebridge logs               Print bounded server and tunnel logs
