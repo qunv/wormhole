@@ -16,10 +16,89 @@ import (
 	"testing"
 	"time"
 
+	"codebridge/internal/adminauth"
 	"codebridge/internal/agent"
 	"codebridge/internal/config"
 	"codebridge/internal/workspaceregistry"
 )
+
+func TestAdminRequiresConfiguredLoginAndSupportsLogout(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	if _, err := adminauth.SetCredentials(config.AdminAuthPath(), "admin", "correct horse battery staple"); err != nil {
+		t.Fatal(err)
+	}
+	handler.auth = adminauth.NewManager(config.AdminAuthPath())
+
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, localRequest(http.MethodGet, apiPrefix+"/auth/status", nil))
+	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"configured":true`) || !strings.Contains(statusResponse.Body.String(), `"authenticated":false`) {
+		t.Fatalf("auth status = %d %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	csrf := csrfCookie(t, statusResponse.Result())
+
+	protectedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(protectedResponse, localRequest(http.MethodGet, apiPrefix+"/config", nil))
+	if protectedResponse.Code != http.StatusUnauthorized || !strings.Contains(protectedResponse.Body.String(), "authentication_required") {
+		t.Fatalf("unauthenticated config = %d %s", protectedResponse.Code, protectedResponse.Body.String())
+	}
+
+	loginRequest := localRequest(http.MethodPost, apiPrefix+"/auth/login", strings.NewReader(`{"username":"admin","password":"correct horse battery staple"}`))
+	loginRequest.Header.Set("Origin", "http://127.0.0.1:8789")
+	loginRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	loginRequest.AddCookie(csrf)
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, loginRequest)
+	if loginResponse.Code != http.StatusOK || !strings.Contains(loginResponse.Body.String(), `"authenticated":true`) {
+		t.Fatalf("login = %d %s", loginResponse.Code, loginResponse.Body.String())
+	}
+	sessionCookie := cookieByName(t, loginResponse.Result(), sessionCookieName)
+	if !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteStrictMode || sessionCookie.Value == "" {
+		t.Fatalf("unexpected session cookie: %#v", sessionCookie)
+	}
+
+	protectedRequest := localRequest(http.MethodGet, apiPrefix+"/config", nil)
+	protectedRequest.AddCookie(sessionCookie)
+	protectedResponse = httptest.NewRecorder()
+	handler.ServeHTTP(protectedResponse, protectedRequest)
+	if protectedResponse.Code != http.StatusOK {
+		t.Fatalf("authenticated config = %d %s", protectedResponse.Code, protectedResponse.Body.String())
+	}
+
+	logoutRequest := localRequest(http.MethodPost, apiPrefix+"/auth/logout", strings.NewReader(`{}`))
+	logoutRequest.Header.Set("Origin", "http://127.0.0.1:8789")
+	logoutRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	logoutRequest.AddCookie(csrf)
+	logoutRequest.AddCookie(sessionCookie)
+	logoutResponse := httptest.NewRecorder()
+	handler.ServeHTTP(logoutResponse, logoutRequest)
+	if logoutResponse.Code != http.StatusOK {
+		t.Fatalf("logout = %d %s", logoutResponse.Code, logoutResponse.Body.String())
+	}
+
+	protectedRequest = localRequest(http.MethodGet, apiPrefix+"/config", nil)
+	protectedRequest.AddCookie(sessionCookie)
+	protectedResponse = httptest.NewRecorder()
+	handler.ServeHTTP(protectedResponse, protectedRequest)
+	if protectedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("logged-out session status = %d body=%s", protectedResponse.Code, protectedResponse.Body.String())
+	}
+}
+
+func TestAdminMissingCredentialsRequiresCLISetup(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	handler.auth = adminauth.NewManager(config.AdminAuthPath())
+
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, localRequest(http.MethodGet, apiPrefix+"/auth/status", nil))
+	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"configured":false`) {
+		t.Fatalf("missing auth status = %d %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/config", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "admin_setup_required") {
+		t.Fatalf("missing credential protection = %d %s", response.Code, response.Body.String())
+	}
+}
 
 func TestAdminWorkspaceBrowserIsDirectoryOnlyAndHomeConfined(t *testing.T) {
 	home := t.TempDir()
@@ -234,7 +313,9 @@ func TestAdminConfigFallsBackToActiveRuntimeWhenFileIsMissing(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	New(runtime, nil).ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/config", nil))
+	handler := New(runtime, nil)
+	handler.auth = nil
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/config", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("fallback config status = %d body=%s", response.Code, response.Body.String())
 	}
@@ -469,7 +550,9 @@ func newAdminHandler(t *testing.T, mutate func(*config.Config)) *Handler {
 		t.Fatal(err)
 	}
 	t.Cleanup(runtime.Close)
-	return New(runtime, nil)
+	handler := New(runtime, nil)
+	handler.auth = nil
+	return handler
 }
 
 func localRequest(method, target string, body *strings.Reader) *http.Request {
@@ -485,12 +568,17 @@ func localRequest(method, target string, body *strings.Reader) *http.Request {
 
 func csrfCookie(t *testing.T, response *http.Response) *http.Cookie {
 	t.Helper()
+	return cookieByName(t, response, csrfCookieName)
+}
+
+func cookieByName(t *testing.T, response *http.Response, name string) *http.Cookie {
+	t.Helper()
 	for _, cookie := range response.Cookies() {
-		if cookie.Name == csrfCookieName {
+		if cookie.Name == name {
 			return cookie
 		}
 	}
-	t.Fatal("CSRF cookie was not set")
+	t.Fatalf("cookie %s was not set", name)
 	return nil
 }
 

@@ -98,6 +98,13 @@ export interface ConfigSnapshot {
   restartRequired: boolean;
 }
 
+export interface AdminAuthStatus {
+  configured: boolean;
+  authenticated: boolean;
+  username: string;
+  credentialPath: string;
+}
+
 export interface Bootstrap {
   name: string;
   version: string;
@@ -112,6 +119,7 @@ export interface Bootstrap {
     loopbackOnly: boolean;
     sameOriginWrites: boolean;
     csrfProtected: boolean;
+    adminAuthentication: boolean;
     secretValuesReadable: boolean;
   };
   startupWarnings: string[];

@@ -1,13 +1,43 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Braces, ChevronLeft, ExternalLink, FolderGit2, FolderOpen, Plus, Save, Trash2, X } from "lucide-react";
+import {
+  ArrowRight,
+  Braces,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Eye,
+  FolderGit2,
+  FolderOpen,
+  Plus,
+  Save,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, EmptyState, Field, LoadingPage, Notice, PageHeader, TextArea, TextInput } from "./components";
+const PRIMARY_WORKSPACE = "$primary";
+
+function detailFromHash(): { id: string; primary: boolean } {
+  const [page, encodedDetail] = window.location.hash.slice(1).split("/", 2);
+  if (page !== "workspaces" || !encodedDetail) return { id: "", primary: false };
+  try {
+    const detail = decodeURIComponent(encodedDetail);
+    return detail === PRIMARY_WORKSPACE ? { id: "", primary: true } : { id: detail, primary: false };
+  } catch {
+    return { id: "", primary: false };
+  }
+}
 
 export function Workspaces() {
   const queryClient = useQueryClient();
   const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: api.workspaces });
+  const initialDetail = useMemo(detailFromHash, []);
   const [selected, setSelected] = useState("");
+  const [detailId, setDetailId] = useState(initialDetail.id);
+  const [showPrimaryDetail, setShowPrimaryDetail] = useState(initialDetail.primary);
+  const [filter, setFilter] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [candidateId, setCandidateId] = useState("");
   const [candidatePath, setCandidatePath] = useState("");
@@ -18,7 +48,16 @@ export function Workspaces() {
   const [message, setMessage] = useState<{ tone: "success" | "danger" | "warning"; text: string } | null>(null);
 
   const items = workspaces.data?.workspaces ?? [];
-  const detail = useQuery({ queryKey: ["workspace-config", selected], queryFn: () => api.workspaceConfig(selected), enabled: !!selected });
+  const filteredItems = useMemo(() => {
+    const query = filter.trim().toLowerCase();
+    if (!query) return items;
+    return items.filter((item) => item.id.toLowerCase().includes(query) || item.workspace.toLowerCase().includes(query));
+  }, [filter, items]);
+  const detail = useQuery({
+    queryKey: ["workspace-config", detailId],
+    queryFn: () => api.workspaceConfig(detailId),
+    enabled: !!detailId,
+  });
   const browser = useQuery({
     queryKey: ["workspace-browser", browsePath, showHidden],
     queryFn: () => api.browseWorkspaces(browsePath, showHidden),
@@ -26,12 +65,25 @@ export function Workspaces() {
   });
 
   useEffect(() => {
-    if (!items.length) {
-      if (selected) setSelected("");
-      return;
+    const syncDetail = () => {
+      const next = detailFromHash();
+      setDetailId(next.id);
+      setShowPrimaryDetail(next.primary);
+      if (next.primary) setSelected(PRIMARY_WORKSPACE);
+      else if (next.id) setSelected(next.id);
+    };
+    window.addEventListener("hashchange", syncDetail);
+    return () => window.removeEventListener("hashchange", syncDetail);
+  }, []);
+
+  useEffect(() => {
+    if (!workspaces.data) return;
+    if (selected !== PRIMARY_WORKSPACE && selected && !items.some((item) => item.id === selected)) setSelected("");
+    if (detailId && !items.some((item) => item.id === detailId)) {
+      window.history.replaceState(null, "", "#workspaces");
+      setDetailId("");
     }
-    if (!selected || !items.some((item) => item.id === selected)) setSelected(items[0].id);
-  }, [items, selected]);
+  }, [detailId, items, selected, workspaces.data]);
 
   useEffect(() => {
     if (!browser.data) return;
@@ -47,6 +99,16 @@ export function Workspaces() {
     setBrowsePath("");
     setBrowseInput("");
     setMessage(null);
+  };
+
+  const closeDetail = () => {
+    window.history.replaceState(null, "", "#workspaces");
+    setDetailId("");
+    setShowPrimaryDetail(false);
+  };
+
+  const openDetail = (id: string) => {
+    window.location.hash = `workspaces/${encodeURIComponent(id)}`;
   };
 
   const create = useMutation({
@@ -69,70 +131,174 @@ export function Workspaces() {
 
   if (workspaces.isLoading) return <LoadingPage />;
 
+  const isDetailView = showPrimaryDetail || !!detailId;
+  const activeNamedCount = items.filter((item) => item.active).length;
+  const primaryActive = workspaces.data?.primary.active ?? false;
+
   return <>
     <PageHeader
-      eyebrow="Named runtimes"
-      title="Workspace management"
-      description="Register local repositories, edit isolated overrides, and safely remove named workspace registrations."
-      actions={<Button onClick={showAdd ? () => setShowAdd(false) : openAdd}>{showAdd ? <X size={15} /> : <Plus size={15} />}{showAdd ? "Cancel" : "Add workspace"}</Button>}
+      eyebrow={isDetailView ? "Workspace detail" : "Named runtimes"}
+      title={showPrimaryDetail ? workspaces.data?.primary.id ?? "Primary workspace" : detailId || "Workspaces"}
+      description={isDetailView
+        ? "Inspect workspace identity, runtime paths, effective configuration, and management actions."
+        : "Select a workspace first, then choose the next action without losing context in the list."}
+      actions={isDetailView
+        ? <Button variant="secondary" onClick={closeDetail}><ChevronLeft size={15} /> Back to workspaces</Button>
+        : <Button onClick={showAdd ? () => setShowAdd(false) : openAdd}>{showAdd ? <X size={15} /> : <Plus size={15} />}{showAdd ? "Cancel" : "Add workspace"}</Button>}
     />
+
     {message && <Notice tone={message.tone}>{message.text}</Notice>}
-    <Notice tone="info">Registry changes are saved immediately, but MCP endpoints are reconciled only after restarting Codebridge. Removing a workspace never deletes its runtime state.</Notice>
 
-    {showAdd && <Card title="Register a workspace" description="Browse within your home directory or type any existing absolute directory path.">
-      <div className="workspace-add-grid">
-        <div className="stack">
-          <div className="form-grid">
-            <Field label="Workspace ID" hint="Lowercase letters, digits, hyphens, and underscores; maximum 32 characters.">
-              <TextInput value={candidateId} placeholder="loyalty-api" onChange={(event) => { setCandidateId(event.target.value); setIdTouched(true); }} />
-            </Field>
-            <Field label="Workspace path" hint="The backend resolves symlinks and verifies that this directory exists.">
-              <TextInput value={candidatePath} placeholder="/home/user/projects/api" onChange={(event) => setCandidatePath(event.target.value)} />
-            </Field>
-          </div>
-          <Notice tone="info">The directory browser is restricted to your home directory and returns folders only. You can still paste an existing path outside home into the workspace path field.</Notice>
-          <div className="button-row">
-            <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!candidatePath.trim() || !candidateId.trim() || !workspaces.data?.revision}><Plus size={15} /> Register workspace</Button>
-            {candidatePath && <span className="muted">Selected: {candidatePath}</span>}
-          </div>
-        </div>
-        <div className="directory-browser">
-          <div className="browser-toolbar">
-            <Button variant="secondary" onClick={() => browser.data?.parent && setBrowsePath(browser.data.parent)} disabled={!browser.data?.parent}><ChevronLeft size={15} /> Up</Button>
-            <TextInput value={browseInput} onChange={(event) => setBrowseInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setBrowsePath(browseInput); }} />
-            <Button variant="secondary" onClick={() => setBrowsePath(browseInput)}><FolderOpen size={15} /> Open</Button>
-          </div>
-          <div className="browser-options">
-            <label><input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} /> Show hidden directories</label>
-            <Button variant="secondary" onClick={useCurrentDirectory} disabled={!browser.data}><FolderGit2 size={15} /> Use current folder</Button>
-          </div>
-          {browser.isLoading && <LoadingPage />}
-          {browser.error && <Notice tone="danger">{errorMessage(browser.error)}</Notice>}
-          {browser.data && <>
-            <div className="browser-current"><FolderGit2 size={17} /><span><strong>{browser.data.selected.suggestedId}</strong><small>{browser.data.path}</small></span>{browser.data.selected.git && <Badge tone="success">Git</Badge>}</div>
-            <div className="directory-list">
-              {browser.data.directories.map((directory) => <button key={directory.path} onClick={() => setBrowsePath(directory.path)}><FolderOpen size={16} /><span><strong>{directory.name}</strong><small>{directory.path}</small></span>{directory.git && <Badge tone="success">Git</Badge>}</button>)}
-              {!browser.data.directories.length && <EmptyState title="No subdirectories" description="Select the current folder or navigate to another path." />}
+    {!isDetailView && <>
+      <Notice tone="info">Registry changes are saved immediately, but MCP endpoints are reconciled only after restarting Codebridge. Removing a workspace never deletes its runtime state.</Notice>
+
+      {showAdd && <Card title="Register a workspace" description="Browse within your home directory or type any existing absolute directory path.">
+        <div className="workspace-add-grid">
+          <div className="stack">
+            <div className="form-grid">
+              <Field label="Workspace ID" hint="Lowercase letters, digits, hyphens, and underscores; maximum 32 characters.">
+                <TextInput value={candidateId} placeholder="loyalty-api" onChange={(event) => { setCandidateId(event.target.value); setIdTouched(true); }} />
+              </Field>
+              <Field label="Workspace path" hint="The backend resolves symlinks and verifies that this directory exists.">
+                <TextInput value={candidatePath} placeholder="/home/user/projects/api" onChange={(event) => setCandidatePath(event.target.value)} />
+              </Field>
             </div>
-            {browser.data.truncated && <p className="muted">Showing the first {browser.data.limit} directories.</p>}
-          </>}
+            <Notice tone="info">The directory browser is restricted to your home directory and returns folders only. You can still paste an existing path outside home into the workspace path field.</Notice>
+            <div className="button-row">
+              <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!candidatePath.trim() || !candidateId.trim() || !workspaces.data?.revision}><Plus size={15} /> Register workspace</Button>
+              {candidatePath && <span className="muted">Selected: {candidatePath}</span>}
+            </div>
+          </div>
+          <div className="directory-browser">
+            <div className="browser-toolbar">
+              <Button variant="secondary" onClick={() => browser.data?.parent && setBrowsePath(browser.data.parent)} disabled={!browser.data?.parent}><ChevronLeft size={15} /> Up</Button>
+              <TextInput value={browseInput} onChange={(event) => setBrowseInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setBrowsePath(browseInput); }} />
+              <Button variant="secondary" onClick={() => setBrowsePath(browseInput)}><FolderOpen size={15} /> Open</Button>
+            </div>
+            <div className="browser-options">
+              <label><input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} /> Show hidden directories</label>
+              <Button variant="secondary" onClick={useCurrentDirectory} disabled={!browser.data}><FolderGit2 size={15} /> Use current folder</Button>
+            </div>
+            {browser.isLoading && <LoadingPage />}
+            {browser.error && <Notice tone="danger">{errorMessage(browser.error)}</Notice>}
+            {browser.data && <>
+              <div className="browser-current"><FolderGit2 size={17} /><span><strong>{browser.data.selected.suggestedId}</strong><small>{browser.data.path}</small></span>{browser.data.selected.git && <Badge tone="success">Git</Badge>}</div>
+              <div className="directory-list">
+                {browser.data.directories.map((directory) => <button key={directory.path} onClick={() => setBrowsePath(directory.path)}><FolderOpen size={16} /><span><strong>{directory.name}</strong><small>{directory.path}</small></span>{directory.git && <Badge tone="success">Git</Badge>}</button>)}
+                {!browser.data.directories.length && <EmptyState title="No subdirectories" description="Select the current folder or navigate to another path." />}
+              </div>
+              {browser.data.truncated && <p className="muted">Showing the first {browser.data.limit} directories.</p>}
+            </>}
+          </div>
         </div>
-      </div>
-    </Card>}
+      </Card>}
 
-    <Card title="Primary workspace" description="The primary root is owned by the global configuration and cannot be removed here.">
-      <div className="workspace-primary"><FolderGit2 size={21} /><div><strong>{workspaces.data?.primary.id}</strong><span>{workspaces.data?.primary.workspace}</span></div><Badge tone="success">Active</Badge></div>
-    </Card>
-    <div className="workspace-layout">
-      <Card title="Registered workspaces" description={`${items.length} named workspace${items.length === 1 ? "" : "s"}.`}>
-        <div className="workspace-list">
-          {items.map((item) => <button key={item.id} className={selected === item.id ? "active" : ""} onClick={() => setSelected(item.id)}><span><strong>{item.id}</strong><small>{item.workspace}</small></span><span className="workspace-badges"><Badge tone={item.enabled ? "info" : "neutral"}>{item.enabled ? "Enabled" : "Disabled"}</Badge><Badge tone={item.active ? "success" : "warning"}>{item.active ? "Active" : "Restart"}</Badge></span></button>)}
-          {!items.length && <EmptyState title="No named workspaces" description="Use Add workspace to register a local repository." />}
+      <div className="workspace-summary-strip">
+        <div><span>Total workspaces</span><strong>{items.length + 1}</strong></div>
+        <div><span>Active runtimes</span><strong>{activeNamedCount + (primaryActive ? 1 : 0)}</strong></div>
+        <div><span>Restart pending</span><strong>{items.length - activeNamedCount + (primaryActive ? 0 : 1)}</strong></div>
+      </div>
+
+      <Card
+        className="workspace-directory-panel"
+        title="Workspace list"
+        description="Click a workspace to reveal the actions available for it."
+        actions={<label className="workspace-search"><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search ID or path" /></label>}
+      >
+        <div className="workspace-group">
+          <div className="workspace-group-head"><span>Primary workspace</span><small>Global configuration</small></div>
+          <WorkspaceRow
+            id={workspaces.data?.primary.id ?? "primary"}
+            path={workspaces.data?.primary.workspace ?? ""}
+            selected={selected === PRIMARY_WORKSPACE}
+            primary
+            active={workspaces.data?.primary.active ?? true}
+            onSelect={() => setSelected(selected === PRIMARY_WORKSPACE ? "" : PRIMARY_WORKSPACE)}
+            onView={() => openDetail(PRIMARY_WORKSPACE)}
+          />
+        </div>
+
+        <div className="workspace-group">
+          <div className="workspace-group-head"><span>Registered workspaces</span><small>{filteredItems.length} of {items.length}</small></div>
+          <div className="workspace-list-focused">
+            {filteredItems.map((item) => <WorkspaceRow
+              key={item.id}
+              id={item.id}
+              path={item.workspace}
+              selected={selected === item.id}
+              enabled={item.enabled}
+              active={item.active}
+              onSelect={() => setSelected(selected === item.id ? "" : item.id)}
+              onView={() => openDetail(item.id)}
+            />)}
+            {!items.length && <EmptyState title="No named workspaces" description="Use Add workspace to register a local repository." />}
+            {!!items.length && !filteredItems.length && <EmptyState title="No matching workspaces" description="Try another workspace ID or path." />}
+          </div>
         </div>
       </Card>
-      <div>{selected && <WorkspaceEditor id={selected} query={detail} registryRevision={workspaces.data?.revision ?? ""} onRemoved={(text) => { setSelected(""); setMessage({ tone: "success", text }); }} />}</div>
-    </div>
+    </>}
+
+    {showPrimaryDetail && workspaces.data && <PrimaryWorkspaceDetail primary={workspaces.data.primary} />}
+    {detailId && <WorkspaceEditor
+      id={detailId}
+      query={detail}
+      registryRevision={workspaces.data?.revision ?? ""}
+      onRemoved={(text) => {
+        window.history.replaceState(null, "", "#workspaces");
+        setDetailId("");
+        setSelected("");
+        setMessage({ tone: "success", text });
+      }}
+    />}
   </>;
+}
+
+function WorkspaceRow({ id, path, selected, primary = false, enabled = true, active, onSelect, onView }: {
+  id: string;
+  path: string;
+  selected: boolean;
+  primary?: boolean;
+  enabled?: boolean;
+  active: boolean;
+  onSelect: () => void;
+  onView: () => void;
+}) {
+  return <div className={`workspace-row ${selected ? "selected" : ""}`}>
+    <button className="workspace-row-main" onClick={onSelect} aria-expanded={selected}>
+      <span className="workspace-row-icon"><FolderGit2 size={20} /></span>
+      <span className="workspace-row-identity"><strong>{id}</strong><small>{path}</small></span>
+      <span className="workspace-row-status">
+        <Badge tone={primary || enabled ? "info" : "neutral"}>{primary ? "Primary" : enabled ? "Enabled" : "Disabled"}</Badge>
+        <Badge tone={active ? "success" : "warning"}>{active ? "Active" : "Restart"}</Badge>
+      </span>
+      <ChevronRight size={18} className="workspace-row-chevron" />
+    </button>
+    {selected && <div className="workspace-row-actions">
+      <div><strong>Choose the next action</strong><span>{primary ? "Inspect the global workspace identity and paths." : "Open configuration, runtime paths, and management controls."}</span></div>
+      <Button onClick={onView}><Eye size={15} /> View details <ArrowRight size={14} /></Button>
+    </div>}
+  </div>;
+}
+
+function PrimaryWorkspaceDetail({ primary }: {
+  primary: { id: string; workspace: string; active: boolean; configPath: string };
+}) {
+  return <div className="workspace-detail-stack">
+    <div className="workspace-detail-hero">
+      <span className="workspace-detail-icon"><FolderGit2 size={24} /></span>
+      <div><span>Primary workspace</span><strong>{primary.id}</strong><small>{primary.workspace}</small></div>
+      <Badge tone={primary.active ? "success" : "warning"}>{primary.active ? "Active" : "Restart required"}</Badge>
+    </div>
+    <Card title="Workspace identity" description="The primary root is owned by the global configuration and cannot be removed here.">
+      <dl className="definition-grid">
+        <div><dt>Workspace ID</dt><dd><code>{primary.id}</code></dd></div>
+        <div><dt>Runtime status</dt><dd>{primary.active ? "Active" : "Pending restart"}</dd></div>
+        <div><dt>Root</dt><dd>{primary.workspace}</dd></div>
+        <div><dt>Configuration file</dt><dd>{primary.configPath}</dd></div>
+      </dl>
+    </Card>
+    <Notice tone="info">Edit this workspace through Global Configuration. Named workspace override and removal actions are intentionally unavailable for the primary root.</Notice>
+  </div>;
 }
 
 function WorkspaceEditor({ id, query, registryRevision, onRemoved }: {
@@ -156,7 +322,8 @@ function WorkspaceEditor({ id, query, registryRevision, onRemoved }: {
     mutationFn: async () => api.saveWorkspaceConfig(id, JSON.parse(raw), query.data.revision),
     onSuccess: (data) => {
       queryClient.setQueryData(["workspace-config", id], data);
-      setRaw(JSON.stringify(data.override, null, 2)); setDirty(false);
+      setRaw(JSON.stringify(data.override, null, 2));
+      setDirty(false);
       setMessage({ tone: "success", text: "Override saved. Restart Codebridge to activate it." });
     },
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
@@ -182,16 +349,30 @@ function WorkspaceEditor({ id, query, registryRevision, onRemoved }: {
   };
 
   if (query.isLoading) return <LoadingPage />;
-  if (!query.data) return <EmptyState title="Unable to load workspace" description={query.error?.message ?? "Select another workspace."} />;
+  if (!query.data) return <EmptyState title="Unable to load workspace" description={query.error?.message ?? "Return to the workspace list and try again."} />;
 
-  return <div className="stack">
+  return <div className="workspace-detail-stack">
+    <div className="workspace-detail-hero">
+      <span className="workspace-detail-icon"><FolderGit2 size={24} /></span>
+      <div><span>Named workspace</span><strong>{id}</strong><small>{query.data.registration.workspace}</small></div>
+      <span className="workspace-row-status"><Badge tone={query.data.registration.enabled ? "info" : "neutral"}>{query.data.registration.enabled ? "Enabled" : "Disabled"}</Badge><Badge tone={query.data.registration.active ? "success" : "warning"}>{query.data.registration.active ? "Active" : "Restart"}</Badge></span>
+    </div>
     {message && <Notice tone={message.tone}>{message.text}</Notice>}
+    <div className="workspace-detail-grid">
+      <Card title="Workspace identity" description="Registration-owned paths and endpoint.">
+        <dl className="definition-grid">
+          <div><dt>Root</dt><dd>{query.data.registration.workspace}</dd></div>
+          <div><dt>Endpoint</dt><dd><code>/mcp/workspaces/{id}</code> <ExternalLink size={13} /></dd></div>
+          <div><dt>Config file</dt><dd>{query.data.registration.configPath}</dd></div>
+          <div><dt>Data directory</dt><dd>{query.data.registration.dataDir}</dd></div>
+        </dl>
+      </Card>
+      <Card title="Effective configuration" description="Global config plus this override and registry-owned fields.">
+        <details className="json-details"><summary><Braces size={16} /> Inspect effective JSON</summary><pre>{JSON.stringify(query.data.effective, null, 2)}</pre></details>
+      </Card>
+    </div>
     <Card title={`${id} override`} description="Objects merge recursively; arrays replace; null removes an inherited key." actions={<><Badge tone={dirty ? "warning" : "success"}>{dirty ? "Unsaved" : "In sync"}</Badge><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}><Save size={15} /> Save</Button></>}>
       <TextArea className="control textarea code-editor compact" value={raw} onChange={(event) => { setRaw(event.target.value); setDirty(true); setMessage(null); }} spellCheck={false} />
-    </Card>
-    <Card title="Effective configuration" description="Global config plus this override and registry-owned fields.">
-      <details className="json-details"><summary><Braces size={16} /> Inspect effective JSON</summary><pre>{JSON.stringify(query.data.effective, null, 2)}</pre></details>
-      <dl className="definition-grid top-gap"><div><dt>Root</dt><dd>{query.data.registration.workspace}</dd></div><div><dt>Config file</dt><dd>{query.data.registration.configPath}</dd></div><div><dt>Data directory</dt><dd>{query.data.registration.dataDir}</dd></div><div><dt>Endpoint</dt><dd><code>/mcp/workspaces/{id}</code> <ExternalLink size={13} /></dd></div></dl>
     </Card>
     <Card title="Remove workspace" description="Unregister this named runtime without deleting repository files or runtime state.">
       <label className="danger-option"><input type="checkbox" checked={deleteConfig} onChange={(event) => setDeleteConfig(event.target.checked)} /><span><strong>Also delete the workspace override file</strong><small>Notes, tasks, approvals, audit, backups, and other runtime state remain preserved.</small></span></label>

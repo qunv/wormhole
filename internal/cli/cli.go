@@ -16,11 +16,14 @@ import (
 	"strings"
 	"sync"
 
+	"codebridge/internal/adminauth"
 	"codebridge/internal/agent"
 	"codebridge/internal/assets"
 	"codebridge/internal/config"
 	"codebridge/internal/server"
 	"codebridge/internal/workspaceregistry"
+
+	"golang.org/x/term"
 )
 
 type App struct {
@@ -162,7 +165,9 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return err
 	case "tunnel":
 		return a.tunnelCommand(ctx, cfg, opts)
-	case "admin", "ui":
+	case "admin":
+		return a.adminCommand(cfg, opts)
+	case "ui":
 		fmt.Fprintf(a.Stdout, "http://127.0.0.1:%d/admin/\n", cfg.Port)
 		return nil
 	case "keys":
@@ -328,6 +333,8 @@ Usage:
   codebridge workspace remove <id> [--force]
   codebridge tunnel [status|install]
   codebridge admin               Print the local Admin UI URL
+  codebridge admin set-password [username]
+  codebridge admin status        Show local Admin account status
   codebridge keys                Print Tunnel/API-key setup URLs
   codebridge profile            Write the tunnel-client YAML profile
   codebridge logs               Print bounded server and tunnel logs
@@ -606,6 +613,77 @@ func (a App) configCommand(cfg config.Config, opts options) error {
 		return errors.New("usage: codebridge config get|set|path")
 	}
 	return nil
+}
+
+func (a App) adminCommand(cfg config.Config, opts options) error {
+	sub := "url"
+	if len(opts.Rest) > 0 {
+		sub = opts.Rest[0]
+	}
+	switch sub {
+	case "url":
+		fmt.Fprintf(a.Stdout, "http://127.0.0.1:%d/admin/\n", cfg.Port)
+		return nil
+	case "status":
+		credential, err := adminauth.LoadCredentials(config.AdminAuthPath())
+		if errors.Is(err, adminauth.ErrNotConfigured) {
+			fmt.Fprintf(a.Stdout, "Admin account: not configured\nCredential file: %s\n", config.AdminAuthPath())
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Stdout, "Admin account: configured\nUsername: %s\nCredential file: %s\n", credential.Username, config.AdminAuthPath())
+		return nil
+	case "set-password", "reset-password":
+		username := "admin"
+		if credential, err := adminauth.LoadCredentials(config.AdminAuthPath()); err == nil {
+			username = credential.Username
+		} else if !errors.Is(err, adminauth.ErrNotConfigured) {
+			return err
+		}
+		if len(opts.Rest) > 1 {
+			username = opts.Rest[1]
+		}
+		reader := bufio.NewReader(a.Stdin)
+		password, err := a.readAdminPassword(reader, "New admin password: ")
+		if err != nil {
+			return err
+		}
+		confirmation, err := a.readAdminPassword(reader, "Confirm admin password: ")
+		if err != nil {
+			return err
+		}
+		if password != confirmation {
+			return errors.New("admin password confirmation does not match")
+		}
+		credential, err := adminauth.SetCredentials(config.AdminAuthPath(), username, password)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Stdout, "Admin account %s updated. Existing browser sessions are invalidated.\nSaved %s\n", credential.Username, config.AdminAuthPath())
+		return nil
+	default:
+		return errors.New("usage: codebridge admin [url|status|set-password [username]|reset-password [username]]")
+	}
+}
+
+func (a App) readAdminPassword(reader *bufio.Reader, prompt string) (string, error) {
+	fmt.Fprint(a.Stdout, prompt)
+	if file, ok := a.Stdin.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		raw, err := term.ReadPassword(int(file.Fd()))
+		fmt.Fprintln(a.Stdout)
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	fmt.Fprintln(a.Stdout)
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func (a App) keyCommand(opts options) error {

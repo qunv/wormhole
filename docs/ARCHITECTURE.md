@@ -69,7 +69,8 @@ selected agent.Runtime.HandleSession
 | `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
 | `internal/workspaceregistry` | Named workspace registry, schema migration, atomic persistence, and daemon fingerprint input |
 | `internal/server` | HTTP composition, MCP routing, health, authentication, Origin/CORS, and body limits |
-| `internal/admin` | Local-only Admin API, CSRF and Host enforcement, revision-safe config/registry writes, workspace lifecycle, overrides, and write-only secret management |
+| `internal/adminauth` | Owner-only local Admin credential hashing, bounded browser sessions, login throttling, and reset-driven session invalidation |
+| `internal/admin` | Local-only Admin API, login/session enforcement, CSRF and Host enforcement, revision-safe config/registry writes, workspace lifecycle, overrides, and write-only secret management |
 | `internal/adminui` | Embedded production assets for the React administration application |
 | `internal/mcpserver` | MCP server construction, per-chat workspace bindings, session identity, widget resource, and result adapter |
 | `internal/agent` | Tool-module registry, shared runtime pipeline, policy, identity, audit, and functional module handlers |
@@ -205,6 +206,9 @@ The admin surface is intentionally not governed by the MCP listener's bearer-tok
 browser on this machine
   → loopback TCP source check
   → localhost/loopback Host allowlist (DNS-rebinding defense)
+  → owner-only admin-auth.json credential file
+  → PBKDF2-HMAC-SHA256 username/password verification
+  → bounded HttpOnly SameSite session cookie
   → same-origin Origin check for writes
   → strict SameSite CSRF cookie + custom request header
   → bounded JSON body
@@ -212,6 +216,8 @@ browser on this machine
   → ETag/If-Match revision check
   → owner-only atomic persistence
 ```
+
+The SPA assets and authentication-status/login endpoints remain readable from the loopback-only Admin origin so the sign-in screen can render. Every other Admin API route requires a valid in-memory session. Session tokens are random, stored only as digests in a bounded process-local map, and delivered in an HttpOnly SameSite cookie. Validation re-reads the persisted credential version, so `codebridge admin set-password` or `reset-password` immediately invalidates all sessions. Failed login attempts use a bounded throttle. There is deliberately no web password setup or recovery endpoint.
 
 Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by `runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
 
@@ -223,6 +229,7 @@ All persistent Codebridge files use one canonical root on every operating system
 
 ```text
 ~/.codebridge/
+  admin-auth.json
   config.json
   .env
   workspaces.json

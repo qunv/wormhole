@@ -86,7 +86,8 @@ Keep changes inside the package that owns the behavior:
 | `internal/app` | Version metadata and application composition |
 | `internal/cli` | CLI grammar, setup, lifecycle, tunnel, and installation |
 | `internal/server` | HTTP composition, authentication, Origin policy, health, and limits |
-| `internal/admin` | Local Admin API, CSRF/Host enforcement, revision-safe configuration and write-only secrets |
+| `internal/adminauth` | Local Admin credential hashing, bounded sessions, throttling, and session invalidation |
+| `internal/admin` | Local Admin API, authentication, CSRF/Host enforcement, revision-safe configuration and write-only secrets |
 | `internal/adminui` | Embedded production Admin UI assets |
 | `web/admin` | React, TypeScript, Vite, and Tailwind Admin UI source |
 | `internal/mcpserver` | MCP server construction, session routing, bindings, and result adaptation |

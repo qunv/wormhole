@@ -24,7 +24,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"codebridge/internal/adminauth"
 	"codebridge/internal/adminui"
 	"codebridge/internal/agent"
 	"codebridge/internal/config"
@@ -32,11 +34,13 @@ import (
 )
 
 const (
-	basePath       = "/admin"
-	apiPrefix      = "/admin/api/v1"
-	csrfCookieName = "codebridge_admin_csrf"
-	maxJSONBody    = 2 << 20
-	maxSecretBody  = 128 << 10
+	basePath          = "/admin"
+	apiPrefix         = "/admin/api/v1"
+	csrfCookieName    = "codebridge_admin_csrf"
+	sessionCookieName = "codebridge_admin_session"
+	maxJSONBody       = 2 << 20
+	maxSecretBody     = 128 << 10
+	maxAuthBody       = 8 << 10
 )
 
 var workspaceOwnedFields = map[string]bool{
@@ -51,6 +55,7 @@ type Handler struct {
 	Runtime  *agent.Runtime
 	Runtimes map[string]*agent.Runtime
 	assets   fs.FS
+	auth     *adminauth.Manager
 	mu       sync.Mutex
 }
 
@@ -61,7 +66,10 @@ func New(runtime *agent.Runtime, named map[string]*agent.Runtime) *Handler {
 	for id, child := range named {
 		copyNamed[id] = child
 	}
-	return &Handler{Runtime: runtime, Runtimes: copyNamed, assets: adminui.FS()}
+	return &Handler{
+		Runtime: runtime, Runtimes: copyNamed, assets: adminui.FS(),
+		auth: adminauth.NewManager(config.AdminAuthPath()),
+	}
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -91,10 +99,131 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				return
 			}
 		}
-		h.serveAPI(writer, request)
+		suffix := strings.TrimPrefix(request.URL.Path, apiPrefix)
+		switch {
+		case suffix == "/auth/status" && request.Method == http.MethodGet:
+			h.authStatus(writer, request)
+		case suffix == "/auth/login" && request.Method == http.MethodPost:
+			h.login(writer, request)
+		default:
+			if !h.requireAuthentication(writer, request) {
+				return
+			}
+			if suffix == "/auth/logout" && request.Method == http.MethodPost {
+				h.logout(writer, request)
+				return
+			}
+			h.serveAPI(writer, request)
+		}
 		return
 	}
 	h.serveAssets(writer, request)
+}
+
+func (h *Handler) authStatus(writer http.ResponseWriter, request *http.Request) {
+	if h.auth == nil {
+		h.sendJSON(writer, http.StatusOK, map[string]any{
+			"configured": true, "authenticated": true, "username": "test-admin",
+		})
+		return
+	}
+	token := h.sessionToken(request)
+	configured, authenticated, username, err := h.auth.Status(token)
+	if err != nil {
+		h.sendError(writer, http.StatusInternalServerError, "admin_auth_read_failed", "Unable to read the local admin credential file. Reset it with the Codebridge CLI.")
+		return
+	}
+	h.sendJSON(writer, http.StatusOK, map[string]any{
+		"configured": configured, "authenticated": authenticated, "username": username,
+		"credentialPath": config.AdminAuthPath(),
+	})
+}
+
+func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
+	if h.auth == nil {
+		h.sendError(writer, http.StatusNotImplemented, "admin_auth_unavailable", "Admin authentication is unavailable.")
+		return
+	}
+	raw, err := readBody(writer, request, maxAuthBody)
+	if err != nil {
+		h.sendError(writer, http.StatusBadRequest, "invalid_body", err.Error())
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		h.sendError(writer, http.StatusBadRequest, "invalid_body", "Expected a JSON object containing username and password.")
+		return
+	}
+	token, username, retryAfter, err := h.auth.Login(input.Username, input.Password)
+	switch {
+	case errors.Is(err, adminauth.ErrNotConfigured):
+		h.sendError(writer, http.StatusServiceUnavailable, "admin_setup_required", "Admin credentials are not configured. Run `codebridge admin set-password [username]` locally.")
+		return
+	case errors.Is(err, adminauth.ErrRateLimited):
+		seconds := int(retryAfter.Round(time.Second) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+		h.sendError(writer, http.StatusTooManyRequests, "admin_login_rate_limited", "Too many failed login attempts. Try again shortly.")
+		return
+	case errors.Is(err, adminauth.ErrInvalidCredentials):
+		h.sendError(writer, http.StatusUnauthorized, "invalid_credentials", "Invalid admin username or password.")
+		return
+	case err != nil:
+		h.sendError(writer, http.StatusInternalServerError, "admin_login_failed", "Unable to create an admin session.")
+		return
+	}
+	http.SetCookie(writer, &http.Cookie{
+		Name: sessionCookieName, Value: token, Path: basePath,
+		MaxAge: int(adminauth.SessionTTL / time.Second), SameSite: http.SameSiteStrictMode,
+		Secure: request.TLS != nil, HttpOnly: true,
+	})
+	h.sendJSON(writer, http.StatusOK, map[string]any{"authenticated": true, "username": username})
+}
+
+func (h *Handler) logout(writer http.ResponseWriter, request *http.Request) {
+	token := h.sessionToken(request)
+	if h.auth != nil && token != "" {
+		h.auth.Logout(token)
+	}
+	http.SetCookie(writer, &http.Cookie{
+		Name: sessionCookieName, Value: "", Path: basePath,
+		MaxAge: -1, SameSite: http.SameSiteStrictMode,
+		Secure: request.TLS != nil, HttpOnly: true,
+	})
+	h.sendJSON(writer, http.StatusOK, map[string]any{"authenticated": false})
+}
+
+func (h *Handler) requireAuthentication(writer http.ResponseWriter, request *http.Request) bool {
+	if h.auth == nil {
+		return true
+	}
+	configured, authenticated, _, err := h.auth.Status(h.sessionToken(request))
+	if err != nil {
+		h.sendError(writer, http.StatusInternalServerError, "admin_auth_read_failed", "Unable to read the local admin credential file. Reset it with the Codebridge CLI.")
+		return false
+	}
+	if !configured {
+		h.sendError(writer, http.StatusServiceUnavailable, "admin_setup_required", "Admin credentials are not configured. Run `codebridge admin set-password [username]` locally.")
+		return false
+	}
+	if !authenticated {
+		h.sendError(writer, http.StatusUnauthorized, "authentication_required", "Sign in with the local admin account to continue.")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) sessionToken(request *http.Request) string {
+	cookie, err := request.Cookie(sessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cookie.Value)
 }
 
 func (h *Handler) serveAPI(writer http.ResponseWriter, request *http.Request) {
@@ -141,7 +270,7 @@ func (h *Handler) getBootstrap(writer http.ResponseWriter) {
 		"homePath": config.AppHomeDir(), "restartRequiredAfterSave": true,
 		"security": map[string]any{
 			"loopbackOnly": true, "sameOriginWrites": true, "csrfProtected": true,
-			"secretValuesReadable": false,
+			"adminAuthentication": true, "secretValuesReadable": false,
 		},
 		"startupWarnings": h.Runtime.StartupWarnings(),
 	})

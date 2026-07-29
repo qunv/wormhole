@@ -1,4 +1,5 @@
 import type {
+  AdminAuthStatus,
   Bootstrap,
   CodebridgeConfig,
   ConfigSnapshot,
@@ -10,6 +11,7 @@ import type {
 } from "./types";
 
 const API = "/admin/api/v1";
+export const AUTH_REQUIRED_EVENT = "codebridge-auth-required";
 
 export class APIError extends Error {
   status: number;
@@ -44,12 +46,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = body?.error ?? {};
-    throw new APIError(response.status, error.code ?? "request_failed", error.message ?? `Request failed (${response.status})`);
+    const code = error.code ?? "request_failed";
+    if (response.status === 401 && code === "authentication_required") {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    }
+    throw new APIError(response.status, code, error.message ?? `Request failed (${response.status})`);
   }
   return body as T;
 }
 
 export const api = {
+  authStatus: () => request<AdminAuthStatus>("/auth/status"),
+  login: (username: string, password: string) =>
+    request<{ authenticated: true; username: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => request<{ authenticated: false }>("/auth/logout", { method: "POST" }),
   bootstrap: () => request<Bootstrap>("/bootstrap"),
   config: () => request<ConfigSnapshot>("/config"),
   validateConfig: (config: CodebridgeConfig) =>

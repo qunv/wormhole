@@ -309,19 +309,30 @@ http://127.0.0.1:8789/admin/
 
 Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, and referenced secrets.
 
-Start Codebridge, print the URL, and open it in a local browser:
+Create the local admin account before opening the console:
 
 ```bash
+codebridge admin set-password admin
 codebridge restart
 codebridge admin
 ```
 
-The default URL is `http://127.0.0.1:8789/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
+The command prompts twice without echoing the password when run from a terminal. The username and a salted one-way password hash are stored in the owner-only file `~/.codebridge/admin-auth.json`; the plaintext password is never persisted. The default URL is `http://127.0.0.1:8789/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
+
+There is no browser password-recovery flow. If the password is forgotten, reset it from the local machine:
+
+```bash
+codebridge admin reset-password admin
+```
+
+Changing the username or password immediately invalidates existing Admin UI browser sessions. Check the configured account without revealing credential material with `codebridge admin status`.
 
 Security boundaries are enforced by the Go server:
 
 - Admin routes accept only loopback clients and `localhost` or loopback-IP Host headers.
-- Every write requires an exact same-origin request and a CSRF token.
+- Every Admin API route except login status and login requires an authenticated, bounded HttpOnly session cookie.
+- Failed logins are throttled, and password setup/reset is available only through the local Codebridge CLI.
+- Every write, including login and logout, requires an exact same-origin request and a CSRF token.
 - Configuration and workspace-registry saves use revision checks to prevent overwriting concurrent changes.
 - The workspace browser is directory-only, bounded, and confined to the current user's home directory; an existing absolute path may still be entered manually.
 - Runtime tokens are excluded from JSON configuration.
@@ -360,6 +371,9 @@ npm run dev
 | `codebridge profile` | Regenerate the tunnel-client profile |
 | `codebridge tunnel install` | Download and verify OpenAI tunnel-client |
 | `codebridge admin` | Print the local Admin UI URL |
+| `codebridge admin set-password [username]` | Create or replace the local Admin account |
+| `codebridge admin reset-password [username]` | Reset the password and invalidate browser sessions |
+| `codebridge admin status` | Show whether the local Admin account is configured |
 | `codebridge key set` | Store the Runtime API key in `.env` |
 | `codebridge config get` | Print the effective non-secret configuration |
 | `codebridge state gc --dry-run` | Preview safe state cleanup |
@@ -371,6 +385,7 @@ Persistent data lives under:
 
 ```text
 ~/.codebridge/
+  admin-auth.json
   config.json          non-secret global configuration
   .env                 Runtime API key and referenced secrets
   workspaces.json      named-workspace registry

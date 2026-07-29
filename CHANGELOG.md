@@ -6,6 +6,7 @@ All notable changes to Codebridge are documented in this file.
 
 ### Added
 
+- Added local Admin UI username/password authentication with owner-only hashed credentials, bounded HttpOnly browser sessions, login throttling, logout, and CLI-only password setup/reset.
 - Added Admin UI directory browsing plus revision-safe named-workspace registration and removal, with preserved runtime state and optional override deletion.
 - Added schema-versioned workspace overrides and `codebridge workspace compact <id> [--dry-run]` for safely converging legacy full snapshots toward inherited deltas.
 - Added duplicate-key and unknown-field rejection for global and workspace JSON configuration.

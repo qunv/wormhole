@@ -222,6 +222,7 @@ func LegacyDataDir() string {
 }
 
 func DotEnvPath() string    { return filepath.Join(AppConfigDir(), ".env") }
+func AdminAuthPath() string { return filepath.Join(AppConfigDir(), "admin-auth.json") }
 func PIDPath() string       { return filepath.Join(AppDataDir(), "processes.json") }
 func ServerLogPath() string { return filepath.Join(AppDataDir(), "server.log") }
 func TunnelLogPath() string { return filepath.Join(AppDataDir(), "tunnel.log") }

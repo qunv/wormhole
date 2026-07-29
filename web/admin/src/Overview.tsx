@@ -41,6 +41,7 @@ export function Overview() {
             <SecurityItem title="Loopback only" active={bootstrap.data?.security.loopbackOnly ?? true} />
             <SecurityItem title="Same-origin writes" active={bootstrap.data?.security.sameOriginWrites ?? true} />
             <SecurityItem title="CSRF protected" active={bootstrap.data?.security.csrfProtected ?? true} />
+            <SecurityItem title="Admin login required" active={bootstrap.data?.security.adminAuthentication ?? true} />
             <SecurityItem title="Secrets are unreadable" active={!bootstrap.data?.security.secretValuesReadable} />
           </div>
         </Card>

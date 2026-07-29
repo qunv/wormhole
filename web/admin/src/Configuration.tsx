@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Braces, Cpu, Database, Gauge, Network, Plus, Save, Shield, Trash2, Waypoints } from "lucide-react";
 import { api, APIError } from "./api";
-import { Badge, Button, Card, Field, LoadingPage, Notice, PageHeader, Select, TextArea, TextInput, Toggle } from "./components";
+import { Badge, Button, Card, Field as BaseField, LoadingPage, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
 import type { CodebridgeConfig, MCPServerConfig } from "./types";
 
 type Tab = "general" | "memory" | "mcp" | "tools" | "advanced";
@@ -13,6 +13,75 @@ const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "tools", label: "Tools & Limits", icon: <Gauge size={16} /> },
   { id: "advanced", label: "Advanced JSON", icon: <Braces size={16} /> },
 ];
+
+const CONFIG_HELP: Record<string, string> = {
+  "Primary workspace": "The default repository root used when a request is not bound to a named workspace.",
+  "Execution mode": "Controls which local operations are available. Safe mode restricts risky execution; full mode enables the complete tool set subject to policy.",
+  "Policy": "Determines when mutating or sensitive actions require approval. Strict asks more often; full permits the broadest execution.",
+  "Host": "Network interface used by the MCP listener. The Admin UI remains restricted to loopback for security.",
+  "Port": "TCP port used by the local Codebridge HTTP and MCP server.",
+  "Extra roots": "Additional directories that tools may access besides the primary workspace. Each path must pass root-confinement checks.",
+  "Allowed browser origins": "Exact browser origins permitted to call the local server. Use full origins such as http://127.0.0.1:3000.",
+  "Disable tunnel": "Prevents Codebridge from creating the external Secure MCP Tunnel and keeps the service local only.",
+  "Tunnel ID": "Identifier of the Secure MCP Tunnel that exposes this local Codebridge daemon.",
+  "Organization ID": "Organization that owns or authorizes the configured tunnel.",
+  "Tunnel binary": "Optional custom path or command name for the tunnel executable.",
+  "Profile": "Named tunnel profile used to resolve tunnel credentials and settings.",
+  "Profile directory": "Directory containing tunnel profile files when they are not stored in the default location.",
+  "Runtime key environment": "Environment variable name containing the runtime API key. The secret value is managed on the Secrets page.",
+  "Audit tool calls": "Records bounded local audit events for tool calls, outcomes, and approvals without storing full results.",
+  "Include redacted argument metadata": "Adds reduced and redacted argument metadata to audit records for better diagnostics.",
+  "HTTP access log": "Logs Admin and MCP HTTP requests locally. Useful for troubleshooting but can add noise.",
+  "Enable memory": "Allows Codebridge to capture selected project context and retrieve it in later agent sessions.",
+  "Provider": "Memory backend adapter to use, for example agentmemory.",
+  "Endpoint": "Base URL of the memory provider service.",
+  "Secret environment": "Environment variable name containing the memory provider credential; the value is never stored here.",
+  "Agent ID": "Stable identity sent to the memory provider to separate observations from different agents.",
+  "Capture mode": "Controls automatic memory capture: off disables capture, metadata stores reduced metadata, and selected stores approved contextual observations.",
+  "Project strategy": "Defines how projects receive stable memory identities. git-origin follows the repository remote; path-hash derives identity from the local path.",
+  "Required for startup": "When enabled, Codebridge startup fails if the memory provider is unavailable instead of continuing without memory.",
+  "Request timeout (ms)": "Maximum time allowed for a memory provider request before it is cancelled.",
+  "Token budget": "Maximum amount of retrieved memory context that may be inserted into an agent prompt.",
+  "Queue size": "Maximum number of memory observations waiting for asynchronous delivery.",
+  "Delivery workers": "Number of concurrent workers that send queued memory observations.",
+  "Delivery timeout (ms)": "Maximum time allowed for one queued memory delivery attempt.",
+  "Retry attempts": "Maximum number of delivery attempts before an observation is dropped or reported as failed.",
+  "Retry backoff (ms)": "Delay between memory delivery retries.",
+  "Health cache (ms)": "How long a memory provider health result is reused before checking again.",
+  "Provider options": "Provider-specific non-secret settings passed to the selected memory adapter.",
+  "Server enabled": "Controls whether this upstream MCP server is available to Codebridge workspaces.",
+  "Transport": "Connection type for the upstream MCP server: a local stdio process or a Streamable HTTP endpoint.",
+  "Startup mode": "Eager starts during daemon initialization, background starts asynchronously, and lazy connects on the first tool request.",
+  "Command": "Executable used to start a stdio MCP server.",
+  "Arguments": "Command-line arguments passed to the stdio MCP server, one argument per line.",
+  "Working directory": "Directory used as the current working directory when starting the stdio MCP process.",
+  "URL": "Streamable HTTP endpoint of the upstream MCP server.",
+  "Allow remote endpoint": "Allows a non-loopback upstream URL. Enable only for a trusted, secured network endpoint.",
+  "Workspace IDs": "Limits this upstream server to selected workspace IDs. Empty or * makes it available to every workspace.",
+  "Allowed tools": "Allowlist of tool names exposed from this scope. When populated, tools not listed are hidden.",
+  "Denied tools": "Denylist of tool names that must never be exposed, even when another allow rule matches.",
+  "Max concurrency": "Maximum number of simultaneous calls sent to this upstream MCP server.",
+  "Max tools": "Maximum number of tools accepted from the upstream server catalog.",
+  "Complete server JSON": "Advanced MCP server settings including environment references, headers, policy, timeouts, and transport limits.",
+  "Allowed groups": "Tool groups that may be exposed globally, such as filesystem, git, execution, or memory groups.",
+  "Max read chars": "Hard upper bound for characters returned by a single file read request.",
+  "Default read chars": "Default character limit used when a file read request does not specify one.",
+  "Max batch read chars": "Hard upper bound for the combined output of a multi-file read request.",
+  "Max command output": "Hard upper bound for captured stdout and stderr from one command.",
+  "Default command output": "Default command output limit when a tool call does not specify one.",
+  "Max HTTP body bytes": "Largest HTTP request body accepted by the local Admin and MCP server.",
+  "Max managed processes": "Maximum number of background processes Codebridge may manage at the same time.",
+  "Git status cache (ms)": "How long a git status result is reused before Codebridge executes git status again.",
+  "Complete JSON document": "Raw editor for the entire non-secret configuration. Changes are applied to the structured form before validation and saving.",
+};
+
+function Field(props: ComponentProps<typeof BaseField>) {
+  return <BaseField {...props} help={props.help ?? CONFIG_HELP[props.label]} />;
+}
+
+function Toggle(props: ComponentProps<typeof BaseToggle>) {
+  return <BaseToggle {...props} help={props.help ?? CONFIG_HELP[props.label]} />;
+}
 
 export function Configuration() {
   const queryClient = useQueryClient();
@@ -244,7 +313,7 @@ function AdvancedEditor({ value, onChange }: EditorProps) {
     try { onChange(JSON.parse(raw) as CodebridgeConfig); setError(""); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   };
-  return <Card title="Complete JSON document" description="Use this fallback for exact control over every supported field." actions={<Button variant="secondary" onClick={apply}><Cpu size={15} /> Apply to form</Button>}>
+  return <Card title="Complete JSON document" titleHelp={CONFIG_HELP["Complete JSON document"]} description="Use this fallback for exact control over every supported field." actions={<Button variant="secondary" onClick={apply}><Cpu size={15} /> Apply to form</Button>}>
     {error && <Notice tone="danger">{error}</Notice>}
     <TextArea className="control textarea code-editor" value={raw} onChange={(e) => setRaw(e.target.value)} spellCheck={false} />
   </Card>;
@@ -254,7 +323,7 @@ function JSONField({ label, value, onChange, hint }: { label: string; value: Rec
   const [raw, setRaw] = useState(() => JSON.stringify(value, null, 2));
   const [error, setError] = useState("");
   useEffect(() => setRaw(JSON.stringify(value, null, 2)), [value]);
-  return <Card title={label} description={hint} actions={<Button variant="secondary" onClick={() => { try { onChange(JSON.parse(raw)); setError(""); } catch (err) { setError(err instanceof Error ? err.message : String(err)); } }}><Save size={15} /> Apply JSON</Button>}>
+  return <Card title={label} titleHelp={CONFIG_HELP[label]} description={hint} actions={<Button variant="secondary" onClick={() => { try { onChange(JSON.parse(raw)); setError(""); } catch (err) { setError(err instanceof Error ? err.message : String(err)); } }}><Save size={15} /> Apply JSON</Button>}>
     {error && <Notice tone="danger">{error}</Notice>}
     <TextArea className="control textarea code-editor compact" value={raw} onChange={(e) => setRaw(e.target.value)} spellCheck={false} />
   </Card>;
