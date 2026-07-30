@@ -1,0 +1,1352 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codebridge Orchestrator — Kiến trúc tổng thể và kế hoạch triển khai</title>
+  <style>
+    :root {
+      --bg: #08111f;
+      --panel: #0d1a2b;
+      --panel-2: #112239;
+      --text: #e8f0fb;
+      --muted: #9fb0c7;
+      --line: #233958;
+      --accent: #58d7ff;
+      --accent-2: #7df0b8;
+      --warning: #ffd166;
+      --danger: #ff7b88;
+      --info: #92a8ff;
+      --shadow: 0 16px 48px rgba(0, 0, 0, .28);
+      --radius: 16px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(88, 215, 255, .10), transparent 28rem),
+        radial-gradient(circle at 90% 10%, rgba(125, 240, 184, .08), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.65;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre { font-family: var(--mono); }
+    code {
+      color: #ccecff;
+      background: rgba(88, 215, 255, .08);
+      border: 1px solid rgba(88, 215, 255, .15);
+      border-radius: 6px;
+      padding: .08rem .35rem;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: rgba(8, 17, 31, .92);
+      backdrop-filter: blur(14px);
+      padding: 28px 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      box-shadow: 0 8px 28px rgba(88, 215, 255, .25);
+    }
+
+    .brand strong { display: block; font-size: 1rem; }
+    .brand small { color: var(--muted); }
+
+    nav a {
+      display: block;
+      padding: 8px 10px;
+      margin: 2px 0;
+      color: var(--muted);
+      border-radius: 9px;
+      font-size: .92rem;
+    }
+
+    nav a:hover {
+      color: var(--text);
+      background: rgba(88, 215, 255, .07);
+      text-decoration: none;
+    }
+
+    .side-note {
+      margin-top: 24px;
+      padding: 12px;
+      font-size: .82rem;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(17, 34, 57, .6);
+    }
+
+    main {
+      width: min(1180px, 100%);
+      padding: 52px 54px 96px;
+    }
+
+    .hero {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 42px;
+      background:
+        linear-gradient(135deg, rgba(88, 215, 255, .09), transparent 42%),
+        linear-gradient(315deg, rgba(125, 240, 184, .07), transparent 38%),
+        rgba(13, 26, 43, .92);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: .16em;
+      color: var(--accent-2);
+      font-size: .78rem;
+      font-weight: 700;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4.5vw, 4.2rem);
+      line-height: 1.04;
+      margin: 12px 0 18px;
+      max-width: 940px;
+    }
+
+    .lead {
+      color: #c3d2e6;
+      font-size: 1.16rem;
+      max-width: 900px;
+      margin-bottom: 22px;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .badge {
+      border: 1px solid var(--line);
+      background: rgba(17, 34, 57, .8);
+      color: #cfe2f7;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: .83rem;
+    }
+
+    section { scroll-margin-top: 24px; margin-top: 54px; }
+    h2 { font-size: 1.85rem; margin: 0 0 18px; }
+    h3 { font-size: 1.25rem; margin: 28px 0 12px; }
+    h4 { margin: 20px 0 8px; font-size: 1.02rem; }
+    p { color: #c4d1e2; }
+    ul, ol { color: #c4d1e2; }
+    li + li { margin-top: 6px; }
+
+    .grid-2, .grid-3, .grid-4 {
+      display: grid;
+      gap: 16px;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(13, 26, 43, .86);
+      padding: 20px;
+      box-shadow: 0 10px 32px rgba(0,0,0,.16);
+    }
+
+    .card h3, .card h4 { margin-top: 0; }
+    .card p:last-child { margin-bottom: 0; }
+    .card .label {
+      display: inline-block;
+      color: var(--accent-2);
+      font-size: .74rem;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: rgba(88, 215, 255, .07);
+      padding: 16px 18px;
+      border-radius: 0 12px 12px 0;
+      color: #d9e8f8;
+      margin: 18px 0;
+    }
+    .callout.warning { border-left-color: var(--warning); background: rgba(255, 209, 102, .07); }
+    .callout.danger { border-left-color: var(--danger); background: rgba(255, 123, 136, .07); }
+    .callout.success { border-left-color: var(--accent-2); background: rgba(125, 240, 184, .07); }
+
+    .diagram {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 24px;
+      background: linear-gradient(180deg, rgba(17, 34, 57, .8), rgba(13, 26, 43, .9));
+      overflow-x: auto;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr 64px 1.4fr 64px 1fr;
+      align-items: center;
+      gap: 8px;
+      min-width: 850px;
+    }
+
+    .flow.vertical {
+      grid-template-columns: 1fr;
+      min-width: 0;
+    }
+
+    .node {
+      border: 1px solid #315077;
+      border-radius: 14px;
+      background: #10233b;
+      padding: 16px;
+      text-align: center;
+      color: #eaf4ff;
+    }
+    .node strong { display: block; margin-bottom: 4px; }
+    .node small { color: var(--muted); display: block; }
+    .node.accent { border-color: rgba(88,215,255,.6); box-shadow: inset 0 0 0 1px rgba(88,215,255,.08); }
+    .node.green { border-color: rgba(125,240,184,.55); }
+    .node.warning { border-color: rgba(255,209,102,.55); }
+
+    .arrow {
+      text-align: center;
+      color: var(--accent);
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .lane-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(210px, 1fr));
+      gap: 12px;
+      min-width: 920px;
+    }
+
+    .lane {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: rgba(8,17,31,.48);
+    }
+    .lane > strong {
+      display: block;
+      color: var(--accent-2);
+      margin-bottom: 12px;
+      text-align: center;
+    }
+    .step {
+      border: 1px solid #29425f;
+      border-radius: 10px;
+      padding: 10px;
+      background: #102139;
+      margin: 8px 0;
+      font-size: .88rem;
+      color: #d4e2f3;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      background: rgba(13, 26, 43, .76);
+      font-size: .92rem;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: #eaf4ff; background: rgba(17, 34, 57, .95); }
+    td { color: #c4d1e2; }
+    tr:last-child td { border-bottom: 0; }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #07101d;
+      color: #d7e9fb;
+      padding: 18px;
+      overflow-x: auto;
+      font-size: .86rem;
+      line-height: 1.55;
+    }
+
+    .state-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin: 14px 0;
+    }
+    .state {
+      border: 1px solid #38577e;
+      background: #10233b;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: .82rem;
+    }
+    .state.done { border-color: rgba(125,240,184,.55); }
+    .state.fail { border-color: rgba(255,123,136,.55); }
+    .state.wait { border-color: rgba(255,209,102,.55); }
+    .state-arrow { color: var(--muted); }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 18px;
+      padding: 20px 0;
+      border-top: 1px solid var(--line);
+    }
+    .phase:first-child { border-top: 0; }
+    .phase-id {
+      color: var(--accent-2);
+      font-weight: 800;
+      font-family: var(--mono);
+    }
+    .phase h3 { margin: 0 0 8px; }
+
+    .checklist {
+      list-style: none;
+      padding: 0;
+    }
+    .checklist li {
+      position: relative;
+      padding-left: 28px;
+      margin: 8px 0;
+    }
+    .checklist li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      color: var(--accent-2);
+      font-weight: 800;
+    }
+
+    .footer {
+      margin-top: 72px;
+      padding-top: 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .86rem;
+    }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { display: none; }
+      main { padding: 30px 20px 72px; }
+      .hero { padding: 28px; }
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .phase { grid-template-columns: 1fr; gap: 4px; }
+    }
+
+    @media print {
+      :root { --bg: #fff; --panel: #fff; --panel-2: #fff; --text: #111; --muted: #555; --line: #ccc; }
+      body { background: #fff; color: #111; }
+      aside { display: none; }
+      .layout { display: block; }
+      main { width: 100%; padding: 0; }
+      .hero, .card, .diagram, table, pre { box-shadow: none; background: #fff; color: #111; break-inside: avoid; }
+      p, li, td { color: #222; }
+      h1, h2, h3, h4, th { color: #111; }
+      .node, .lane, .step, .state { background: #fff; color: #111; }
+      a { color: #111; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <strong>Codebridge Orchestrator</strong>
+        <small>Architecture Review Draft</small>
+      </div>
+    </div>
+    <nav>
+      <a href="#summary">1. Tóm tắt</a>
+      <a href="#principles">2. Nguyên tắc thiết kế</a>
+      <a href="#current-state">3. Hiện trạng Codebridge</a>
+      <a href="#architecture">4. Kiến trúc tổng thể</a>
+      <a href="#components">5. Thành phần chính</a>
+      <a href="#flows">6. Luồng điều phối</a>
+      <a href="#states">7. State machine</a>
+      <a href="#data-model">8. Mô hình dữ liệu</a>
+      <a href="#contracts">9. Contract với agent</a>
+      <a href="#integration">10. Tích hợp Codebridge</a>
+      <a href="#security">11. An toàn và cô lập</a>
+      <a href="#failures">12. Xử lý lỗi</a>
+      <a href="#observability">13. Observability</a>
+      <a href="#deployment">14. Triển khai</a>
+      <a href="#plan">15. Kế hoạch theo phase</a>
+      <a href="#acceptance">16. Acceptance criteria</a>
+      <a href="#decisions">17. Quyết định cần review</a>
+    </nav>
+    <div class="side-note">
+      Tài liệu này ưu tiên mô hình <strong>orchestrator trung tâm</strong>, các agent không giao tiếp trực tiếp và chỉ phối hợp qua task, artifact, Git commit và kết quả kiểm chứng.
+    </div>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">Architecture & Implementation Plan</div>
+      <h1>Tầng điều phối nhiều agent trên Codebridge</h1>
+      <p class="lead">
+        Thiết kế control plane để phân rã công việc, cấp workspace/Git worktree riêng cho từng agent session,
+        theo dõi tiến độ, kiểm chứng kết quả và hợp nhất thay đổi — không cần agent giao tiếp trực tiếp với nhau.
+      </p>
+      <div class="badges">
+        <span class="badge">Local-first</span>
+        <span class="badge">Workspace isolation</span>
+        <span class="badge">Artifact handoff</span>
+        <span class="badge">Lease-based scheduling</span>
+        <span class="badge">SQLite control state</span>
+        <span class="badge">Codebridge execution plane</span>
+      </div>
+    </header>
+
+    <section id="summary">
+      <h2>1. Tóm tắt đề xuất</h2>
+      <div class="callout success">
+        <strong>Đề xuất chính:</strong> xây một orchestrator bên ngoài <code>agent.Runtime</code>, dùng pool workspace cố định,
+        mỗi workspace trỏ tới một Git worktree riêng. Orchestrator cấp lease cho task, gọi agent qua fixed MCP endpoint,
+        nhận structured result, tự kiểm chứng bằng Codebridge rồi mới hoàn thành hoặc merge.
+      </div>
+
+      <div class="grid-3">
+        <article class="card">
+          <span class="label">Control plane</span>
+          <h3>Orchestrator</h3>
+          <p>Quản lý job, DAG task, scheduler, lease, agent run, artifact, retry, verification và merge.</p>
+        </article>
+        <article class="card">
+          <span class="label">Execution plane</span>
+          <h3>Codebridge</h3>
+          <p>Cung cấp MCP tools, workspace confinement, Git, process, policy, audit, memory và quality gate.</p>
+        </article>
+        <article class="card">
+          <span class="label">Reasoning plane</span>
+          <h3>Agent runner</h3>
+          <p>Chạy model/agent cụ thể, nhận task envelope, thao tác trong đúng workspace và trả structured result.</p>
+        </article>
+      </div>
+
+      <h3>Phạm vi MVP</h3>
+      <ul>
+        <li>Pool 4 worker workspace và 1 integration workspace.</li>
+        <li>Một Git worktree và branch độc lập cho mỗi workspace.</li>
+        <li>DAG scheduler đơn giản theo priority + dependency.</li>
+        <li>Workspace lease, heartbeat, timeout và quarantine.</li>
+        <li>Kết quả agent bắt buộc có cấu trúc và commit hash khi task có thay đổi code.</li>
+        <li>Verifier độc lập chạy <code>git_status</code>, <code>git_diff</code>, <code>quality_gate</code>, <code>review_diff</code> và tùy chọn <code>security_scan</code>.</li>
+        <li>Merge chỉ thực hiện tại integration workspace.</li>
+      </ul>
+
+      <h3>Không nằm trong MVP</h3>
+      <ul>
+        <li>Agent-to-agent messaging, mailbox hoặc hội thoại trực tiếp.</li>
+        <li>Provision runtime Codebridge động mà không restart daemon.</li>
+        <li>Cho agent tự quản lý worktree lifecycle hoặc merge vào branch chính.</li>
+        <li>Dùng long-term memory làm task queue hoặc dependency transport.</li>
+        <li>Scheduler tối ưu bằng ML hoặc tự động chia task hoàn toàn không kiểm soát.</li>
+      </ul>
+    </section>
+
+    <section id="principles">
+      <h2>2. Nguyên tắc thiết kế</h2>
+      <div class="grid-2">
+        <article class="card">
+          <h3>2.1 Không giao tiếp trực tiếp</h3>
+          <p>Agent không gửi message cho nhau. Mọi handoff đi qua orchestrator bằng artifact có version và provenance rõ ràng.</p>
+        </article>
+        <article class="card">
+          <h3>2.2 Một workspace, một active lease</h3>
+          <p>Tại một thời điểm, một workspace chỉ thuộc về một agent run. Unique constraint phải bảo đảm điều này ở tầng database.</p>
+        </article>
+        <article class="card">
+          <h3>2.3 Không tin kết quả agent</h3>
+          <p>Agent result là lời khai. Orchestrator phải xác minh commit, diff, test, lint, build và review bằng execution plane.</p>
+        </article>
+        <article class="card">
+          <h3>2.4 Artifact thay cho conversation</h3>
+          <p>Commit, patch, analysis report, test report, review report và decision record là đơn vị handoff chính thức.</p>
+        </article>
+        <article class="card">
+          <h3>2.5 Workspace pool trước, dynamic runtime sau</h3>
+          <p>Codebridge hiện reconcile daemon khi tập workspace thay đổi. MVP dùng pool cố định để tránh restart ảnh hưởng agent đang chạy.</p>
+        </article>
+        <article class="card">
+          <h3>2.6 Control plane không thao tác repo tùy tiện</h3>
+          <p>Orchestrator chỉ thực hiện lifecycle thao tác đã định nghĩa; mọi coding action vẫn đi qua Codebridge và policy tương ứng.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="current-state">
+      <h2>3. Hiện trạng Codebridge liên quan</h2>
+      <table>
+        <thead>
+          <tr><th>Khả năng hiện có</th><th>Đánh giá</th><th>Vị trí chính</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Runtime độc lập theo workspace</td><td>Phù hợp để làm execution slot.</td><td><code>internal/agent/runtime.go</code></td></tr>
+          <tr><td>Session binding theo conversation</td><td>Phù hợp cho ChatGPT; fixed endpoint phù hợp hơn cho agent runner tự động.</td><td><code>internal/mcpserver/session_router.go</code></td></tr>
+          <tr><td>Named workspace registry</td><td>Đã có add/start/stop/remove, config và data directory riêng.</td><td><code>internal/cli/workspaces.go</code>, <code>internal/workspaceregistry</code></td></tr>
+          <tr><td>Daemon reconciliation</td><td>Tập workspace đổi có thể làm server restart, chưa phù hợp provision per-task.</td><td><code>internal/cli/lifecycle.go</code></td></tr>
+          <tr><td>Task/checkpoint hiện tại</td><td>Phù hợp cho một workspace/session, không đủ làm global scheduler.</td><td><code>internal/agent/workflow.go</code>, <code>internal/agent/basic.go</code></td></tr>
+          <tr><td>Verification tools</td><td>Đủ nền tảng cho verifier MVP.</td><td><code>git_status</code>, <code>git_diff</code>, <code>quality_gate</code>, <code>review_diff</code></td></tr>
+          <tr><td>Audit, approvals, policy</td><td>Nên giữ nguyên trong execution plane.</td><td><code>internal/agent/runtime.go</code>, <code>internal/security</code></td></tr>
+          <tr><td>Dynamic add/remove runtime</td><td>Chưa có; cần phase riêng nếu muốn workspace nóng.</td><td>Chưa tồn tại</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warning">
+        <strong>Hạn chế quan trọng:</strong> <code>workspace start</code>/<code>stop</code> cập nhật registry rồi gọi reconcile shared daemon.
+        Vì vậy không nên tạo hoặc xóa workspace cho từng task trong MVP.
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>4. Kiến trúc tổng thể</h2>
+      <div class="diagram">
+        <div class="flow">
+          <div class="node">
+            <strong>User / API / UI</strong>
+            <small>Tạo job, xem tiến độ, approve/cancel</small>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node accent">
+            <strong>Orchestrator Control Plane</strong>
+            <small>Job · DAG · Scheduler · Lease · Runner · Verifier · Merge</small>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node green">
+            <strong>Codebridge Execution Plane</strong>
+            <small>MCP · Workspace · Git · Process · Policy · Audit</small>
+          </div>
+        </div>
+        <div style="height:18px"></div>
+        <div class="lane-grid">
+          <div class="lane">
+            <strong>Worker 01</strong>
+            <div class="step">Agent run A</div>
+            <div class="step">/mcp/workspaces/worker-01/fast</div>
+            <div class="step">Git worktree worker-01</div>
+          </div>
+          <div class="lane">
+            <strong>Worker 02</strong>
+            <div class="step">Agent run B</div>
+            <div class="step">/mcp/workspaces/worker-02/fast</div>
+            <div class="step">Git worktree worker-02</div>
+          </div>
+          <div class="lane">
+            <strong>Worker 03</strong>
+            <div class="step">Agent run C</div>
+            <div class="step">/mcp/workspaces/worker-03/fast</div>
+            <div class="step">Git worktree worker-03</div>
+          </div>
+          <div class="lane">
+            <strong>Integration</strong>
+            <div class="step">Cherry-pick / merge</div>
+            <div class="step">Quality gate tổng</div>
+            <div class="step">Final artifact / PR</div>
+          </div>
+        </div>
+      </div>
+
+      <h3>Ranh giới trách nhiệm</h3>
+      <table>
+        <thead><tr><th>Layer</th><th>Sở hữu</th><th>Không sở hữu</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Orchestrator</td>
+            <td>Job, task DAG, lease, scheduling, agent run, artifact, retry, verification policy, merge workflow.</td>
+            <td>Không trực tiếp cung cấp coding tools; không thay thế Codebridge policy/audit.</td>
+          </tr>
+          <tr>
+            <td>Codebridge</td>
+            <td>Workspace confinement, MCP contract, file/Git/process tools, approvals, audit, runtime health.</td>
+            <td>Không quyết định task dependency, agent assignment hoặc merge strategy của job.</td>
+          </tr>
+          <tr>
+            <td>Agent runner</td>
+            <td>Model invocation, prompt/session lifecycle, tool loop, structured output.</td>
+            <td>Không cấp workspace, không tự merge, không sửa orchestrator state.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="components">
+      <h2>5. Thành phần chính của orchestrator</h2>
+      <div class="grid-2">
+        <article class="card">
+          <span class="label">01</span>
+          <h3>Job Service</h3>
+          <p>Tạo và quản lý mục tiêu cấp cao, base ref, policy, concurrency limit, deadline và trạng thái tổng.</p>
+        </article>
+        <article class="card">
+          <span class="label">02</span>
+          <h3>Task Graph</h3>
+          <p>Lưu DAG task, dependency, input artifact, expected output và rule chuyển trạng thái.</p>
+        </article>
+        <article class="card">
+          <span class="label">03</span>
+          <h3>Scheduler</h3>
+          <p>Chọn task READY, tìm workspace AVAILABLE, áp dụng role/capability và concurrency limit.</p>
+        </article>
+        <article class="card">
+          <span class="label">04</span>
+          <h3>Workspace Pool Manager</h3>
+          <p>Cấp lease, chuẩn bị branch, reset/clean, kiểm tra health, release hoặc quarantine workspace.</p>
+        </article>
+        <article class="card">
+          <span class="label">05</span>
+          <h3>Agent Runner Adapter</h3>
+          <p>Chuẩn hóa cách chạy ChatGPT, local CLI agent, API agent hoặc CI worker qua một interface chung.</p>
+        </article>
+        <article class="card">
+          <span class="label">06</span>
+          <h3>Artifact Store</h3>
+          <p>Lưu commit, patch, report, changed files, decisions, provenance và content hash.</p>
+        </article>
+        <article class="card">
+          <span class="label">07</span>
+          <h3>Verifier</h3>
+          <p>Độc lập xác minh workspace, commit, diff, tests, build, lint, review và security rules.</p>
+        </article>
+        <article class="card">
+          <span class="label">08</span>
+          <h3>Merge Manager</h3>
+          <p>Áp artifact vào integration workspace, xử lý conflict, chạy gate tổng và xuất final result.</p>
+        </article>
+      </div>
+
+      <h3>Interface đề xuất</h3>
+      <pre>type AgentRunner interface {
+    Start(ctx context.Context, spec RunSpec) (RunHandle, error)
+    Poll(ctx context.Context, handle RunHandle) (RunStatus, error)
+    Cancel(ctx context.Context, handle RunHandle) error
+}
+
+type WorkspacePool interface {
+    Acquire(ctx context.Context, req LeaseRequest) (WorkspaceLease, error)
+    Heartbeat(ctx context.Context, leaseToken string) error
+    Release(ctx context.Context, leaseToken string, outcome ReleaseOutcome) error
+    Quarantine(ctx context.Context, workspaceID, reason string) error
+}
+
+type Verifier interface {
+    Verify(ctx context.Context, req VerificationRequest) (VerificationResult, error)
+}</pre>
+    </section>
+
+    <section id="flows">
+      <h2>6. Luồng điều phối</h2>
+
+      <h3>6.1 Happy path</h3>
+      <div class="diagram">
+        <div class="lane-grid">
+          <div class="lane">
+            <strong>User/API</strong>
+            <div class="step">1. Create job</div>
+            <div class="step">10. Receive final result</div>
+          </div>
+          <div class="lane">
+            <strong>Orchestrator</strong>
+            <div class="step">2. Build/validate DAG</div>
+            <div class="step">3. Mark task READY</div>
+            <div class="step">4. Acquire workspace lease</div>
+            <div class="step">5. Start agent run</div>
+            <div class="step">7. Verify result</div>
+            <div class="step">8. Store artifact</div>
+            <div class="step">9. Merge/integrate</div>
+          </div>
+          <div class="lane">
+            <strong>Agent Runner</strong>
+            <div class="step">6a. Execute task</div>
+            <div class="step">6b. Commit changes</div>
+            <div class="step">6c. Return structured result</div>
+          </div>
+          <div class="lane">
+            <strong>Codebridge</strong>
+            <div class="step">MCP tool execution</div>
+            <div class="step">Policy and approvals</div>
+            <div class="step">Git / test / review</div>
+            <div class="step">Audit and metrics</div>
+          </div>
+        </div>
+      </div>
+
+      <h3>6.2 Handoff giữa các agent không dùng message</h3>
+      <div class="diagram">
+        <div class="flow">
+          <div class="node">
+            <strong>Task A: Analysis</strong>
+            <small>Agent A tạo analysis report</small>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node accent">
+            <strong>Orchestrator Artifact</strong>
+            <small>Versioned input cho task kế tiếp</small>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node green">
+            <strong>Task B: Implementation</strong>
+            <small>Agent B nhận report trong task envelope</small>
+          </div>
+        </div>
+      </div>
+
+      <h3>6.3 Merge flow</h3>
+      <ol>
+        <li>Worker task tạo commit artifact trên branch riêng.</li>
+        <li>Verifier xác nhận commit tồn tại và task output hợp lệ.</li>
+        <li>Merge Manager acquire lease độc quyền cho integration workspace.</li>
+        <li>Integration workspace được reset về base integration ref.</li>
+        <li>Cherry-pick hoặc merge từng commit theo dependency order.</li>
+        <li>Nếu conflict: tạo conflict artifact và chuyển task sang <code>BLOCKED</code> hoặc tạo resolution task.</li>
+        <li>Chạy quality gate tổng và review cuối.</li>
+        <li>Tạo final commit/branch/PR artifact.</li>
+      </ol>
+    </section>
+
+    <section id="states">
+      <h2>7. State machine</h2>
+
+      <h3>7.1 Task state</h3>
+      <div class="state-row">
+        <span class="state wait">PENDING</span><span class="state-arrow">→</span>
+        <span class="state">READY</span><span class="state-arrow">→</span>
+        <span class="state">ASSIGNED</span><span class="state-arrow">→</span>
+        <span class="state">RUNNING</span><span class="state-arrow">→</span>
+        <span class="state">VERIFYING</span><span class="state-arrow">→</span>
+        <span class="state done">COMPLETED</span>
+      </div>
+      <div class="state-row">
+        <span class="state fail">FAILED</span>
+        <span class="state wait">BLOCKED</span>
+        <span class="state">CANCELLED</span>
+      </div>
+
+      <table>
+        <thead><tr><th>Transition</th><th>Điều kiện</th><th>Side effects</th></tr></thead>
+        <tbody>
+          <tr><td>PENDING → READY</td><td>Tất cả dependency COMPLETED, input artifact tồn tại.</td><td>Đưa vào scheduler queue.</td></tr>
+          <tr><td>READY → ASSIGNED</td><td>Acquire workspace lease thành công.</td><td>Tạo agent_run và lease token.</td></tr>
+          <tr><td>ASSIGNED → RUNNING</td><td>Runner start thành công.</td><td>Ghi started_at, heartbeat deadline.</td></tr>
+          <tr><td>RUNNING → VERIFYING</td><td>Runner trả result đúng lease token và attempt.</td><td>Đóng tool loop, bắt đầu verifier.</td></tr>
+          <tr><td>VERIFYING → COMPLETED</td><td>Verification pass.</td><td>Lưu artifacts, release workspace.</td></tr>
+          <tr><td>VERIFYING → READY</td><td>Lỗi retryable và attempt còn lại.</td><td>Tăng attempt, cleanup workspace.</td></tr>
+          <tr><td>* → FAILED</td><td>Lỗi fatal hoặc hết retry.</td><td>Lưu failure artifact, release/quarantine.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>7.2 Workspace state</h3>
+      <div class="state-row">
+        <span class="state done">AVAILABLE</span><span class="state-arrow">→</span>
+        <span class="state">PREPARING</span><span class="state-arrow">→</span>
+        <span class="state">LEASED</span><span class="state-arrow">→</span>
+        <span class="state">CLEANING</span><span class="state-arrow">→</span>
+        <span class="state done">AVAILABLE</span>
+      </div>
+      <div class="state-row"><span class="state fail">QUARANTINED</span></div>
+
+      <h3>7.3 Agent run state</h3>
+      <div class="state-row">
+        <span class="state">CREATED</span><span class="state-arrow">→</span>
+        <span class="state">STARTING</span><span class="state-arrow">→</span>
+        <span class="state">RUNNING</span><span class="state-arrow">→</span>
+        <span class="state done">SUCCEEDED</span>
+      </div>
+      <div class="state-row">
+        <span class="state fail">FAILED</span>
+        <span class="state fail">LOST</span>
+        <span class="state">CANCELLED</span>
+      </div>
+    </section>
+
+    <section id="data-model">
+      <h2>8. Mô hình dữ liệu</h2>
+      <p>Đề xuất dùng SQLite với WAL mode. Đây là control state có transaction, không nên dùng JSON file theo workspace.</p>
+
+      <div class="grid-2">
+        <article class="card">
+          <h3>jobs</h3>
+          <pre>id TEXT PRIMARY KEY
+name TEXT
+goal TEXT
+base_ref TEXT
+status TEXT
+max_concurrency INTEGER
+deadline_at DATETIME
+created_at DATETIME
+updated_at DATETIME</pre>
+        </article>
+        <article class="card">
+          <h3>tasks</h3>
+          <pre>id TEXT PRIMARY KEY
+job_id TEXT
+type TEXT
+goal TEXT
+status TEXT
+priority INTEGER
+required_role TEXT
+attempt INTEGER
+max_attempts INTEGER
+expected_output_json TEXT
+created_at DATETIME
+updated_at DATETIME</pre>
+        </article>
+        <article class="card">
+          <h3>task_dependencies</h3>
+          <pre>task_id TEXT
+depends_on_task_id TEXT
+PRIMARY KEY(task_id, depends_on_task_id)</pre>
+        </article>
+        <article class="card">
+          <h3>workspace_leases</h3>
+          <pre>workspace_id TEXT PRIMARY KEY
+task_id TEXT
+run_id TEXT
+lease_token_hash TEXT
+leased_at DATETIME
+lease_until DATETIME
+heartbeat_at DATETIME</pre>
+        </article>
+        <article class="card">
+          <h3>agent_runs</h3>
+          <pre>id TEXT PRIMARY KEY
+task_id TEXT
+workspace_id TEXT
+runner_type TEXT
+status TEXT
+external_run_id TEXT
+started_at DATETIME
+heartbeat_at DATETIME
+finished_at DATETIME
+error_code TEXT
+error_summary TEXT</pre>
+        </article>
+        <article class="card">
+          <h3>artifacts</h3>
+          <pre>id TEXT PRIMARY KEY
+job_id TEXT
+task_id TEXT
+type TEXT
+uri_or_value TEXT
+content_hash TEXT
+metadata_json TEXT
+created_at DATETIME</pre>
+        </article>
+      </div>
+
+      <h3>Invariant bắt buộc</h3>
+      <ul class="checklist">
+        <li>Một <code>workspace_id</code> chỉ có tối đa một active lease.</li>
+        <li>Một task chỉ có tối đa một active run.</li>
+        <li>Result chỉ hợp lệ nếu khớp <code>run_id</code>, attempt và lease token hiện tại.</li>
+        <li>Task không thể READY nếu dependency chưa hoàn thành.</li>
+        <li>Artifact phải có content hash hoặc immutable reference.</li>
+        <li>Integration workspace chỉ có một merge lease tại một thời điểm.</li>
+      </ul>
+    </section>
+
+    <section id="contracts">
+      <h2>9. Contract giữa orchestrator và agent</h2>
+      <h3>9.1 Task envelope</h3>
+      <pre>{
+  "job_id": "job-pay-123",
+  "task_id": "task-backend-01",
+  "run_id": "run-0007",
+  "attempt": 1,
+  "role": "backend-implementer",
+  "goal": "Implement retry with exponential backoff",
+  "workspace": {
+    "id": "worker-02",
+    "mcp_endpoint": "/mcp/workspaces/worker-02/fast",
+    "base_commit": "abc123"
+  },
+  "constraints": [
+    "Do not merge branches",
+    "Do not modify public API",
+    "Commit all intended code changes",
+    "Run relevant tests"
+  ],
+  "inputs": [
+    {
+      "type": "analysis_report",
+      "artifact_id": "artifact-analysis-01",
+      "content_hash": "sha256:..."
+    }
+  ],
+  "expected_output": {
+    "commit_required": true,
+    "required_checks": ["test", "lint"],
+    "result_schema_version": 1
+  }
+}</pre>
+
+      <h3>9.2 Structured result</h3>
+      <pre>{
+  "schema_version": 1,
+  "job_id": "job-pay-123",
+  "task_id": "task-backend-01",
+  "run_id": "run-0007",
+  "attempt": 1,
+  "status": "completed",
+  "summary": "Added bounded retry policy",
+  "base_commit": "abc123",
+  "head_commit": "def456",
+  "changed_files": [
+    "internal/payment/retry.go",
+    "internal/payment/retry_test.go"
+  ],
+  "checks": [
+    {
+      "name": "go test ./internal/payment/...",
+      "passed": true,
+      "exit_code": 0
+    }
+  ],
+  "artifacts": [],
+  "blockers": []
+}</pre>
+
+      <div class="callout warning">
+        Structured result không được dùng làm bằng chứng duy nhất. Verifier phải đọc trạng thái thực tế từ workspace qua Codebridge.
+      </div>
+    </section>
+
+    <section id="integration">
+      <h2>10. Tích hợp với Codebridge</h2>
+
+      <h3>10.1 Endpoint sử dụng</h3>
+      <table>
+        <thead><tr><th>Đối tượng</th><th>Endpoint</th><th>Lý do</th></tr></thead>
+        <tbody>
+          <tr><td>Agent runner tự động</td><td><code>/mcp/workspaces/&lt;id&gt;/fast</code></td><td>Workspace cố định, không cần quản lý binding trong task loop.</td></tr>
+          <tr><td>Agent cần full toolset</td><td><code>/mcp/workspaces/&lt;id&gt;</code></td><td>Dùng khi task cần tools ngoài fast profile.</td></tr>
+          <tr><td>ChatGPT do người dùng điều khiển</td><td><code>/mcp/session/fast</code></td><td>Giữ workflow <code>workspace_select</code> theo conversation.</td></tr>
+          <tr><td>Verifier</td><td>Fixed endpoint của workspace đang verify</td><td>Đọc đúng execution slot và state hiện tại.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>10.2 Tool set cho verifier MVP</h3>
+      <ul>
+        <li><code>workspace_info</code> hoặc <code>workspace_doctor</code>: health và cấu hình runtime.</li>
+        <li><code>git_status</code>: xác minh branch/dirty state.</li>
+        <li><code>git_diff</code>, <code>change_summary</code>: xác minh scope thay đổi.</li>
+        <li><code>quality_gate</code> hoặc <code>run_changed_tests</code>: kiểm tra test/build/lint.</li>
+        <li><code>review_diff</code>: heuristic review.</li>
+        <li><code>security_scan</code>: gate tùy policy.</li>
+        <li><code>session_report</code>: thu summary bổ sung, không thay thế verification.</li>
+      </ul>
+
+      <h3>10.3 Chuẩn bị workspace pool</h3>
+      <pre>Repository chính
+  ├── worktrees/codebridge-worker-01  → branch orchestrator/worker-01
+  ├── worktrees/codebridge-worker-02  → branch orchestrator/worker-02
+  ├── worktrees/codebridge-worker-03  → branch orchestrator/worker-03
+  ├── worktrees/codebridge-worker-04  → branch orchestrator/worker-04
+  └── worktrees/codebridge-integration → branch orchestrator/integration</pre>
+
+      <p>Mỗi đường dẫn được đăng ký thành named workspace một lần. Orchestrator chỉ lease và reset các workspace này, không add/remove registry cho từng task.</p>
+
+      <h3>10.4 Thay đổi Codebridge đề xuất cho MVP</h3>
+      <table>
+        <thead><tr><th>Thay đổi</th><th>Mức cần thiết</th><th>Ghi chú</th></tr></thead>
+        <tbody>
+          <tr><td>Không bắt buộc sửa <code>agent.Runtime</code></td><td>Bắt buộc giữ</td><td>Orchestrator nằm ngoài runtime.</td></tr>
+          <tr><td>Thêm endpoint/API máy đọc cho workspace status</td><td>Nên có</td><td>Giảm phụ thuộc CLI parsing.</td></tr>
+          <tr><td>Thêm metadata branch/head commit vào health hoặc workspace info</td><td>Nên có</td><td>Verifier và pool manager dễ kiểm tra hơn.</td></tr>
+          <tr><td>Thêm dedicated workspace reset tool</td><td>Cân nhắc</td><td>Chỉ expose cho orchestrator principal, không cho agent thường.</td></tr>
+          <tr><td>Dynamic runtime manager</td><td>Không trong MVP</td><td>Phase sau để add/remove runtime nóng.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="security">
+      <h2>11. An toàn, identity và cô lập</h2>
+      <div class="grid-2">
+        <article class="card">
+          <h3>Workspace isolation</h3>
+          <p>Mỗi agent run thao tác trên Git worktree khác nhau. Không dùng nhiều runtime trỏ cùng working directory.</p>
+        </article>
+        <article class="card">
+          <h3>Lease token</h3>
+          <p>Token sinh ngẫu nhiên, chỉ lưu hash, gắn với task/run/attempt và hết hạn. Result cũ không thể ghi đè run mới.</p>
+        </article>
+        <article class="card">
+          <h3>Runner credential</h3>
+          <p>Mỗi runner chỉ nhận MCP endpoint và credential tối thiểu. Không được truy cập orchestrator database trực tiếp.</p>
+        </article>
+        <article class="card">
+          <h3>Merge privilege</h3>
+          <p>Chỉ Merge Manager hoặc integration runner có quyền thao tác integration workspace và protected branch.</p>
+        </article>
+        <article class="card">
+          <h3>Policy inheritance</h3>
+          <p>Codebridge policy, approval, audit và path confinement vẫn là lớp bảo vệ bắt buộc cho mọi tool call.</p>
+        </article>
+        <article class="card">
+          <h3>Secret handling</h3>
+          <p>Task envelope không chứa secret thô. Secret phải được inject qua runner runtime hoặc environment reference phù hợp.</p>
+        </article>
+      </div>
+
+      <h3>Role đề xuất</h3>
+      <table>
+        <thead><tr><th>Role</th><th>Quyền</th></tr></thead>
+        <tbody>
+          <tr><td>orchestrator-service</td><td>Quản lý job/task/lease; gọi verifier; điều khiển runner; không trực tiếp sửa code tùy ý.</td></tr>
+          <tr><td>worker-agent</td><td>Chỉ fixed workspace endpoint được cấp; không merge; không quản lý registry/worktree.</td></tr>
+          <tr><td>verifier</td><td>Ưu tiên read-only và quality tools; mutation chỉ cho cleanup đã kiểm soát.</td></tr>
+          <tr><td>merge-manager</td><td>Độc quyền integration workspace; có policy riêng cho cherry-pick/merge.</td></tr>
+          <tr><td>operator</td><td>Approve, quarantine/release, retry/cancel và override khi cần.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="failures">
+      <h2>12. Xử lý lỗi và recovery</h2>
+      <table>
+        <thead><tr><th>Tình huống</th><th>Phát hiện</th><th>Xử lý</th></tr></thead>
+        <tbody>
+          <tr><td>Agent treo</td><td>Heartbeat quá hạn.</td><td>Đánh dấu run LOST, kiểm tra process/workspace, lưu partial diff, cleanup hoặc quarantine, retry.</td></tr>
+          <tr><td>Agent trả result muộn</td><td>Lease token/run attempt không còn active.</td><td>Từ chối result; lưu telemetry nhưng không thay đổi task hiện tại.</td></tr>
+          <tr><td>Workspace dirty trước task</td><td>Prepare check thất bại.</td><td>Không lease; cleanup; nếu vẫn lỗi thì quarantine.</td></tr>
+          <tr><td>Codebridge unavailable</td><td>Health/MCP call thất bại.</td><td>Không start run mới; retry với backoff; đánh dấu workspace unavailable.</td></tr>
+          <tr><td>Verification fail</td><td>Test/lint/build/review không đạt.</td><td>Tạo verification artifact; retry task hoặc tạo fix task.</td></tr>
+          <tr><td>Merge conflict</td><td>Cherry-pick/merge exit không thành công.</td><td>Tạo conflict artifact; BLOCKED hoặc resolution task trong workspace riêng.</td></tr>
+          <tr><td>Orchestrator restart</td><td>Startup recovery scan.</td><td>Load active leases/runs, đối chiếu heartbeat và runner state, tiếp tục hoặc mark LOST.</td></tr>
+          <tr><td>Database transaction fail</td><td>SQLite error.</td><td>Không thực hiện external side effect tiếp theo; dùng outbox/event pattern cho thao tác cần retry.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Quy trình lease expiry</h3>
+      <ol>
+        <li>Chuyển active run sang <code>LOST_PENDING_INSPECTION</code>.</li>
+        <li>Không cấp workspace cho run mới ngay lập tức.</li>
+        <li>Kiểm tra runner process còn sống hay không.</li>
+        <li>Gọi Codebridge thu <code>git_status</code>, diff và process list.</li>
+        <li>Lưu partial artifact nếu có giá trị.</li>
+        <li>Stop process còn sót, cleanup hoặc quarantine.</li>
+        <li>Chỉ sau đó mới retry task ở workspace khác hoặc cùng workspace đã sạch.</li>
+      </ol>
+    </section>
+
+    <section id="observability">
+      <h2>13. Observability</h2>
+      <h3>Metrics tối thiểu</h3>
+      <div class="grid-3">
+        <article class="card"><h4>Scheduling</h4><p>ready queue depth, scheduling latency, workspace utilization, lease contention.</p></article>
+        <article class="card"><h4>Runs</h4><p>run duration, success rate, timeout, lost runs, retry count theo runner/model.</p></article>
+        <article class="card"><h4>Verification</h4><p>gate pass rate, test duration, review blockers, false completion rate.</p></article>
+        <article class="card"><h4>Workspace</h4><p>prepare time, cleanup time, quarantine count, dirty-before-run count.</p></article>
+        <article class="card"><h4>Merge</h4><p>merge duration, conflict rate, integration gate failures.</p></article>
+        <article class="card"><h4>Cost & usage</h4><p>tokens/calls nếu runner cung cấp, MCP tool calls, command duration, artifact size.</p></article>
+      </div>
+
+      <h3>Correlation IDs</h3>
+      <p>Mọi log/event nên chứa:</p>
+      <pre>job_id
+task_id
+run_id
+attempt
+workspace_id
+lease_id
+artifact_id
+codebridge_call_id (khi có)</pre>
+
+      <h3>Audit event mẫu</h3>
+      <pre>{
+  "ts": "2026-07-28T09:00:00Z",
+  "event": "task.verification.completed",
+  "job_id": "job-pay-123",
+  "task_id": "task-backend-01",
+  "run_id": "run-0007",
+  "workspace_id": "worker-02",
+  "verdict": "pass",
+  "artifacts": ["artifact-commit-09", "artifact-test-04"]
+}</pre>
+    </section>
+
+    <section id="deployment">
+      <h2>14. Mô hình triển khai</h2>
+      <h3>14.1 Local single-host MVP</h3>
+      <div class="diagram">
+        <div class="flow">
+          <div class="node"><strong>codebridge daemon</strong><small>5 named workspaces</small></div>
+          <div class="arrow">+</div>
+          <div class="node accent"><strong>codebridge orchestrator</strong><small>SQLite + scheduler + runners</small></div>
+          <div class="arrow">+</div>
+          <div class="node green"><strong>agent processes</strong><small>Local CLI/API workers</small></div>
+        </div>
+      </div>
+
+      <p>Đây là mô hình nên triển khai đầu tiên: dễ quan sát, phù hợp local-first và tận dụng trực tiếp workspace trên cùng host.</p>
+
+      <h3>14.2 Package layout đề xuất</h3>
+      <pre>cmd/
+  codebridge/
+  codebridge-orchestrator/
+
+internal/orchestrator/
+  service.go
+  config.go
+  store/
+    sqlite.go
+    migrations.go
+  jobs.go
+  task_graph.go
+  scheduler.go
+  workspace_pool.go
+  runner.go
+  runner_local.go
+  verifier.go
+  merger.go
+  artifacts.go
+  recovery.go
+  api.go
+  metrics.go
+  events.go</pre>
+
+      <h3>14.3 Process ownership</h3>
+      <ul>
+        <li>Codebridge daemon tiếp tục sở hữu runtime, MCP listener, process registry và tunnel.</li>
+        <li>Orchestrator sở hữu agent runner process do nó khởi chạy.</li>
+        <li>Không dùng Codebridge managed process registry làm nguồn sự thật cho orchestrator run lifecycle trong MVP; chỉ dùng để hỗ trợ inspection nếu agent chạy qua Codebridge.</li>
+        <li>SQLite là nguồn sự thật cho job/task/lease/run/artifact.</li>
+      </ul>
+    </section>
+
+    <section id="plan">
+      <h2>15. Kế hoạch triển khai theo phase</h2>
+      <div class="card">
+        <div class="phase">
+          <div class="phase-id">P0</div>
+          <div>
+            <h3>Chốt contract và spike</h3>
+            <p><strong>Mục tiêu:</strong> loại bỏ rủi ro kiến trúc trước khi xây scheduler.</p>
+            <ul>
+              <li>Chốt task envelope và structured result schema v1.</li>
+              <li>Chốt workspace pool naming, branch convention và lifecycle rule.</li>
+              <li>Spike một agent runner gọi fixed MCP endpoint.</li>
+              <li>Spike verifier đọc status/diff và chạy quality gate.</li>
+              <li>Chốt SQLite schema và state transitions.</li>
+            </ul>
+            <p><strong>Deliverable:</strong> ADR, JSON schemas, runnable spike, test plan.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P1</div>
+          <div>
+            <h3>Orchestrator core và persistent state</h3>
+            <ul>
+              <li>Tạo command/package orchestrator riêng.</li>
+              <li>SQLite migrations, repositories và transaction helpers.</li>
+              <li>Job/task/dependency/artifact CRUD.</li>
+              <li>State transition validation và event log.</li>
+              <li>Startup recovery skeleton.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> tạo job DAG, restart process không mất state, reject transition sai.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P2</div>
+          <div>
+            <h3>Workspace pool và lease</h3>
+            <ul>
+              <li>Provision sẵn 4 worker worktree + 1 integration worktree.</li>
+              <li>Đăng ký named workspace và health discovery.</li>
+              <li>Acquire/release lease transactionally.</li>
+              <li>Prepare/reset/clean workspace.</li>
+              <li>Heartbeat, expiry và quarantine.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> không thể double-lease; dirty workspace bị chặn; recovery xử lý lease hết hạn.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P3</div>
+          <div>
+            <h3>Agent runner và scheduler</h3>
+            <ul>
+              <li>AgentRunner interface.</li>
+              <li>Local runner adapter đầu tiên.</li>
+              <li>FIFO/priority scheduler với dependency và concurrency limit.</li>
+              <li>Run heartbeat, cancel, timeout và structured result validation.</li>
+              <li>Artifact ingestion.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> chạy song song N task độc lập, dependency task chỉ chạy đúng thứ tự.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P4</div>
+          <div>
+            <h3>Verifier và retry policy</h3>
+            <ul>
+              <li>Codebridge MCP client cho verifier.</li>
+              <li>Git/commit/diff verification.</li>
+              <li>Quality gate, review và security policy.</li>
+              <li>Retry classification: retryable/fatal/blocked.</li>
+              <li>Partial artifact khi run thất bại.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> agent khai sai commit/test bị phát hiện; retry không nhận result cũ.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P5</div>
+          <div>
+            <h3>Integration và merge manager</h3>
+            <ul>
+              <li>Exclusive integration lease.</li>
+              <li>Apply commit artifact theo dependency order.</li>
+              <li>Conflict detection và resolution task.</li>
+              <li>Quality gate tổng.</li>
+              <li>Final branch/commit/PR artifact.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> end-to-end job từ task worker tới integrated result có audit đầy đủ.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P6</div>
+          <div>
+            <h3>API, UI và observability</h3>
+            <ul>
+              <li>Job/task/workspace/run APIs.</li>
+              <li>Operator actions: cancel, retry, quarantine, release, approve.</li>
+              <li>Dashboard DAG, run timeline, workspace utilization và artifact viewer.</li>
+              <li>Metrics, structured logs và alerts.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> operator có thể điều hành toàn bộ job không cần truy cập trực tiếp database.</p>
+          </div>
+        </div>
+
+        <div class="phase">
+          <div class="phase-id">P7</div>
+          <div>
+            <h3>Dynamic planning và hot runtime lifecycle</h3>
+            <ul>
+              <li>Planner agent tạo DAG có schema và validation.</li>
+              <li>Overlap/risk hints từ CodeGraph.</li>
+              <li>Dynamic workspace provisioning.</li>
+              <li>Codebridge RuntimeManager add/remove workspace không restart daemon.</li>
+              <li>SessionRouter/tool contract refresh an toàn.</li>
+            </ul>
+            <p><strong>Exit criteria:</strong> provision/release workspace per-job mà không gián đoạn active agents.</p>
+          </div>
+        </div>
+      </div>
+
+      <h3>Thứ tự commit đề xuất</h3>
+      <ol>
+        <li><code>docs: define orchestrator ADR and schemas</code></li>
+        <li><code>feat(orchestrator): add SQLite store and migrations</code></li>
+        <li><code>feat(orchestrator): add job DAG and state transitions</code></li>
+        <li><code>feat(orchestrator): add workspace pool and leases</code></li>
+        <li><code>feat(orchestrator): add runner interface and local runner</code></li>
+        <li><code>feat(orchestrator): add scheduler and recovery</code></li>
+        <li><code>feat(orchestrator): add Codebridge verifier</code></li>
+        <li><code>feat(orchestrator): add integration merge manager</code></li>
+        <li><code>feat(orchestrator): add API and metrics</code></li>
+      </ol>
+    </section>
+
+    <section id="acceptance">
+      <h2>16. Acceptance criteria MVP</h2>
+      <ul class="checklist">
+        <li>Có thể tạo một job gồm ít nhất 5 task và dependency DAG.</li>
+        <li>Hai task độc lập chạy đồng thời trên hai workspace khác nhau.</li>
+        <li>Không có trường hợp hai run active cùng lease một workspace.</li>
+        <li>Agent không cần biết hoặc gọi trực tiếp agent khác.</li>
+        <li>Artifact từ task trước được đưa vào task sau qua orchestrator.</li>
+        <li>Agent result sai commit hash bị verifier từ chối.</li>
+        <li>Test failure làm task không thể COMPLETED.</li>
+        <li>Agent mất heartbeat được mark LOST và workspace được inspection trước khi reuse.</li>
+        <li>Result cũ sau retry không thể cập nhật trạng thái task mới.</li>
+        <li>Merge chỉ diễn ra tại integration workspace.</li>
+        <li>Orchestrator restart có thể khôi phục job/task/lease state.</li>
+        <li>Mọi transition quan trọng có event/audit với job_id, task_id, run_id và workspace_id.</li>
+      </ul>
+    </section>
+
+    <section id="decisions">
+      <h2>17. Các quyết định cần review</h2>
+      <table>
+        <thead><tr><th>#</th><th>Quyết định</th><th>Khuyến nghị hiện tại</th></tr></thead>
+        <tbody>
+          <tr><td>D1</td><td>Orchestrator nằm cùng binary hay binary riêng?</td><td>Package cùng repo, binary riêng <code>codebridge-orchestrator</code>.</td></tr>
+          <tr><td>D2</td><td>Agent tự động dùng session endpoint hay fixed endpoint?</td><td>Fixed endpoint theo workspace.</td></tr>
+          <tr><td>D3</td><td>Workspace per-task hay pool cố định?</td><td>Pool cố định cho MVP.</td></tr>
+          <tr><td>D4</td><td>State store?</td><td>SQLite WAL.</td></tr>
+          <tr><td>D5</td><td>Handoff mechanism?</td><td>Artifact + Git commit, không message và không memory queue.</td></tr>
+          <tr><td>D6</td><td>Ai được merge?</td><td>Merge Manager độc quyền integration workspace.</td></tr>
+          <tr><td>D7</td><td>Agent result có đáng tin không?</td><td>Không; bắt buộc verifier độc lập.</td></tr>
+          <tr><td>D8</td><td>Planner agent xuất DAG tự do?</td><td>Không trong MVP; phase sau với schema, limits và cycle validation.</td></tr>
+          <tr><td>D9</td><td>Workspace cleanup dùng shell hay Codebridge tool chuyên dụng?</td><td>MVP có thể dùng trusted lifecycle adapter; dài hạn thêm dedicated privileged API/tool.</td></tr>
+          <tr><td>D10</td><td>Dynamic runtime add/remove?</td><td>Phase P7, không chặn MVP.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout success">
+        <strong>Kiến trúc khuyến nghị để bắt đầu:</strong><br>
+        <code>codebridge-orchestrator</code> + SQLite + 4 worker workspaces + 1 integration workspace + fixed MCP endpoints + structured agent output + independent verifier.
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p><strong>Document:</strong> Codebridge Orchestrator Architecture & Implementation Plan</p>
+      <p><strong>Status:</strong> Review draft · <strong>Generated:</strong> 2026-07-28 · <strong>Scope:</strong> Multi-agent orchestration without direct agent communication</p>
+    </footer>
+  </main>
+</div>
+</body>
+</html>
