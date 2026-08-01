@@ -1030,10 +1030,7 @@ func writeTunnelProfileFor(cfg config.Config, tunnel config.NamedTunnel) (string
 			)
 		}
 	} else {
-		endpoint := mcpserver.SessionEndpoint
-		if tunnel.Config.Mode == "fast" {
-			endpoint = mcpserver.SessionFastEndpoint
-		}
+		endpoint := mcpserver.SessionProfileEndpoint(tunnel.Config.EffectiveToolProfile())
 		lines = append(lines,
 			"    - channel: main",
 			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, endpoint),

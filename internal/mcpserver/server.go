@@ -70,6 +70,14 @@ func NewWorkspace(runtime *agent.Runtime, workspaceID string) *mcp.Server {
 }
 
 func NewWorkspaceProfile(runtime *agent.Runtime, workspaceID string, profile ToolProfile) *mcp.Server {
+	definition, ok := ResolveProfile(runtime.Config, string(profile))
+	if !ok {
+		definition = BuiltInProfile(ToolProfileFull)
+	}
+	return NewWorkspaceProfileDefinition(runtime, workspaceID, definition)
+}
+
+func NewWorkspaceProfileDefinition(runtime *agent.Runtime, workspaceID string, profile ProfileDefinition) *mcp.Server {
 	workspaceID = strings.ToLower(strings.TrimSpace(workspaceID))
 	if workspaceID == "" {
 		workspaceID = "default"
@@ -80,9 +88,12 @@ func NewWorkspaceProfile(runtime *agent.Runtime, workspaceID string, profile Too
 		name += " · " + workspaceID
 		instructions += "\n\nThis MCP endpoint is fixed to workspace " + workspaceID + ". Never assume or switch to another workspace."
 	}
-	if profile == ToolProfileFast {
-		name += " · fast"
-		instructions += "\n\nThis is the compact fast coding endpoint. Prefer batching reads and commands, and use only the exposed coding tools."
+	if profile.ID != "full" {
+		name += " · " + profile.ID
+		instructions += "\n\nThis endpoint uses the " + profile.Name + " tool profile. Use only the exposed tools."
+		if profile.CompactDefaults {
+			instructions += " Prefer batching reads and commands; compact defaults are applied when arguments are omitted."
+		}
 	}
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: name, Version: runtime.Version},
@@ -90,7 +101,7 @@ func NewWorkspaceProfile(runtime *agent.Runtime, workspaceID string, profile Too
 	)
 	registerWidget(server)
 	for _, spec := range runtime.Tools() {
-		if !profileToolEnabled(runtime, profile, spec.Name) {
+		if !profileToolEnabledDefinition(runtime, profile, spec.Name) {
 			continue
 		}
 		spec := spec
@@ -109,7 +120,7 @@ func NewWorkspaceProfile(runtime *agent.Runtime, workspaceID string, profile Too
 					return toolError(fmt.Errorf("invalid tool arguments: %w", err)), nil
 				}
 			}
-			applyProfileDefaults(profile, spec.Name, args)
+			applyProfileDefaultsDefinition(profile, spec.Name, args)
 			sessionID := scopedSessionID(workspaceID, requestSessionID(request.Session))
 			value, err := runtime.HandleSession(ctx, sessionID, spec.Name, args)
 			if err != nil {
@@ -118,16 +129,24 @@ func NewWorkspaceProfile(runtime *agent.Runtime, workspaceID string, profile Too
 			if forwarded, ok := value.(*mcp.CallToolResult); ok {
 				return forwarded, nil
 			}
-			return toolSuccessWithMode(value, profileOutputMode(profile, spec.OutputMode)), nil
+			return toolSuccessWithMode(value, profileOutputModeDefinition(profile, spec.OutputMode)), nil
 		})
 	}
 	return server
 }
 
 func ProfileToolCount(runtime *agent.Runtime, profile ToolProfile) int {
+	definition, ok := ResolveProfile(runtime.Config, string(profile))
+	if !ok {
+		return 0
+	}
+	return ProfileToolCountDefinition(runtime, definition)
+}
+
+func ProfileToolCountDefinition(runtime *agent.Runtime, profile ProfileDefinition) int {
 	count := 0
 	for _, spec := range runtime.Tools() {
-		if profileToolEnabled(runtime, profile, spec.Name) {
+		if profileToolEnabledDefinition(runtime, profile, spec.Name) {
 			count++
 		}
 	}
@@ -135,48 +154,17 @@ func ProfileToolCount(runtime *agent.Runtime, profile ToolProfile) int {
 }
 
 func profileToolEnabled(runtime *agent.Runtime, profile ToolProfile, name string) bool {
-	if !runtime.ToolEnabled(name) {
-		return false
-	}
-	if profile == ToolProfileFast {
-		return fastCodingTools[name]
-	}
-	return true
+	definition, ok := ResolveProfile(runtime.Config, string(profile))
+	return ok && profileToolEnabledDefinition(runtime, definition, name)
 }
 
 func profileOutputMode(profile ToolProfile, mode agent.ToolOutputMode) agent.ToolOutputMode {
-	if profile != ToolProfileFast {
-		return agent.ToolOutputBoth
-	}
-	return mode
+	definition := BuiltInProfile(profile)
+	return profileOutputModeDefinition(definition, mode)
 }
 
 func applyProfileDefaults(profile ToolProfile, tool string, args map[string]any) {
-	if profile != ToolProfileFast || args == nil {
-		return
-	}
-	setDefault := func(key string, value any) {
-		if _, exists := args[key]; !exists {
-			args[key] = value
-		}
-	}
-	switch tool {
-	case "workspace_snapshot":
-		setDefault("detail_level", "compact")
-		setDefault("token_budget", 4_000)
-		setDefault("max_entries", 120)
-		setDefault("include_memory", false)
-	case "task_context":
-		setDefault("detail_level", "compact")
-		setDefault("token_budget", 8_000)
-		setDefault("max_entries", 100)
-		setDefault("search_limit", 16)
-		setDefault("max_read_files", 5)
-		setDefault("include_memory", false)
-	case "codegraph_explore":
-		setDefault("detail_level", "compact")
-		setDefault("token_budget", 8_000)
-	}
+	applyProfileDefaultsDefinition(BuiltInProfile(profile), tool, args)
 }
 
 func requestSessionID(session *mcp.ServerSession) string {

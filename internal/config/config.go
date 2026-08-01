@@ -53,6 +53,19 @@ type ToolExposureConfig struct {
 	DeniedTools   []string `json:"deniedTools,omitempty"`
 }
 
+// ToolProfileConfig defines one named downstream MCP contract. Profiles filter
+// the already-enabled runtime catalog; they never re-enable a globally denied
+// tool. Empty allow lists expose every globally enabled tool before deny rules.
+type ToolProfileConfig struct {
+	Name            string   `json:"name,omitempty"`
+	Description     string   `json:"description,omitempty"`
+	AllowedGroups   []string `json:"allowedGroups,omitempty"`
+	AllowedTools    []string `json:"allowedTools,omitempty"`
+	DeniedTools     []string `json:"deniedTools,omitempty"`
+	OutputMode      string   `json:"outputMode,omitempty"`
+	CompactDefaults bool     `json:"compactDefaults,omitempty"`
+}
+
 // TunnelConfig describes one independently managed Secure MCP Tunnel. Each
 // tunnel-client process exposes its selected local session endpoint as channel
 // "main", because ChatGPT's current tunnel UI selects a tunnel ID but does not
@@ -61,6 +74,7 @@ type TunnelConfig struct {
 	Enabled       *bool  `json:"enabled,omitempty"`
 	TunnelID      string `json:"tunnelId,omitempty"`
 	Mode          string `json:"mode,omitempty"`
+	ToolProfile   string `json:"toolProfile,omitempty"`
 	Profile       string `json:"profile,omitempty"`
 	RuntimeKeyEnv string `json:"runtimeKeyEnv,omitempty"`
 	Organization  string `json:"organizationId,omitempty"`
@@ -75,9 +89,10 @@ type NamedTunnel struct {
 }
 
 var (
-	toolModulePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	tunnelNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	envNamePattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	toolModulePattern  = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	toolProfilePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	tunnelNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	envNamePattern     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func validateMemoryOptions(value any, path string) error {
@@ -124,9 +139,10 @@ type Config struct {
 	RuntimeKeyEnv string                  `json:"runtimeKeyEnv,omitempty"`
 	Tunnels       map[string]TunnelConfig `json:"tunnels,omitempty"`
 
-	Memory     MemoryConfig               `json:"memory,omitempty"`
-	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	Tools      ToolExposureConfig         `json:"tools,omitempty"`
+	Memory       MemoryConfig                 `json:"memory,omitempty"`
+	MCPServers   map[string]MCPServerConfig   `json:"mcpServers,omitempty"`
+	Tools        ToolExposureConfig           `json:"tools,omitempty"`
+	ToolProfiles map[string]ToolProfileConfig `json:"toolProfiles,omitempty"`
 
 	MaxReadChars           int `json:"maxReadChars,omitempty"`
 	ReadDefault            int `json:"readDefault,omitempty"`
@@ -487,6 +503,9 @@ func loadFile(path string, useEnvironment bool) (Config, error) {
 	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
 		return cfg, err
 	}
+	if err := validateToolProfileMapKeys(cfg.ToolProfiles); err != nil {
+		return cfg, err
+	}
 	normalize(&cfg)
 	return cfg, cfg.Validate(false)
 }
@@ -508,6 +527,9 @@ func Save(cfg Config) error {
 
 func SaveFile(path string, cfg Config) error {
 	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
+		return err
+	}
+	if err := validateToolProfileMapKeys(cfg.ToolProfiles); err != nil {
 		return err
 	}
 	normalize(&cfg)
@@ -589,6 +611,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 	if err := validateTunnelMapKeys(c.Tunnels); err != nil {
 		return err
 	}
+	if err := validateToolProfiles(c.ToolProfiles); err != nil {
+		return err
+	}
 	if err := validateTunnelProfileName("profile", c.Profile); err != nil {
 		return err
 	}
@@ -598,6 +623,12 @@ func (c Config) Validate(requireWorkspace bool) error {
 		name := strings.ToLower(strings.TrimSpace(rawName))
 		if tunnel.Mode != "fast" && tunnel.Mode != "full" {
 			return fmt.Errorf("tunnels.%s.mode must be fast or full", name)
+		}
+		toolProfile := tunnel.EffectiveToolProfile()
+		if toolProfile != "fast" && toolProfile != "full" {
+			if _, exists := c.ToolProfiles[toolProfile]; !exists {
+				return fmt.Errorf("tunnels.%s.toolProfile references unknown tool profile %q", name, toolProfile)
+			}
 		}
 		if tunnel.RuntimeKeyEnv != "" && !envNamePattern.MatchString(tunnel.RuntimeKeyEnv) {
 			return fmt.Errorf("tunnels.%s.runtimeKeyEnv is not a valid environment variable name", name)
@@ -641,6 +672,62 @@ func (c Config) Validate(requireWorkspace bool) error {
 		}
 	}
 	return nil
+}
+
+func validateToolProfileMapKeys(profiles map[string]ToolProfileConfig) error {
+	seen := map[string]string{}
+	for rawID := range profiles {
+		id := strings.ToLower(strings.TrimSpace(rawID))
+		if !toolProfilePattern.MatchString(id) || id == "fast" || id == "full" {
+			return fmt.Errorf("toolProfiles name %q must match %s and must not be fast or full", rawID, toolProfilePattern.String())
+		}
+		if previous := seen[id]; previous != "" {
+			return fmt.Errorf("tool profile names %q and %q normalize to the same value %q", previous, rawID, id)
+		}
+		seen[id] = rawID
+	}
+	return nil
+}
+
+func validateToolProfiles(profiles map[string]ToolProfileConfig) error {
+	seen := map[string]string{}
+	for rawID, profile := range profiles {
+		id := strings.ToLower(strings.TrimSpace(rawID))
+		if !toolProfilePattern.MatchString(id) || id == "fast" || id == "full" {
+			return fmt.Errorf("toolProfiles name %q must match %s and must not be fast or full", rawID, toolProfilePattern.String())
+		}
+		if previous := seen[id]; previous != "" {
+			return fmt.Errorf("tool profile names %q and %q normalize to the same value %q", previous, rawID, id)
+		}
+		seen[id] = rawID
+		if profile.OutputMode != "" && profile.OutputMode != "both" && profile.OutputMode != "text" && profile.OutputMode != "structured" {
+			return fmt.Errorf("toolProfiles.%s.outputMode must be both, text, or structured", id)
+		}
+		for _, group := range profile.AllowedGroups {
+			if !toolModulePattern.MatchString(group) {
+				return fmt.Errorf("toolProfiles.%s.allowedGroups value %q must be a valid module name", id, group)
+			}
+		}
+		for field, values := range map[string][]string{"allowedTools": profile.AllowedTools, "deniedTools": profile.DeniedTools} {
+			for _, name := range values {
+				if strings.TrimSpace(name) == "" {
+					return fmt.Errorf("toolProfiles.%s.%s must not contain empty names", id, field)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (c TunnelConfig) EffectiveToolProfile() string {
+	if profile := strings.ToLower(strings.TrimSpace(c.ToolProfile)); profile != "" {
+		return profile
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "fast" {
+		return "fast"
+	}
+	return "full"
 }
 
 func validateTunnelMapKeys(tunnels map[string]TunnelConfig) error {
@@ -902,6 +989,48 @@ func (c Config) EnabledTunnels() []NamedTunnel {
 	return out
 }
 
+func normalizeToolProfiles(c *Config) {
+	if len(c.ToolProfiles) == 0 {
+		return
+	}
+	normalized := make(map[string]ToolProfileConfig, len(c.ToolProfiles))
+	for rawID, profile := range c.ToolProfiles {
+		id := strings.ToLower(strings.TrimSpace(rawID))
+		profile.Name = strings.TrimSpace(profile.Name)
+		if profile.Name == "" {
+			profile.Name = id
+		}
+		profile.Description = strings.TrimSpace(profile.Description)
+		profile.OutputMode = strings.ToLower(strings.TrimSpace(profile.OutputMode))
+		if profile.OutputMode == "" {
+			profile.OutputMode = "both"
+		}
+		profile.AllowedGroups = normalizeUniqueStrings(profile.AllowedGroups, true)
+		profile.AllowedTools = normalizeUniqueStrings(profile.AllowedTools, false)
+		profile.DeniedTools = normalizeUniqueStrings(profile.DeniedTools, false)
+		normalized[id] = profile
+	}
+	c.ToolProfiles = normalized
+}
+
+func normalizeUniqueStrings(values []string, lower bool) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if lower {
+			value = strings.ToLower(value)
+		}
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
 func normalizeTunnels(c *Config) {
 	if len(c.Tunnels) == 0 {
 		return
@@ -914,6 +1043,7 @@ func normalizeTunnels(c *Config) {
 		if tunnel.Mode == "" {
 			tunnel.Mode = "full"
 		}
+		tunnel.ToolProfile = strings.ToLower(strings.TrimSpace(tunnel.ToolProfile))
 		tunnel.Profile = strings.TrimSpace(tunnel.Profile)
 		if tunnel.Profile == "" {
 			base := strings.TrimSuffix(strings.TrimSpace(c.Profile), filepath.Ext(c.Profile))
@@ -1004,6 +1134,7 @@ func normalize(c *Config) {
 		c.Memory.HealthCacheMS = 5_000
 	}
 	normalizeMCPServers(c)
+	normalizeToolProfiles(c)
 	for index, group := range c.Tools.AllowedGroups {
 		c.Tools.AllowedGroups[index] = strings.ToLower(strings.TrimSpace(group))
 	}

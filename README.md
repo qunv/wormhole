@@ -295,7 +295,9 @@ Local endpoints:
 ```text
 http://127.0.0.1:8789/mcp/session/fast
 http://127.0.0.1:8789/mcp/session
+http://127.0.0.1:8789/mcp/session/profiles/<profile-id>
 http://127.0.0.1:8789/mcp/fast
+http://127.0.0.1:8789/mcp/profiles/<profile-id>
 http://127.0.0.1:8789/mcp
 http://127.0.0.1:8789/healthz
 http://127.0.0.1:8789/internal/healthz
@@ -338,7 +340,7 @@ Security boundaries are enforced by the Go server:
 - Referenced `.env` secrets are write-only; the UI can see only whether each value exists.
 - Changes are persisted atomically and require a Codebridge restart before active runtimes use them.
 
-The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, and explore a bounded tail of already-redacted audit records. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
+The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, create and edit custom tool profiles, map named tunnels to profiles, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, and explore a bounded tail of already-redacted audit records. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
 
 ### Admin UI development
 
@@ -419,6 +421,35 @@ For example, this workspace uses another database URI while inheriting the globa
 ```
 
 To disable one inherited server for a workspace, use `"enabled": false`; to remove it from the effective map entirely, set that server entry to `null`. Existing full workspace config files remain valid, but every field present in them is treated as an explicit override. Use `codebridge workspace compact <id> --dry-run` to preview removal of values that merely duplicate the current global config, then rerun without `--dry-run` to persist the compact version. An explicit `extraRoots: []` is preserved so future global roots do not leak into that workspace.
+
+Custom tool profiles filter the globally enabled runtime catalog; they cannot re-enable a globally denied tool. Empty allow lists expose every globally enabled tool before the profile deny list is applied. Allow groups and exact allow tools form a union, while denied tools always win:
+
+```json
+{
+  "toolProfiles": {
+    "review": {
+      "name": "Code Review",
+      "description": "Read repository state and inspect diffs without arbitrary execution.",
+      "allowedGroups": ["filesystem", "repo"],
+      "allowedTools": ["quality_gate"],
+      "deniedTools": ["git"],
+      "outputMode": "structured",
+      "compactDefaults": true
+    }
+  },
+  "tunnels": {
+    "review": {
+      "tunnelId": "tunnel_0123456789abcdef0123456789abcdef",
+      "mode": "full",
+      "toolProfile": "review",
+      "profile": "codebridge-review",
+      "runtimeKeyEnv": "CONTROL_PLANE_API_KEY"
+    }
+  }
+}
+```
+
+A custom profile is available after restart at `/mcp/session/profiles/<id>`, `/mcp/profiles/<id>`, and `/mcp/workspaces/<workspace-id>/profiles/<id>`. The built-in `/fast` and full endpoints remain unchanged. The Profiles page previews the persisted contract immediately and marks it as requiring restart when it differs from the active runtime.
 
 Minimal tunnel-related configuration:
 

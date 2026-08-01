@@ -82,6 +82,7 @@ type SessionRouter struct {
 	runtimes           map[string]*agent.Runtime
 	workspaceIDsCached []string
 	specs              []agent.ToolSpec
+	profiles           map[string]ProfileDefinition
 
 	mu               sync.Mutex
 	sessions         map[string]string
@@ -122,6 +123,27 @@ func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Run
 	}
 	router.workspaceIDsCached = router.computeWorkspaceIDs()
 	router.specs = router.collectToolSpecs()
+	router.profiles = map[string]ProfileDefinition{}
+	var profileRuntime *agent.Runtime
+	if primaryRuntime != nil {
+		profileRuntime = primaryRuntime
+	} else {
+		for _, id := range router.workspaceIDsCached {
+			profileRuntime = router.runtimes[id]
+			if profileRuntime != nil {
+				break
+			}
+		}
+	}
+	if profileRuntime != nil {
+		for _, profile := range ProfileDefinitions(profileRuntime.Config) {
+			router.profiles[profile.ID] = profile
+		}
+	} else {
+		for _, profile := range []ProfileDefinition{BuiltInProfile(ToolProfileFast), BuiltInProfile(ToolProfileFull)} {
+			router.profiles[profile.ID] = profile
+		}
+	}
 	return router
 }
 
@@ -133,11 +155,25 @@ func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.S
 	if router == nil {
 		router = NewSessionRouter(nil, nil)
 	}
+	definition, ok := router.ResolveProfile(string(profile))
+	if !ok {
+		definition = BuiltInProfile(ToolProfileFull)
+	}
+	return NewSessionGatewayDefinition(router, definition)
+}
+
+func NewSessionGatewayDefinition(router *SessionRouter, profile ProfileDefinition) *mcp.Server {
+	if router == nil {
+		router = NewSessionRouter(nil, nil)
+	}
 	name := "Codebridge · workspace session"
 	instructions := SessionInstructions
-	if profile == ToolProfileFast {
-		name += " · fast"
-		instructions += "\n\nThis is the compact session endpoint. It preserves workspace selection while exposing only high-value coding tools and compact structured output."
+	if profile.ID != "full" {
+		name += " · " + profile.ID
+		instructions += "\n\nThis session endpoint uses the " + profile.Name + " tool profile while preserving workspace selection."
+		if profile.CompactDefaults {
+			instructions += " Compact defaults are applied when supported arguments are omitted."
+		}
 	}
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: name, Version: router.version},
@@ -146,7 +182,7 @@ func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.S
 	registerWidget(server)
 	router.registerControlTools(server)
 	for _, original := range router.specs {
-		if profile == ToolProfileFast && !fastCodingTools[original.Name] {
+		if !router.profileToolEnabled(profile, original.Name) {
 			continue
 		}
 		spec := original
@@ -164,7 +200,7 @@ func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.S
 			if err != nil {
 				return toolError(err), nil
 			}
-			applyProfileDefaults(profile, spec.Name, args)
+			applyProfileDefaultsDefinition(profile, spec.Name, args)
 			bindingToken := strings.TrimSpace(stringValue(args["workspace_binding"]))
 			if bindingToken == "" {
 				bindingToken = strings.TrimSpace(stringValue(args["_workspace_binding"]))
@@ -180,8 +216,8 @@ func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.S
 			if err != nil {
 				return toolError(err), nil
 			}
-			if !runtime.ToolEnabled(spec.Name) {
-				return toolError(fmt.Errorf("tool %q is unavailable in workspace %q", spec.Name, binding.WorkspaceID)), nil
+			if !profileToolEnabledDefinition(runtime, profile, spec.Name) {
+				return toolError(fmt.Errorf("tool %q is unavailable in profile %q for workspace %q", spec.Name, profile.ID, binding.WorkspaceID)), nil
 			}
 			targetSpec, ok := runtime.ToolSpec(spec.Name)
 			if !ok {
@@ -197,7 +233,7 @@ func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.S
 			if forwarded, ok := value.(*mcp.CallToolResult); ok {
 				return forwarded, nil
 			}
-			return toolSuccessWithMode(value, spec.OutputMode), nil
+			return toolSuccessWithMode(value, profileOutputModeDefinition(profile, spec.OutputMode)), nil
 		})
 	}
 	return server
@@ -374,17 +410,74 @@ func (r *SessionRouter) clear(sessionID, explicitToken string) bool {
 	return true
 }
 
+func (r *SessionRouter) ResolveProfile(id string) (ProfileDefinition, bool) {
+	if r == nil {
+		return ProfileDefinition{}, false
+	}
+	profile, ok := r.profiles[strings.ToLower(strings.TrimSpace(id))]
+	return profile, ok
+}
+
+func (r *SessionRouter) Profiles() []ProfileDefinition {
+	if r == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(r.profiles))
+	for id := range r.profiles {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		order := func(id string) int {
+			switch id {
+			case "fast":
+				return 0
+			case "full":
+				return 1
+			default:
+				return 2
+			}
+		}
+		left, right := order(ids[i]), order(ids[j])
+		if left != right {
+			return left < right
+		}
+		return ids[i] < ids[j]
+	})
+	profiles := make([]ProfileDefinition, 0, len(ids))
+	for _, id := range ids {
+		profiles = append(profiles, r.profiles[id])
+	}
+	return profiles
+}
+
+func (r *SessionRouter) profileToolEnabled(profile ProfileDefinition, name string) bool {
+	for _, id := range r.workspaceIDs() {
+		if profileToolEnabledDefinition(r.runtimes[id], profile, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *SessionRouter) ProfileTools(profile ToolProfile) []ProfileToolInfo {
+	definition, ok := r.ResolveProfile(string(profile))
+	if !ok {
+		return nil
+	}
+	return r.ProfileToolsDefinition(definition)
+}
+
+func (r *SessionRouter) ProfileToolsDefinition(profile ProfileDefinition) []ProfileToolInfo {
 	tools := append([]ProfileToolInfo(nil), sessionControlProfileTools...)
 	workspaceIDs := r.workspaceIDs()
 	for _, spec := range r.specs {
-		if profile == ToolProfileFast && !fastCodingTools[spec.Name] {
+		if !r.profileToolEnabled(profile, spec.Name) {
 			continue
 		}
 		availableIn := make([]string, 0, len(workspaceIDs))
 		for _, id := range workspaceIDs {
 			runtime := r.runtimes[id]
-			if runtime == nil || !runtime.ToolEnabled(spec.Name) {
+			if !profileToolEnabledDefinition(runtime, profile, spec.Name) {
 				continue
 			}
 			if _, registered := runtime.ToolSpec(spec.Name); registered {

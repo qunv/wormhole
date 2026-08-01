@@ -684,9 +684,13 @@ func TestAdminToolCatalogExposesSelectableGroupsAndUnfilteredTools(t *testing.T)
 func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 	handler := newAdminHandler(t, func(cfg *config.Config) {
 		cfg.NoTunnel = false
+		cfg.ToolProfiles = map[string]config.ToolProfileConfig{
+			"review": {Name: "Review", AllowedTools: []string{"read_file"}, OutputMode: "structured"},
+		}
 		cfg.Tunnels = map[string]config.TunnelConfig{
-			"fast": {TunnelID: "tunnel_fast", Mode: "fast", Profile: "codebridge-fast", RuntimeKeyEnv: "FAST_KEY"},
-			"full": {TunnelID: "tunnel_full", Mode: "full", Profile: "codebridge-full", RuntimeKeyEnv: "FULL_KEY"},
+			"fast":   {TunnelID: "tunnel_fast", Mode: "fast", Profile: "codebridge-fast", RuntimeKeyEnv: "FAST_KEY"},
+			"full":   {TunnelID: "tunnel_full", Mode: "full", Profile: "codebridge-full", RuntimeKeyEnv: "FULL_KEY"},
+			"review": {TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "codebridge-review", RuntimeKeyEnv: "REVIEW_KEY"},
 		}
 	})
 	response := httptest.NewRecorder()
@@ -697,9 +701,12 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 	var payload struct {
 		WorkspaceCount int `json:"workspaceCount"`
 		Profiles       []struct {
-			ID       string `json:"id"`
-			Endpoint string `json:"endpoint"`
-			Tools    []struct {
+			ID           string `json:"id"`
+			Endpoint     string `json:"endpoint"`
+			BuiltIn      bool   `json:"builtIn"`
+			OutputMode   string `json:"outputMode"`
+			ContractHash string `json:"contractHash"`
+			Tools        []struct {
 				Name         string   `json:"name"`
 				Scope        string   `json:"scope"`
 				WorkspaceIDs []string `json:"workspaceIds"`
@@ -713,11 +720,14 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.WorkspaceCount != 1 || len(payload.Profiles) != 2 {
+	if payload.WorkspaceCount != 1 || len(payload.Profiles) != 3 {
 		t.Fatalf("unexpected profile payload: %#v", payload)
 	}
 	profiles := map[string]struct {
 		Endpoint       string
+		BuiltIn        bool
+		OutputMode     string
+		ContractHash   string
 		Tools          map[string]string
 		ToolWorkspaces map[string][]string
 		Tunnels        map[string]bool
@@ -725,10 +735,13 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 	for _, profile := range payload.Profiles {
 		item := struct {
 			Endpoint       string
+			BuiltIn        bool
+			OutputMode     string
+			ContractHash   string
 			Tools          map[string]string
 			ToolWorkspaces map[string][]string
 			Tunnels        map[string]bool
-		}{profile.Endpoint, map[string]string{}, map[string][]string{}, map[string]bool{}}
+		}{profile.Endpoint, profile.BuiltIn, profile.OutputMode, profile.ContractHash, map[string]string{}, map[string][]string{}, map[string]bool{}}
 		for _, tool := range profile.Tools {
 			item.Tools[tool.Name] = tool.Scope
 			item.ToolWorkspaces[tool.Name] = tool.WorkspaceIDs
@@ -749,8 +762,12 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 		t.Fatal("fast admin profile unexpectedly exposed memory_search")
 	}
 	full := profiles["full"]
-	if full.Endpoint != "/mcp/session" || len(full.Tools) <= len(fast.Tools) || !full.Tunnels["full"] {
+	if full.Endpoint != "/mcp/session" || len(full.Tools) <= len(fast.Tools) || !full.Tunnels["full"] || !full.BuiltIn {
 		t.Fatalf("unexpected full profile: %#v", full)
+	}
+	review := profiles["review"]
+	if review.Endpoint != "/mcp/session/profiles/review" || review.BuiltIn || review.OutputMode != "structured" || len(review.Tools) != 5 || review.Tools["read_file"] != "workspace" || !review.Tunnels["review"] || !strings.HasPrefix(review.ContractHash, "sha256:") {
+		t.Fatalf("unexpected custom review profile: %#v", review)
 	}
 }
 

@@ -99,11 +99,33 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 	)
 	mux.Handle("/mcp", instance.guardMCP(runtime, streamableHandler(runtime, primaryID)))
 	mux.Handle("/mcp/fast", instance.guardMCP(runtime, streamableProfileHandler(runtime, primaryID, mcpserver.ToolProfileFast)))
+	for _, profile := range instance.SessionRouter.Profiles() {
+		if profile.BuiltIn {
+			continue
+		}
+		mux.Handle(
+			mcpserver.SessionProfileEndpoint(profile.ID),
+			instance.guardMCPValues(runtime.Config.AuthToken, instance.SessionRouter.BodyLimit(), sessionStreamableDefinitionHandler(instance.SessionRouter, profile)),
+		)
+		mux.Handle(
+			mcpserver.FixedProfileEndpoint(primaryID, profile.ID),
+			instance.guardMCP(runtime, streamableDefinitionHandler(runtime, primaryID, profile)),
+		)
+	}
 	for _, id := range instance.namedWorkspaceIDs() {
 		endpoint := "/mcp/workspaces/" + id
 		child := instance.Runtimes[id]
 		mux.Handle(endpoint, instance.guardMCP(child, streamableHandler(child, id)))
 		mux.Handle(endpoint+"/fast", instance.guardMCP(child, streamableProfileHandler(child, id, mcpserver.ToolProfileFast)))
+		for _, profile := range instance.SessionRouter.Profiles() {
+			if profile.BuiltIn {
+				continue
+			}
+			mux.Handle(
+				mcpserver.FixedProfileEndpoint(id, profile.ID),
+				instance.guardMCP(child, streamableDefinitionHandler(child, id, profile)),
+			)
+		}
 	}
 	mux.HandleFunc("/mcp/workspaces/", instance.unknownWorkspace)
 
@@ -129,12 +151,28 @@ func streamableProfileHandler(runtime *agent.Runtime, workspaceID string, profil
 	)
 }
 
+func streamableDefinitionHandler(runtime *agent.Runtime, workspaceID string, profile mcpserver.ProfileDefinition) http.Handler {
+	server := mcpserver.NewWorkspaceProfileDefinition(runtime, workspaceID, profile)
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+}
+
 func sessionStreamableHandler(router *mcpserver.SessionRouter) http.Handler {
 	return sessionStreamableProfileHandler(router, mcpserver.ToolProfileFull)
 }
 
 func sessionStreamableProfileHandler(router *mcpserver.SessionRouter, profile mcpserver.ToolProfile) http.Handler {
 	server := mcpserver.NewSessionGatewayProfile(router, profile)
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+}
+
+func sessionStreamableDefinitionHandler(router *mcpserver.SessionRouter, profile mcpserver.ProfileDefinition) http.Handler {
+	server := mcpserver.NewSessionGatewayDefinition(router, profile)
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},

@@ -28,13 +28,17 @@ func TestNamedTunnelProfilesExposeSelectedModeAsMain(t *testing.T) {
 			TunnelID: "tunnel_full", Mode: "full", Profile: "codebridge-full",
 			RuntimeKeyEnv: "FULL_KEY",
 		},
+		"review": {
+			TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "codebridge-review",
+			RuntimeKeyEnv: "REVIEW_KEY",
+		},
 	}
 	paths, err := writeTunnelProfiles(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 {
-		t.Fatalf("profile count = %d, want 2", len(paths))
+	if len(paths) != 3 {
+		t.Fatalf("profile count = %d, want 3", len(paths))
 	}
 	profiles := map[string]string{}
 	for _, path := range paths {
@@ -46,14 +50,18 @@ func TestNamedTunnelProfilesExposeSelectedModeAsMain(t *testing.T) {
 	}
 	fast := profiles["codebridge-fast.yaml"]
 	full := profiles["codebridge-full.yaml"]
+	review := profiles["codebridge-review.yaml"]
 	if !strings.Contains(fast, "channel: main") || !strings.Contains(fast, "/mcp/session/fast") || strings.Contains(fast, "channel: fast") {
 		t.Fatalf("fast profile did not expose only fast as main: %s", fast)
 	}
 	if !strings.Contains(full, "channel: main") || !strings.Contains(full, `9123/mcp/session"`) || strings.Contains(full, "/mcp/session/fast") {
 		t.Fatalf("full profile did not expose full as main: %s", full)
 	}
-	if !strings.Contains(fast, `tunnel_id: "tunnel_fast"`) || !strings.Contains(full, `tunnel_id: "tunnel_full"`) {
-		t.Fatalf("profile tunnel IDs are incorrect: fast=%s full=%s", fast, full)
+	if !strings.Contains(review, "/mcp/session/profiles/review") || strings.Contains(review, "/mcp/session/fast") {
+		t.Fatalf("custom profile did not expose its stable session endpoint: %s", review)
+	}
+	if !strings.Contains(fast, `tunnel_id: "tunnel_fast"`) || !strings.Contains(full, `tunnel_id: "tunnel_full"`) || !strings.Contains(review, `tunnel_id: "tunnel_review"`) {
+		t.Fatalf("profile tunnel IDs are incorrect: fast=%s full=%s review=%s", fast, full, review)
 	}
 }
 

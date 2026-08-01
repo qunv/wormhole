@@ -58,6 +58,7 @@ export interface TunnelConfig {
   enabled?: boolean;
   tunnelId?: string;
   mode?: "fast" | "full" | string;
+  toolProfile?: string;
   profile?: string;
   runtimeKeyEnv?: string;
   organizationId?: string;
@@ -67,6 +68,16 @@ export interface ToolExposureConfig {
   allowedGroups?: string[];
   allowedTools?: string[];
   deniedTools?: string[];
+}
+
+export interface ToolProfileConfig {
+  name?: string;
+  description?: string;
+  allowedGroups?: string[];
+  allowedTools?: string[];
+  deniedTools?: string[];
+  outputMode?: "both" | "text" | "structured" | string;
+  compactDefaults?: boolean;
 }
 
 export interface CodebridgeConfig {
@@ -88,6 +99,7 @@ export interface CodebridgeConfig {
   memory: MemoryConfig;
   mcpServers?: Record<string, MCPServerConfig>;
   tools?: ToolExposureConfig;
+  toolProfiles?: Record<string, ToolProfileConfig>;
   maxReadChars?: number;
   readDefault?: number;
   maxBatchReadChars?: number;
@@ -118,6 +130,7 @@ export interface ProfileTunnel {
   enabled: boolean;
   tunnelId: string;
   profile: string;
+  toolProfile: string;
 }
 
 export interface ToolProfile {
@@ -127,6 +140,16 @@ export interface ToolProfile {
   description: string;
   tools: ProfileTool[];
   tunnels: ProfileTunnel[];
+  builtIn: boolean;
+  active: boolean;
+  restartRequired: boolean;
+  activeContractHash: string;
+  outputMode: "both" | "text" | "structured" | string;
+  compactDefaults: boolean;
+  allowedGroups: string[];
+  allowedTools: string[];
+  deniedTools: string[];
+  contractHash: string;
 }
 
 export interface ProfilesResponse {

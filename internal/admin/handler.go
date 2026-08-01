@@ -49,6 +49,7 @@ var workspaceOwnedFields = map[string]bool{
 	"approvalToken": true, "allowedOrigins": true, "noTunnel": true,
 	"tunnelBin": true, "tunnelId": true, "organizationId": true,
 	"profile": true, "profileDir": true, "runtimeKeyEnv": true, "tunnels": true,
+	"toolProfiles": true,
 }
 
 // Handler serves a local-only administration application and versioned API.
@@ -360,6 +361,27 @@ type adminToolCatalogEntry struct {
 	workspaces   map[string]struct{}
 }
 
+func sameJSONValue(left, right any) bool {
+	leftRaw, leftErr := json.Marshal(left)
+	rightRaw, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftCopy, rightCopy := append([]string(nil), left...), append([]string(nil), right...)
+	sort.Strings(leftCopy)
+	sort.Strings(rightCopy)
+	for index := range leftCopy {
+		if leftCopy[index] != rightCopy[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *Handler) getToolCatalog(writer http.ResponseWriter) {
 	type runtimeEntry struct {
 		id      string
@@ -455,31 +477,52 @@ func (h *Handler) getProfiles(writer http.ResponseWriter) {
 	if router == nil {
 		router = mcpserver.NewSessionRouter(h.Runtime, h.Runtimes)
 	}
-	tunnelsByMode := map[string][]map[string]any{"fast": []map[string]any{}, "full": []map[string]any{}}
-	for _, tunnel := range h.Runtime.Config.EffectiveTunnels() {
-		mode := strings.ToLower(strings.TrimSpace(tunnel.Config.Mode))
-		if mode == "" {
-			mode = "full"
-		}
-		if mode != "fast" && mode != "full" {
-			continue
-		}
-		tunnelsByMode[mode] = append(tunnelsByMode[mode], map[string]any{
+	cfg, err := h.editableConfig()
+	if err != nil {
+		h.sendError(writer, http.StatusInternalServerError, "config_read_failed", err.Error())
+		return
+	}
+	tunnelsByProfile := map[string][]map[string]any{}
+	configuredTunnelNames := map[string][]string{}
+	for _, tunnel := range cfg.EffectiveTunnels() {
+		profileID := tunnel.Config.EffectiveToolProfile()
+		configuredTunnelNames[profileID] = append(configuredTunnelNames[profileID], tunnel.Name)
+		tunnelsByProfile[profileID] = append(tunnelsByProfile[profileID], map[string]any{
 			"name": tunnel.Name, "enabled": tunnel.Config.IsEnabled(),
 			"tunnelId": tunnel.Config.TunnelID, "profile": tunnel.Config.Profile,
+			"toolProfile": profileID,
 		})
 	}
-	profiles := []map[string]any{
-		{
-			"id": "fast", "name": "Fast", "endpoint": mcpserver.SessionFastEndpoint,
-			"description": "Compact profile with workspace routing and high-value coding tools.",
-			"tools":       router.ProfileTools(mcpserver.ToolProfileFast), "tunnels": tunnelsByMode["fast"],
-		},
-		{
-			"id": "full", "name": "Full", "endpoint": mcpserver.SessionEndpoint,
-			"description": "Complete profile with workspace routing and every enabled runtime tool.",
-			"tools":       router.ProfileTools(mcpserver.ToolProfileFull), "tunnels": tunnelsByMode["full"],
-		},
+	activeTunnelNames := map[string][]string{}
+	for _, tunnel := range h.Runtime.Config.EffectiveTunnels() {
+		profileID := tunnel.Config.EffectiveToolProfile()
+		activeTunnelNames[profileID] = append(activeTunnelNames[profileID], tunnel.Name)
+	}
+	definitions := mcpserver.ProfileDefinitions(cfg)
+	profiles := make([]map[string]any, 0, len(definitions))
+	for _, profile := range definitions {
+		activeProfile, active := router.ResolveProfile(profile.ID)
+		tools := router.ProfileToolsDefinition(profile)
+		contractHash := mcpserver.ProfileContractHash(tools)
+		activeContractHash := ""
+		if active {
+			activeContractHash = mcpserver.ProfileContractHash(router.ProfileToolsDefinition(activeProfile))
+		}
+		restartRequired := !active || activeContractHash != contractHash || !sameStringSet(configuredTunnelNames[profile.ID], activeTunnelNames[profile.ID])
+		if !profile.BuiltIn {
+			restartRequired = restartRequired || !sameJSONValue(cfg.ToolProfiles[profile.ID], h.Runtime.Config.ToolProfiles[profile.ID])
+		}
+		profiles = append(profiles, map[string]any{
+			"id": profile.ID, "name": profile.Name,
+			"endpoint":    mcpserver.SessionProfileEndpoint(profile.ID),
+			"description": profile.Description, "tools": tools,
+			"tunnels": tunnelsByProfile[profile.ID], "builtIn": profile.BuiltIn, "active": active,
+			"restartRequired": restartRequired, "activeContractHash": activeContractHash,
+			"outputMode": profile.OutputMode, "compactDefaults": profile.CompactDefaults,
+			"allowedGroups": profile.AllowedGroups, "allowedTools": profile.AllowedTools,
+			"deniedTools":  profile.DeniedTools,
+			"contractHash": contractHash,
+		})
 	}
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"profiles": profiles, "workspaceCount": 1 + len(h.Runtimes),

@@ -6,6 +6,7 @@ All notable changes to Codebridge are documented in this file.
 
 ### Added
 
+- Added persisted custom tool profiles with stable fixed/session endpoints, contract hashes, output modes, compact defaults, tunnel assignment, and an Admin profile editor.
 - Added an Admin Operations center with live runtime/module metrics, local approval decisions, and a bounded redacted audit explorer.
 - Added per-workspace runtime tool-call concurrency limits, selected-workspace schema validation for routed tools, panic recovery, and bounded redacted audit errors.
 - Added native multi-tunnel management: one Codebridge daemon can generate Fast/Full profiles, supervise one tunnel-client process per named Tunnel ID, isolate logs and runtime-key environment variables, and migrate legacy single-tunnel state without breaking existing installations.

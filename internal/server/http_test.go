@@ -141,6 +141,59 @@ func TestFastMCPEndpointExposesCompactCodingTools(t *testing.T) {
 	}
 }
 
+func TestCustomProfileEndpointsExposeFilteredContract(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte("profile data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = root, true, "full"
+	cfg.ToolProfiles = map[string]config.ToolProfileConfig{
+		"review": {
+			Name: "Review", AllowedTools: []string{"read_file", "git_status"},
+			DeniedTools: []string{"git_status"}, OutputMode: "structured",
+		},
+	}
+	runtime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "codebridge", t.TempDir(), cfg, "test", "pro", "custom-profile", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	httpServer := httptest.NewServer(New(runtime).Server.Handler)
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	fixed := connectMCP(t, ctx, httpServer.URL+mcpserver.FixedProfileEndpoint("codebridge", "review"))
+	defer fixed.Close()
+	fixedTools, err := fixed.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixedTools.Tools) != 1 || fixedTools.Tools[0].Name != "read_file" {
+		t.Fatalf("custom fixed tools = %#v", fixedTools.Tools)
+	}
+	read := callTool(t, ctx, fixed, "read_file", map[string]any{"path": "sample.txt"})
+	if !strings.HasPrefix(toolText(read), "Structured result") || read.StructuredContent == nil {
+		t.Fatalf("custom output mode was not applied: %s %#v", toolText(read), read.StructuredContent)
+	}
+
+	session := connectMCP(t, ctx, httpServer.URL+mcpserver.SessionProfileEndpoint("review"))
+	defer session.Close()
+	sessionTools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessionTools.Tools) != 5 {
+		t.Fatalf("custom session tool count = %d, want 5", len(sessionTools.Tools))
+	}
+	selected := callTool(t, ctx, session, "workspace_select", map[string]any{"id": "codebridge"})
+	binding, _ := toolObject(t, selected)["workspace_binding"].(string)
+	read = callTool(t, ctx, session, "read_file", map[string]any{"workspace_binding": binding, "path": "sample.txt"})
+	if !strings.HasPrefix(toolText(read), "Structured result") {
+		t.Fatalf("custom session output mode was not applied: %s", toolText(read))
+	}
+}
+
 func TestFastSessionEndpointPreservesWorkspaceSelectionWithCompactTools(t *testing.T) {
 	runtime := newWorkspaceRuntime(t, "codebridge", t.TempDir(), t.TempDir())
 	httpServer := httptest.NewServer(New(runtime).Server.Handler)

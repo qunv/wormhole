@@ -320,7 +320,7 @@ The MCP adapter prefixes workspace session IDs with `workspace:<id>:` and places
 
 The supervisor ConfigID includes the registry, every enabled named config, and the secret fingerprints referenced by each runtime, so endpoint, tool, provider, or credential changes cannot silently reuse a stale process. Startup readiness time includes required memory and upstream MCP timeouts from all enabled runtimes.
 
-One tunnel profile publishes channel `main` for `/mcp/session` and channel `workspace-<id>` for each enabled fixed endpoint. Runtime and upstream secrets remain in the shared `.env` and are resolved through environment references rather than copied into workspace configuration files.
+A named tunnel publishes channel `main` for the session endpoint selected by its effective tool profile. Legacy `mode=fast|full` remains supported; the optional `toolProfile` field selects a custom profile without repurposing the existing `profile` field, which remains the tunnel-client YAML file name. The legacy single-tunnel profile still publishes full, fast, and fixed workspace channels. Runtime and upstream secrets remain in the shared `.env` and are resolved through environment references rather than copied into workspace configuration files.
 
 ## 5. HTTP and MCP layers
 
@@ -377,7 +377,9 @@ codebridge skills [list|read]
 
 This boundary avoids two competing sources of reusable instructions and keeps the MCP contract focused on capabilities. A ChatGPT Skill may select and sequence Codebridge tools, but it cannot bypass `ToolSpec` policy classification, exact approvals, root confinement, command guards, audit redaction, or memory capture rules.
 
-The built-in contract contains 75 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Codebridge upgrade that changes `tools/list`.
+The built-in full contract contains 75 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Codebridge upgrade or profile change that changes `tools/list`.
+
+Downstream tool profiles are built through one immutable contract builder. `full` exposes every globally enabled runtime tool, `fast` preserves its fixed compact allowlist and per-tool output behavior, and persisted custom profiles filter by the union of allowed module groups and exact tools before applying an overriding deny list. Profiles may force `both`, `structured`, or `text` result adaptation and optionally apply Fast-like compact defaults. Global `tools` exposure remains the outer boundary, so a profile cannot restore a denied tool. Custom IDs become stable endpoints under `/mcp/session/profiles/<id>`, `/mcp/profiles/<id>`, and `/mcp/workspaces/<workspace>/profiles/<id>` after restart. Admin previews include deterministic contract hashes and distinguish persisted contracts from the currently active runtime.
 
 ## 6. Runtime pipeline and policy
 
