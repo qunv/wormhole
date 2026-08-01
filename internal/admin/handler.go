@@ -60,6 +60,10 @@ type Handler struct {
 	assets   fs.FS
 	auth     *adminauth.Manager
 	mu       sync.Mutex
+
+	lifecycleMu         sync.Mutex
+	restartPendingUntil time.Time
+	scheduleRestart     func(oldPort int) error
 }
 
 // New creates an admin handler. Every route remains loopback-only regardless
@@ -78,7 +82,7 @@ func New(runtime *agent.Runtime, named map[string]*agent.Runtime, routers ...*mc
 	}
 	return &Handler{
 		Runtime: runtime, Runtimes: copyNamed, Router: router, assets: adminui.FS(),
-		auth: adminauth.NewManager(config.AdminAuthPath()),
+		auth: adminauth.NewManager(config.AdminAuthPath()), scheduleRestart: scheduleAdminRestart,
 	}
 }
 
@@ -300,12 +304,20 @@ func (h *Handler) serveAPI(writer http.ResponseWriter, request *http.Request) {
 		h.getToolCatalog(writer)
 	case suffix == "/operations" && request.Method == http.MethodGet:
 		h.getOperations(writer, request)
+	case suffix == "/lifecycle/restart" && request.Method == http.MethodPost:
+		h.restartLifecycle(writer)
 	case suffix == "/approvals" && request.Method == http.MethodGet:
 		h.getApprovals(writer, request)
 	case strings.HasPrefix(suffix, "/approvals/"):
 		h.approvalDecision(writer, request, strings.TrimPrefix(suffix, "/approvals/"))
 	case suffix == "/audit" && request.Method == http.MethodGet:
 		h.getAudit(writer, request)
+	case suffix == "/diagnostics" && request.Method == http.MethodGet:
+		h.getDiagnostics(writer, request)
+	case suffix == "/upstream" && request.Method == http.MethodGet:
+		h.getUpstreamMCP(writer, request)
+	case strings.HasPrefix(suffix, "/upstream/"):
+		h.upstreamMCPAction(writer, request, strings.TrimPrefix(suffix, "/upstream/"))
 	case suffix == "/config" && request.Method == http.MethodGet:
 		h.getConfig(writer)
 	case suffix == "/config" && request.Method == http.MethodPut:
@@ -722,6 +734,11 @@ func (h *Handler) getWorkspaceConfig(writer http.ResponseWriter, entry workspace
 		h.sendError(writer, http.StatusUnprocessableEntity, "workspace_invalid", err.Error())
 		return
 	}
+	provenance, err := describeOverride(base, effective, override)
+	if err != nil {
+		h.sendError(writer, http.StatusInternalServerError, "workspace_provenance_failed", err.Error())
+		return
+	}
 	revision, err := fileRevision(entry.ConfigPath)
 	if err != nil {
 		h.sendError(writer, http.StatusInternalServerError, "workspace_read_failed", err.Error())
@@ -730,7 +747,7 @@ func (h *Handler) getWorkspaceConfig(writer http.ResponseWriter, entry workspace
 	writer.Header().Set("ETag", quoteETag(revision))
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"registration": entry, "override": override, "effective": effective,
-		"revision": revision, "restartRequired": true,
+		"provenance": provenance, "revision": revision, "restartRequired": true,
 	})
 }
 

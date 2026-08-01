@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Braces, Cpu, Database, Gauge, Network, Plus, Save, Shield, Trash2, Waypoints } from "lucide-react";
+import { Braces, Cpu, Database, Gauge, Network, Plus, RefreshCw, Save, Shield, Trash2, Waypoints } from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, Field as BaseField, LoadingPage, MultiSelect, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
-import type { CodebridgeConfig, MCPServerConfig, ToolCatalogResponse } from "./types";
+import type { CodebridgeConfig, MCPServerConfig, ToolCatalogResponse, UpstreamMCPStatus } from "./types";
 
 type Tab = "general" | "memory" | "mcp" | "tools" | "advanced";
 const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -120,6 +120,23 @@ export function Configuration() {
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
   });
 
+  const restart = useMutation({
+    mutationFn: async () => {
+      let saved = snapshot.data!;
+      if (dirty) saved = await api.saveConfig(draft!, snapshot.data!.revision);
+      const scheduled = await api.restart();
+      return { saved, scheduled };
+    },
+    onSuccess: ({ saved, scheduled }) => {
+      queryClient.setQueryData(["config"], saved);
+      setDraft(structuredClone(saved.config));
+      setDirty(false);
+      setMessage({ tone: "info", text: scheduled.message ?? "Restart scheduled. Waiting for Codebridge to return…" });
+      void waitForDaemon(scheduled.retryAfterMs);
+    },
+    onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
+  });
+
   if (snapshot.isLoading || !draft || !snapshot.data) return <LoadingPage />;
 
   const update = (next: CodebridgeConfig) => {
@@ -134,7 +151,7 @@ export function Configuration() {
         eyebrow="Persisted global config"
         title="Configuration"
         description="Edit the complete non-secret configuration with server-side validation and revision conflict protection."
-        actions={<><Badge tone={dirty ? "warning" : "success"}>{dirty ? "Unsaved changes" : "In sync"}</Badge><Button variant="secondary" onClick={() => validate.mutate()} loading={validate.isPending}>Validate</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}><Save size={15} /> Save</Button></>}
+        actions={<><Badge tone={dirty ? "warning" : "success"}>{dirty ? "Unsaved changes" : "In sync"}</Badge><Button variant="secondary" onClick={() => validate.mutate()} loading={validate.isPending}>Validate</Button><Button variant="secondary" onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty || restart.isPending}><Save size={15} /> Save</Button><Button onClick={() => restart.mutate()} loading={restart.isPending} disabled={save.isPending}><RefreshCw size={15} /> {dirty ? "Save & Restart" : "Restart"}</Button></>}
       />
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
       <Notice tone="info">Secrets are intentionally excluded from this document. Configure referenced environment variables from the <strong>Secrets</strong> page.</Notice>
@@ -223,11 +240,25 @@ function MemoryEditor({ value, onChange }: EditorProps) {
 }
 
 function MCPServersEditor({ value, onChange }: EditorProps) {
+  const queryClient = useQueryClient();
+  const upstream = useQuery({ queryKey: ["upstream"], queryFn: api.upstream, refetchInterval: 15_000 });
+  const refresh = useMutation({
+    mutationFn: ({ workspaceId, serverName }: { workspaceId: string; serverName: string }) => api.refreshUpstream(workspaceId, serverName),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["upstream"] }),
+        queryClient.invalidateQueries({ queryKey: ["operations"] }),
+      ]);
+    },
+  });
   const servers = value.mcpServers ?? {};
   const names = Object.keys(servers).sort();
   const [selected, setSelected] = useState(names[0] ?? "");
   const [newName, setNewName] = useState("");
   const current = selected ? servers[selected] : undefined;
+  const activeStatuses = (upstream.data?.workspaces ?? []).flatMap((workspace) =>
+    workspace.servers.filter((server) => server.name === selected).map((server) => ({ workspaceId: workspace.id, root: workspace.root, server })),
+  );
 
   useEffect(() => {
     if (selected && !servers[selected]) setSelected(names[0] ?? "");
@@ -276,10 +307,31 @@ function MCPServersEditor({ value, onChange }: EditorProps) {
             <NumberField label="Max tools" value={current.maxTools} onChange={(maxTools) => updateServer({ ...current, maxTools })} />
           </div>
           <JSONField label="Complete server JSON" value={current as Record<string, unknown>} onChange={(next) => updateServer(next as MCPServerConfig)} hint="Covers envRefs, headerRefs, policy, timeouts and advanced transport settings." />
+          <div className="upstream-control-panel">
+            <div className="upstream-control-head"><div><h4>Active catalog status</h4><p>Refresh opens a new upstream session, updates the secret-free cache, and keeps the downstream MCP contract unchanged until restart.</p></div><Button variant="secondary" onClick={() => void upstream.refetch()} loading={upstream.isFetching}><RefreshCw size={14} /> Reload status</Button></div>
+            {!!upstream.error && <Notice tone="danger">{errorMessage(upstream.error)}</Notice>}
+            {!!refresh.error && <Notice tone="danger">{errorMessage(refresh.error)}</Notice>}
+            {!activeStatuses.length ? <Notice tone="info">This server is not active in the running daemon. Save and restart after validating its configuration.</Notice> : <div className="upstream-status-list">{activeStatuses.map((item) => <UpstreamStatusCard key={`${item.workspaceId}:${selected}`} workspaceId={item.workspaceId} root={item.root} status={item.server} refreshing={refresh.isPending && refresh.variables?.workspaceId === item.workspaceId && refresh.variables?.serverName === selected} onRefresh={() => refresh.mutate({ workspaceId: item.workspaceId, serverName: selected })} />)}</div>}
+          </div>
         </> : <div className="empty"><Waypoints size={30} /><strong>Select or add an MCP server</strong><p>The raw JSON editor covers every supported field.</p></div>}
       </div>
     </div>
   </Card>;
+}
+
+function UpstreamStatusCard({ workspaceId, root, status, refreshing, onRefresh }: { workspaceId: string; root: string; status: UpstreamMCPStatus; refreshing: boolean; onRefresh: () => void }) {
+  const diff = status.activeToDesired;
+  return <div className="upstream-status-card">
+    <div className="upstream-status-title"><div><strong>{workspaceId}</strong><small>{root}</small></div><div><Badge tone={status.health?.available === true ? "success" : "danger"}>{status.health?.available === true ? "healthy" : "unavailable"}</Badge>{status.restartRequired && <Badge tone="warning">restart required</Badge>}</div></div>
+    <div className="upstream-contract-grid">
+      <div><small>Active</small><strong>{status.activeContract?.toolCount ?? 0}</strong><code>{status.activeContract?.hash || "—"}</code></div>
+      <div><small>Cached</small><strong>{status.cachedContract?.toolCount ?? 0}</strong><code>{status.cachedContract?.hash || "—"}</code></div>
+      <div><small>Live</small><strong>{status.liveContract?.toolCount ?? 0}</strong><code>{status.liveContract?.hash || "—"}</code></div>
+      <div><small>Contract changes</small><strong>{diff?.changedCount ?? 0}</strong><span>{[...(diff?.added ?? []).map((name) => `+${name}`), ...(diff?.removed ?? []).map((name) => `-${name}`), ...(diff?.changed ?? []).map((name) => `~${name}`)].slice(0, 4).join(", ") || "No changes"}</span></div>
+    </div>
+    {(status.error || status.cachedError || status.liveError) && <Notice tone="warning">{status.error || status.liveError || status.cachedError}</Notice>}
+    <div className="upstream-status-actions"><span className="muted">{status.transport ?? "transport unknown"} · {status.startupMode ?? "startup unknown"}</span><Button variant="secondary" onClick={onRefresh} loading={refreshing} disabled={!status.refreshAvailable}><RefreshCw size={14} /> Refresh catalog</Button></div>
+  </div>;
 }
 
 function ToolsEditor({ value, onChange, catalog, catalogLoading }: EditorProps & { catalog?: ToolCatalogResponse; catalogLoading: boolean }) {
@@ -356,4 +408,29 @@ function NumberField({ label, value, onChange }: { label: string; value?: number
 interface EditorProps { value: CodebridgeConfig; onChange: (value: CodebridgeConfig) => void }
 const lines = (value: string) => value.split("\n").map((entry) => entry.trim()).filter(Boolean);
 const number = (value: string) => Number.parseInt(value || "0", 10);
+async function waitForDaemon(initialDelayMs: number) {
+  await new Promise((resolve) => window.setTimeout(resolve, Math.max(1_000, initialDelayMs)));
+  let observedDowntime = false;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try {
+      const response = await fetch("/admin/api/v1/auth/status", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) {
+        observedDowntime = true;
+      } else {
+        const status = await response.json().catch(() => ({}));
+        // Browser sessions are process-local. A new daemon reports the account
+        // as configured but this old cookie as unauthenticated, even when the
+        // effective ConfigID is unchanged.
+        if (observedDowntime || status.authenticated === false) {
+          window.location.reload();
+          return;
+        }
+      }
+    } catch {
+      observedDowntime = true;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+  }
+}
+
 const errorMessage = (error: unknown) => error instanceof APIError ? error.message : error instanceof Error ? error.message : String(error);

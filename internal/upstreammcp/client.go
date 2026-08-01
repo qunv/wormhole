@@ -387,6 +387,43 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 
 // EnsureConnected establishes a session if one is not currently available.
 // When a new connection is made with discover=true, its live tool catalog is refreshed atomically.
+// RefreshCatalog establishes a fresh session, discovers the complete live tool
+// contract, atomically swaps the client session, and persists the secret-free
+// catalog when configured. Existing in-flight borrowers keep their retired
+// session until release; downstream Codebridge ToolSpecs remain immutable until
+// the daemon restarts.
+func (c *Client) RefreshCatalog(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+	if err := c.circuitError(); err != nil {
+		c.circuitRejected.Add(1)
+		return err
+	}
+	c.mu.RLock()
+	wasConnected := c.session != nil || !c.connectedAt.IsZero()
+	catalogKey := c.catalogKey
+	c.mu.RUnlock()
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(c.cfg.StartupTimeoutMS)*time.Millisecond)
+	defer cancel()
+	if err := c.connectLocked(timeoutCtx, true); err != nil {
+		return err
+	}
+	if wasConnected {
+		c.mu.Lock()
+		c.reconnects++
+		c.mu.Unlock()
+	}
+	if catalogKey != "" {
+		if err := SaveToolCatalog(catalogKey, c.Tools()); err != nil {
+			return c.sanitizedError(err)
+		}
+	}
+	return nil
+}
+
 func (c *Client) EnsureConnected(ctx context.Context, discover bool) error {
 	if ctx == nil {
 		ctx = context.Background()

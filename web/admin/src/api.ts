@@ -10,6 +10,8 @@ import type {
   ProfilesResponse,
   SecretsResponse,
   ToolCatalogResponse,
+  UpstreamMCPResponse,
+  UpstreamMCPStatus,
   WorkspaceBrowseResponse,
   WorkspaceConfigResponse,
   WorkspaceMutationResponse,
@@ -18,6 +20,7 @@ import type {
 
 const API = "/admin/api/v1";
 export const AUTH_REQUIRED_EVENT = "codebridge-auth-required";
+export const DIAGNOSTICS_URL = `${API}/diagnostics`;
 
 export class APIError extends Error {
   status: number;
@@ -78,6 +81,7 @@ export const api = {
   profiles: () => request<ProfilesResponse>("/profiles"),
   toolCatalog: () => request<ToolCatalogResponse>("/tools/catalog"),
   operations: () => request<OperationsResponse>("/operations"),
+  restart: () => request<{ accepted: boolean; alreadyPending: boolean; retryAfterMs: number; activeConfigId: string; message?: string }>("/lifecycle/restart", { method: "POST", body: "{}" }),
   approvals: (status = "pending", workspace = "", limit = 100) => {
     const query = new URLSearchParams({ status, limit: String(limit) });
     if (workspace) query.set("workspace", workspace);
@@ -87,6 +91,12 @@ export const api = {
     request<ApprovalRecord>(`/approvals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(id)}`, {
       method: "POST",
       body: JSON.stringify({ decision }),
+    }),
+  upstream: () => request<UpstreamMCPResponse>("/upstream"),
+  refreshUpstream: (workspaceId: string, serverName: string) =>
+    request<{ workspaceId: string; server: UpstreamMCPStatus; restartRequired: boolean }>(`/upstream/${encodeURIComponent(workspaceId)}/${encodeURIComponent(serverName)}/refresh`, {
+      method: "POST",
+      body: "{}",
     }),
   audit: (filters: { workspace?: string; tool?: string; status?: string; limit?: number } = {}) => {
     const query = new URLSearchParams();

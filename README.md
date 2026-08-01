@@ -338,9 +338,9 @@ Security boundaries are enforced by the Go server:
 - The workspace browser is directory-only, bounded, and confined to the current user's home directory; an existing absolute path may still be entered manually.
 - Runtime tokens are excluded from JSON configuration.
 - Referenced `.env` secrets are write-only; the UI can see only whether each value exists.
-- Changes are persisted atomically and require a Codebridge restart before active runtimes use them.
+- Changes are persisted atomically. The Configuration page can schedule a detached lifecycle-helper restart after the HTTP response is delivered; the browser waits for the replacement daemon and then returns to sign-in because Admin sessions are process-local.
 
-The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, create and edit custom tool profiles, map named tunnels to profiles, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, and explore a bounded tail of already-redacted audit records. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
+The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, visualize inherited versus overridden workspace fields, preview safe override compaction, create and edit custom tool profiles, map named tunnels to profiles, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, refresh upstream MCP catalogs while previewing active/cached/live contract diffs, explore a bounded tail of already-redacted audit records, and download a sanitized diagnostic JSON bundle. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
 
 ### Admin UI development
 
@@ -512,7 +512,7 @@ Example:
 - `background` registers a cached tool contract immediately, then connects and refreshes it asynchronously.
 - `lazy` registers a cached tool contract immediately and connects on the first tool call.
 
-Required servers always behave as `eager`. The first `background` or `lazy` startup without a cache performs one eager discovery so Codebridge can publish typed tools; later starts use the cache. Deferred clients refresh `tools/list` after connecting, and the refreshed contract is applied on the next Codebridge restart.
+Required servers always behave as `eager`. The first `background` or `lazy` startup without a cache performs one eager discovery so Codebridge can publish typed tools; later starts use the cache. Deferred clients refresh `tools/list` after connecting, and the refreshed contract is applied on the next Codebridge restart. The Admin MCP Servers editor can also force a fresh connection and catalog discovery. It displays active, cached, and live contract hashes plus added, removed, and changed tool names; refreshing never mutates the downstream `tools/list` contract in place.
 
 Tool catalogs are stored owner-only under `~/.codebridge/state/upstream-mcp/catalogs`. They contain only bounded tool names, descriptions, input schemas, and annotations—not credentials, calls, arguments, results, or arbitrary upstream metadata. Codebridge retains at most 64 catalogs and prunes entries older than 90 days when saving a catalog.
 
@@ -545,6 +545,8 @@ Codebridge creates workspace state lazily and removes only regenerable or expire
 - Server and tunnel logs: size-based rotation.
 
 Durable notes, checkpoints, current tasks, decisions, and unknown files are preserved.
+
+The Overview page can download a bounded diagnostic JSON bundle containing non-secret configuration, secret presence only, runtime/module metrics, profile hashes, workspace registry summaries, recent audit metadata without arguments or session IDs, and redacted log tails. Referenced environment values and direct upstream environment/header values are never included.
 
 ```bash
 codebridge state gc --dry-run

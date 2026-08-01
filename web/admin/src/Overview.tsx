@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Boxes, Cpu, Database, FolderGit2, KeyRound, ShieldCheck, TriangleAlert } from "lucide-react";
-import { api } from "./api";
-import { Badge, Card, Notice, PageHeader } from "./components";
+import { Activity, Boxes, Cpu, Database, Download, FolderGit2, KeyRound, ShieldCheck, TriangleAlert } from "lucide-react";
+import { api, DIAGNOSTICS_URL } from "./api";
+import { Badge, Button, Card, Notice, PageHeader } from "./components";
 
 export function Overview() {
   const bootstrap = useQuery({ queryKey: ["bootstrap"], queryFn: api.bootstrap });
@@ -17,7 +17,7 @@ export function Overview() {
 
   return (
     <>
-      <PageHeader eyebrow="Local control plane" title="System overview" description="A focused view of the active daemon and persisted configuration." />
+      <PageHeader eyebrow="Local control plane" title="System overview" description="A focused view of the active daemon and persisted configuration." actions={<a href={DIAGNOSTICS_URL} download><Button variant="secondary"><Download size={15} /> Download diagnostics</Button></a>} />
       {bootstrap.data?.startupWarnings?.length ? (
         <Notice tone="warning"><strong>Startup warnings</strong><ul>{bootstrap.data.startupWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></Notice>
       ) : null}

@@ -6,6 +6,7 @@ All notable changes to Codebridge are documented in this file.
 
 ### Added
 
+- Added safe Admin Save & Restart, upstream MCP catalog refresh and contract diffs, workspace override provenance/compaction previews, and downloadable sanitized diagnostic bundles.
 - Added persisted custom tool profiles with stable fixed/session endpoints, contract hashes, output modes, compact defaults, tunnel assignment, and an Admin profile editor.
 - Added an Admin Operations center with live runtime/module metrics, local approval decisions, and a bounded redacted audit explorer.
 - Added per-workspace runtime tool-call concurrency limits, selected-workspace schema validation for routed tools, panic recovery, and bounded redacted audit errors.

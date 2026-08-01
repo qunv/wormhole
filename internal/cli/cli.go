@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"codebridge/internal/adminauth"
 	"codebridge/internal/agent"
@@ -123,6 +124,27 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return a.serve(ctx, cfg)
 	case "start":
 		return a.start(ctx, cfg, opts)
+	case "__admin-restart-helper":
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(900 * time.Millisecond):
+		}
+		stopConfig := cfg
+		if oldPort, parseErr := strconv.Atoi(strings.TrimSpace(os.Getenv("CODEBRIDGE_ADMIN_OLD_PORT"))); parseErr == nil && oldPort > 0 && oldPort <= 65535 {
+			stopConfig.Port = oldPort
+		}
+		opts.Background = true
+		return withLifecycleLock(ctx, "admin-restart", func() error {
+			if err := a.stopUnlocked(stopConfig, opts); err != nil {
+				return err
+			}
+			latest, err := config.Load()
+			if err != nil {
+				return err
+			}
+			return a.startUnlocked(ctx, latest, opts)
+		})
 	case "restart":
 		if opts.Workspace == "" {
 			cwd, _ := os.Getwd()

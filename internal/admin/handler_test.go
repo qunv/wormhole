@@ -571,6 +571,143 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 	}
 }
 
+func TestAdminWorkspaceOverrideProvenanceAndCompactionPreview(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) { cfg.Audit = true })
+	workspace := t.TempDir()
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, localRequest(http.MethodGet, apiPrefix+"/workspaces", nil))
+	var list struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	createBody, _ := json.Marshal(map[string]string{"id": "api", "workspace": workspace})
+	createRequest := localRequest(http.MethodPost, apiPrefix+"/workspaces", strings.NewReader(string(createBody)))
+	secureAdminWrite(createRequest, csrfCookie(t, listResponse.Result()), list.Revision)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("workspace create = %d %s", createResponse.Code, createResponse.Body.String())
+	}
+	registry, err := workspaceregistry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := registry.Workspaces["api"]
+	raw := []byte("{\n  \"schemaVersion\": 1,\n  \"audit\": true,\n  \"maxProcesses\": 7\n}\n")
+	if err := os.WriteFile(entry.ConfigPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/workspaces/api", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace config = %d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"path":"maxProcesses"`, `"redundantPaths":["audit"]`, `"compactedOverride":{"maxProcesses":7`, `"inheritedTopLevel"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("workspace provenance missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestAdminUpstreamStatusAndInvalidRefresh(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/upstream", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"servers":[]`) {
+		t.Fatalf("upstream status = %d %s", response.Code, response.Body.String())
+	}
+	csrf := csrfCookie(t, response.Result())
+	request := localRequest(http.MethodPost, apiPrefix+"/upstream/missing/server/refresh", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "http://127.0.0.1:8789")
+	request.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	request.AddCookie(csrf)
+	refresh := httptest.NewRecorder()
+	handler.ServeHTTP(refresh, request)
+	if refresh.Code != http.StatusNotFound || !strings.Contains(refresh.Body.String(), "workspace_not_found") {
+		t.Fatalf("invalid upstream refresh = %d %s", refresh.Code, refresh.Body.String())
+	}
+}
+
+func TestAdminDiagnosticsBundleIsDownloadableAndRedacted(t *testing.T) {
+	runtimeSecret := "diagnostic-runtime-" + t.Name()
+	authToken := "diagnostic-auth-" + t.Name()
+	t.Setenv("CONTROL_PLANE_API_KEY", runtimeSecret)
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.AuthToken = authToken
+		cfg.RuntimeKeyEnv = "CONTROL_PLANE_API_KEY"
+		cfg.Audit = true
+	})
+	if err := os.MkdirAll(filepath.Dir(config.ServerLogPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ServerLogPath(), []byte("runtime-values "+authToken+" "+runtimeSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.Runtime.Handle(context.Background(), "workspace_info", nil); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("diagnostics = %d %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("diagnostics content type = %q", contentType)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, "codebridge-diagnostics-") {
+		t.Fatalf("diagnostics disposition = %q", disposition)
+	}
+	body := response.Body.String()
+	for _, secret := range []string{runtimeSecret, authToken} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("diagnostics leaked %q: %s", secret, body)
+		}
+	}
+	for _, want := range []string{`"diagnosticVersion": 1`, `"sessionRouter"`, `"sharedResources"`, `"logs"`, `"secrets"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("diagnostics missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestAdminRestartSchedulesDetachedLifecycleHelperOnce(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	calls := 0
+	oldPort := 0
+	handler.scheduleRestart = func(port int) error {
+		calls++
+		oldPort = port
+		return nil
+	}
+
+	bootstrap := httptest.NewRecorder()
+	handler.ServeHTTP(bootstrap, localRequest(http.MethodGet, apiPrefix+"/bootstrap", nil))
+	csrf := csrfCookie(t, bootstrap.Result())
+	requestRestart := func() *httptest.ResponseRecorder {
+		request := localRequest(http.MethodPost, apiPrefix+"/lifecycle/restart", strings.NewReader(`{}`))
+		request.Header.Set("Origin", "http://127.0.0.1:8789")
+		request.Header.Set("X-Codebridge-CSRF", csrf.Value)
+		request.AddCookie(csrf)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	first := requestRestart()
+	if first.Code != http.StatusAccepted || !strings.Contains(first.Body.String(), `"accepted":true`) || strings.Contains(first.Body.String(), `"alreadyPending":true`) {
+		t.Fatalf("first restart = %d %s", first.Code, first.Body.String())
+	}
+	second := requestRestart()
+	if second.Code != http.StatusAccepted || !strings.Contains(second.Body.String(), `"alreadyPending":true`) {
+		t.Fatalf("duplicate restart = %d %s", second.Code, second.Body.String())
+	}
+	if calls != 1 || oldPort != handler.Runtime.Config.Port {
+		t.Fatalf("restart scheduler calls=%d oldPort=%d", calls, oldPort)
+	}
+}
+
 func TestAdminOperationsApprovalsAndAuditExplorer(t *testing.T) {
 	handler := newAdminHandler(t, func(cfg *config.Config) {
 		cfg.Audit = true

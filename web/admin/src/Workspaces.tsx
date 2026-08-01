@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Braces,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -12,6 +13,7 @@ import {
   Plus,
   Save,
   Search,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -371,6 +373,27 @@ function WorkspaceEditor({ id, query, registryRevision, onRemoved }: {
         <details className="json-details"><summary><Braces size={16} /> Inspect effective JSON</summary><pre>{JSON.stringify(query.data.effective, null, 2)}</pre></details>
       </Card>
     </div>
+    <Card
+      title="Inheritance and overrides"
+      description="See which values come from the global configuration, which paths are explicitly changed, and which entries can be compacted."
+      actions={<Button variant="secondary" onClick={() => { setRaw(JSON.stringify(query.data.provenance.compactedOverride, null, 2)); setDirty(true); setMessage(null); }} disabled={!query.data.provenance.redundantPaths.length}><Sparkles size={15} /> Apply compacted preview</Button>}
+    >
+      <div className="override-provenance-summary">
+        <div><span><CheckCircle2 size={15} /></span><small>Explicit paths</small><strong>{query.data.provenance.entries.length}</strong></div>
+        <div><span><ArrowRight size={15} /></span><small>Inherited top-level</small><strong>{query.data.provenance.inheritedTopLevel.length}</strong></div>
+        <div><span><Sparkles size={15} /></span><small>Redundant paths</small><strong>{query.data.provenance.redundantPaths.length}</strong></div>
+      </div>
+      {query.data.provenance.truncated && <Notice tone="warning">The provenance list reached its safety limit. The raw override remains complete.</Notice>}
+      {!!query.data.provenance.redundantPaths.length && <Notice tone="info"><strong>Compaction available:</strong> {query.data.provenance.redundantPaths.join(", ")}</Notice>}
+      <div className="override-provenance-list">
+        {query.data.provenance.entries.map((entry: any) => <details key={entry.path} className="override-provenance-row">
+          <summary><code>{entry.path}</code><Badge tone={entry.state === "removed" ? "warning" : "info"}>{entry.state}</Badge></summary>
+          <pre>{JSON.stringify({ inherited: entry.inherited, override: entry.override, effective: entry.effective }, null, 2)}</pre>
+        </details>)}
+        {!query.data.provenance.entries.length && <EmptyState title="Fully inherited" description="This workspace currently inherits every configurable value from the global configuration." />}
+      </div>
+      <details className="json-details top-gap"><summary><Braces size={15} /> Inherited top-level fields</summary><pre>{JSON.stringify(query.data.provenance.inheritedTopLevel, null, 2)}</pre></details>
+    </Card>
     <Card title={`${id} override`} description="Objects merge recursively; arrays replace; null removes an inherited key." actions={<><Badge tone={dirty ? "warning" : "success"}>{dirty ? "Unsaved" : "In sync"}</Badge><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty}><Save size={15} /> Save</Button></>}>
       <TextArea className="control textarea code-editor compact" value={raw} onChange={(event) => { setRaw(event.target.value); setDirty(true); setMessage(null); }} spellCheck={false} />
     </Card>

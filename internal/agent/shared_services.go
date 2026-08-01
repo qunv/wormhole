@@ -262,10 +262,8 @@ func (s *SharedServices) acquireUpstream(ctx context.Context, runtime *Runtime, 
 	if err != nil {
 		return sharedUpstreamLease{}, err
 	}
-	if catalogCached {
-		if err := client.SetToolCatalogKey(clientKey); err != nil {
-			return sharedUpstreamLease{}, err
-		}
+	if err := client.SetToolCatalogKey(clientKey); err != nil {
+		return sharedUpstreamLease{}, err
 	}
 	deferred := catalogCached && client.Deferred()
 

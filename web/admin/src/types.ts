@@ -299,6 +299,50 @@ export interface AuditResponse {
   truncated: boolean;
 }
 
+export interface UpstreamToolContract {
+  toolCount: number;
+  hash: string;
+  tools: string[];
+}
+
+export interface UpstreamContractDiff {
+  added: string[];
+  removed: string[];
+  changed: string[];
+  changedCount: number;
+}
+
+export interface UpstreamMCPStatus {
+  name: string;
+  configured: boolean;
+  active: boolean;
+  transport?: string;
+  startupMode?: string;
+  required?: boolean;
+  refreshAvailable?: boolean;
+  health?: Record<string, unknown>;
+  activeContract?: UpstreamToolContract;
+  cachedContract?: UpstreamToolContract;
+  liveContract?: UpstreamToolContract;
+  activeToDesired?: UpstreamContractDiff;
+  cachedToLive?: UpstreamContractDiff;
+  restartRequired?: boolean;
+  cachedError?: string;
+  liveError?: string;
+  error?: string;
+}
+
+export interface UpstreamWorkspaceStatus {
+  id: string;
+  root: string;
+  servers: UpstreamMCPStatus[];
+}
+
+export interface UpstreamMCPResponse {
+  generatedAt: string;
+  workspaces: UpstreamWorkspaceStatus[];
+}
+
 export interface AdminAuthStatus {
   configured: boolean;
   authenticated: boolean;
@@ -374,10 +418,27 @@ export interface WorkspaceMutationResponse {
   activeUntilRestart?: boolean;
 }
 
+export interface WorkspaceOverrideProvenanceEntry {
+  path: string;
+  state: "overridden" | "removed" | string;
+  inherited?: unknown;
+  override?: unknown;
+  effective?: unknown;
+}
+
+export interface WorkspaceOverrideProvenance {
+  entries: WorkspaceOverrideProvenanceEntry[];
+  inheritedTopLevel: string[];
+  compactedOverride: Record<string, unknown>;
+  redundantPaths: string[];
+  truncated: boolean;
+}
+
 export interface WorkspaceConfigResponse {
   registration: WorkspaceSummary;
   override: Record<string, unknown>;
   effective: CodebridgeConfig;
+  provenance: WorkspaceOverrideProvenance;
   revision: string;
   restartRequired: boolean;
 }

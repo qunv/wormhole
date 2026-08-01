@@ -123,15 +123,20 @@ func resolveUpstreamCWD(runtime *Runtime, serverName string, cfg config.MCPServe
 }
 
 func newUpstreamMCPModuleFromClient(serverName string, cfg config.MCPServerConfig, client *upstreammcp.Client) (*upstreamMCPModule, error) {
+	return newUpstreamMCPModuleFromTools(serverName, cfg, client, client.Tools())
+}
+
+func newUpstreamMCPModuleFromTools(serverName string, cfg config.MCPServerConfig, client *upstreammcp.Client, tools []*mcp.Tool) (*upstreamMCPModule, error) {
 	module := newUpstreamMCPModule(serverName, client)
-	if err := module.buildSpecs(cfg, client.Tools()); err != nil {
+	if err := module.buildSpecs(cfg, tools); err != nil {
 		return nil, err
 	}
 	return module, nil
 }
 
 func validateUpstreamMCPToolCatalog(serverName string, cfg config.MCPServerConfig, tools []*mcp.Tool) error {
-	return newUpstreamMCPModule(serverName, nil).buildSpecs(cfg, tools)
+	_, err := newUpstreamMCPModuleFromTools(serverName, cfg, nil, tools)
+	return err
 }
 
 func newUpstreamMCPModule(serverName string, client *upstreammcp.Client) *upstreamMCPModule {

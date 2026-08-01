@@ -161,6 +161,60 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 	}
 }
 
+func TestRefreshCatalogSwapsSessionAndPersistsLiveContract(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	var exposeExtra atomic.Bool
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server {
+			server := testMCPServer()
+			if exposeExtra.Load() {
+				server.AddTool(&mcp.Tool{
+					Name: "new.read", Title: "New read", Description: "A newly discovered read tool.",
+					InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+					Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+				}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "new"}}}, nil
+				})
+			}
+			return server
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(mcpHandler)
+	defer server.Close()
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
+		FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "refresh-http", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	catalogKey := strings.Repeat("d", 32)
+	if err := client.SetToolCatalogKey(catalogKey); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.Tools()) != 2 {
+		t.Fatalf("initial tool count = %d", len(client.Tools()))
+	}
+	exposeExtra.Store(true)
+	if err := client.RefreshCatalog(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.Tools()) != 3 {
+		t.Fatalf("refreshed tool count = %d", len(client.Tools()))
+	}
+	catalog, err := LoadToolCatalog(catalogKey)
+	if err != nil || len(catalog.Tools) != 3 {
+		t.Fatalf("persisted refreshed catalog tools=%d err=%v", len(catalog.Tools), err)
+	}
+	if health := client.Health(context.Background()); health["reconnect_count"].(int) < 1 {
+		t.Fatalf("refresh did not record reconnect: %#v", health)
+	}
+}
+
 func TestDeferredClientConnectsOnFirstCall(t *testing.T) {
 	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
 	var requests atomic.Int64

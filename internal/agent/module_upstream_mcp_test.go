@@ -68,6 +68,66 @@ func agentUpstreamConfig(endpoint string) config.MCPServerConfig {
 	}
 }
 
+func TestRuntimeRefreshesUpstreamCatalogWithoutMutatingActiveContract(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	var exposeExtra atomic.Bool
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server {
+			server := agentUpstreamServer()
+			if exposeExtra.Load() {
+				server.AddTool(&mcp.Tool{
+					Name: "new.read", Title: "New read", Description: "Newly discovered read contract.",
+					InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+					Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+				}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "new"}}}, nil
+				})
+			}
+			return server
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	upstream := httptest.NewServer(handler)
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
+	cfg.MCPServers["catalog"] = agentUpstreamConfig(upstream.URL)
+	runtime, err := New(cfg, "test", "pro", "catalog-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	initial := runtime.UpstreamMCPStatuses(context.Background())
+	if len(initial) != 1 || initial[0]["restartRequired"] != false {
+		t.Fatalf("initial upstream status = %#v", initial)
+	}
+	if got := initial[0]["activeContract"].(toolContractSummary).ToolCount; got != 2 {
+		t.Fatalf("initial active contract tools = %d", got)
+	}
+	exposeExtra.Store(true)
+	refreshed, err := runtime.RefreshUpstreamMCP(context.Background(), "catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed["restartRequired"] != true {
+		t.Fatalf("refreshed status did not require restart: %#v", refreshed)
+	}
+	active := refreshed["activeContract"].(toolContractSummary)
+	live := refreshed["liveContract"].(toolContractSummary)
+	cached := refreshed["cachedContract"].(toolContractSummary)
+	if active.ToolCount != 2 || live.ToolCount != 3 || cached.ToolCount != 3 {
+		t.Fatalf("unexpected contracts active=%#v live=%#v cached=%#v", active, live, cached)
+	}
+	diff := refreshed["activeToDesired"].(map[string]any)
+	if diff["changedCount"] != 1 || len(diff["added"].([]string)) != 1 {
+		t.Fatalf("unexpected active-to-live diff: %#v", diff)
+	}
+	if _, ok := runtime.ToolSpec("catalog__new_read"); ok {
+		t.Fatal("active downstream contract mutated before restart")
+	}
+}
+
 func TestRuntimeUsesMCPServerNameAsToolNamespace(t *testing.T) {
 	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
