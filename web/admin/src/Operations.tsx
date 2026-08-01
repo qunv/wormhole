@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   Check,
+  ChevronRight,
   Clock3,
   Gauge,
   RefreshCw,
@@ -16,6 +17,7 @@ import { Badge, Button, Card, EmptyState, LoadingPage, Notice, PageHeader, Selec
 import type { ApprovalRecord, AuditRecord, OperationsWorkspace, RuntimeToolMetric } from "./types";
 
 type OperationsTab = "runtime" | "approvals" | "audit";
+type RuntimeScope = "workspaces" | "daemon";
 type ApprovalDecision = "approved" | "denied";
 
 export function Operations() {
@@ -135,30 +137,85 @@ function Summary({ icon, label, value, detail, tone = "info" }: { icon: React.Re
 }
 
 function RuntimePanel({ workspaces, router, shared }: { workspaces: OperationsWorkspace[]; router: Record<string, unknown>; shared: Record<string, unknown> }) {
+  const [scope, setScope] = useState<RuntimeScope>("workspaces");
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(() => workspaces[0]?.id ?? "");
+
+  useEffect(() => {
+    if (!workspaces.some((workspace) => workspace.id === selectedWorkspaceId)) {
+      setSelectedWorkspaceId(workspaces[0]?.id ?? "");
+    }
+  }, [selectedWorkspaceId, workspaces]);
+
+  const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? workspaces[0];
+
   return <div className="operations-runtime-stack">
-    {workspaces.map((workspace) => <Card
-      key={workspace.id}
-      title={workspace.id}
-      description={workspace.root}
-      actions={<><Badge tone="info">{workspace.mode}</Badge><Badge tone={workspace.policy === "full" ? "warning" : "success"}>{workspace.policy}</Badge></>}
-    >
-      {workspace.startupWarnings.length > 0 && <Notice tone="warning"><strong>{workspace.startupWarnings.length} startup warning{workspace.startupWarnings.length === 1 ? "" : "s"}</strong><ul>{workspace.startupWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></Notice>}
-      <div className="runtime-metric-grid">
-        <RuntimeMetric label="Succeeded" value={workspace.metrics.succeeded} />
-        <RuntimeMetric label="Failed" value={workspace.metrics.failed} danger={workspace.metrics.failed > 0} />
-        <RuntimeMetric label="In flight" value={workspace.metrics.in_flight} />
-        <RuntimeMetric label="Concurrency" value={`${workspace.metrics.concurrency.executing}/${workspace.metrics.concurrency.limit}`} />
-        <RuntimeMetric label="Average latency" value={formatMicros(workspace.metrics.latency_us.average)} />
-        <RuntimeMetric label="Uptime" value={formatDuration(workspace.metrics.uptime_seconds)} />
+    <div className="operations-runtime-switch" role="tablist" aria-label="Runtime scope">
+      <button className={scope === "workspaces" ? "active" : ""} onClick={() => setScope("workspaces")}><Gauge size={14} /> Workspaces <span>{workspaces.length}</span></button>
+      <button className={scope === "daemon" ? "active" : ""} onClick={() => setScope("daemon")}><Activity size={14} /> Daemon</button>
+    </div>
+
+    {scope === "workspaces" && (workspaces.length === 0 ?
+      <EmptyState title="No active workspaces" description="Restart Codebridge after registering a workspace to include it in runtime operations." /> :
+      <div className="operations-master-detail">
+        <Card title="Workspace overview" description="Select a workspace to inspect its live runtime details." className="operations-workspace-overview">
+          <div className="operations-workspace-list">
+            {workspaces.map((workspace) => <WorkspaceOverviewRow
+              key={workspace.id}
+              workspace={workspace}
+              selected={workspace.id === selectedWorkspace?.id}
+              onSelect={() => setSelectedWorkspaceId(workspace.id)}
+            />)}
+          </div>
+        </Card>
+        {selectedWorkspace && <WorkspaceRuntimeDetail workspace={selectedWorkspace} />}
       </div>
-      <ToolMetrics tools={workspace.metrics.tools ?? []} />
-      <details className="json-details operations-json"><summary>Module health and full runtime details</summary><pre>{JSON.stringify({ modules: workspace.modules, metrics: workspace.metrics }, null, 2)}</pre></details>
-    </Card>)}
-    <div className="two-column operations-system-details">
+    )}
+
+    {scope === "daemon" && <div className="two-column operations-system-details">
       <Card title="Session router" description="Conversation binding capacity and expiry activity."><KeyValueGrid value={router} /></Card>
       <Card title="Shared resources" description="Daemon-wide pooled providers, clients, recorders, and audit writers."><KeyValueGrid value={shared} /></Card>
-    </div>
+    </div>}
   </div>;
+}
+
+function WorkspaceOverviewRow({ workspace, selected, onSelect }: { workspace: OperationsWorkspace; selected: boolean; onSelect: () => void }) {
+  const health = workspaceHealth(workspace);
+  return <button type="button" className={`operations-workspace-row ${selected ? "selected" : ""}`} onClick={onSelect} aria-pressed={selected}>
+    <span className={`operations-health-dot ${health.tone}`} />
+    <span className="operations-workspace-row-main">
+      <span className="operations-workspace-row-title"><strong>{workspace.id}</strong><Badge tone={health.tone}>{health.label}</Badge></span>
+      <small title={workspace.root}>{workspace.root}</small>
+      <span className="operations-workspace-mini-metrics">
+        <span><small>Calls</small><strong>{workspace.metrics.completed_calls.toLocaleString()}</strong></span>
+        <span><small>Failed</small><strong className={workspace.metrics.failed ? "danger" : ""}>{workspace.metrics.failed.toLocaleString()}</strong></span>
+        <span><small>Active</small><strong>{workspace.metrics.concurrency.executing}/{workspace.metrics.concurrency.limit}</strong></span>
+        <span><small>Latency</small><strong>{formatMicros(workspace.metrics.latency_us.average)}</strong></span>
+      </span>
+    </span>
+    <ChevronRight className="operations-workspace-chevron" size={17} />
+  </button>;
+}
+
+function WorkspaceRuntimeDetail({ workspace }: { workspace: OperationsWorkspace }) {
+  const health = workspaceHealth(workspace);
+  return <Card
+    title={workspace.id}
+    description={workspace.root}
+    className="operations-workspace-detail"
+    actions={<><Badge tone={health.tone}>{health.label}</Badge><Badge tone="info">{workspace.mode}</Badge><Badge tone={workspace.policy === "full" ? "warning" : "success"}>{workspace.policy}</Badge></>}
+  >
+    {workspace.startupWarnings.length > 0 && <Notice tone="warning"><strong>{workspace.startupWarnings.length} startup warning{workspace.startupWarnings.length === 1 ? "" : "s"}</strong><ul>{workspace.startupWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></Notice>}
+    <div className="runtime-metric-grid operations-workspace-metrics">
+      <RuntimeMetric label="Succeeded" value={workspace.metrics.succeeded} />
+      <RuntimeMetric label="Failed" value={workspace.metrics.failed} danger={workspace.metrics.failed > 0} />
+      <RuntimeMetric label="In flight" value={workspace.metrics.in_flight} />
+      <RuntimeMetric label="Concurrency" value={`${workspace.metrics.concurrency.executing}/${workspace.metrics.concurrency.limit}`} />
+      <RuntimeMetric label="Average latency" value={formatMicros(workspace.metrics.latency_us.average)} />
+      <RuntimeMetric label="Uptime" value={formatDuration(workspace.metrics.uptime_seconds)} />
+    </div>
+    <ToolMetrics tools={workspace.metrics.tools ?? []} />
+    <details className="json-details operations-json"><summary>Module health and full runtime details</summary><pre>{JSON.stringify({ modules: workspace.modules, metrics: workspace.metrics }, null, 2)}</pre></details>
+  </Card>;
 }
 
 function RuntimeMetric({ label, value, danger = false }: { label: string; value: number | string; danger?: boolean }) {
@@ -166,9 +223,14 @@ function RuntimeMetric({ label, value, danger = false }: { label: string; value:
 }
 
 function ToolMetrics({ tools }: { tools: RuntimeToolMetric[] }) {
-  const top = useMemo(() => [...tools].sort((a, b) => b.completed_calls - a.completed_calls || b.failed - a.failed).slice(0, 12), [tools]);
-  if (!top.length) return <div className="operations-inline-empty">No tool calls have completed yet.</div>;
-  return <div className="operations-table-wrap"><table className="operations-table"><thead><tr><th>Tool</th><th>Module</th><th>Calls</th><th>Failed</th><th>Avg latency</th><th>Last call</th></tr></thead><tbody>{top.map((tool) => <tr key={tool.tool}><td><code>{tool.tool}</code></td><td>{tool.module}</td><td>{tool.completed_calls}</td><td className={tool.failed ? "danger" : ""}>{tool.failed}</td><td>{formatMicros(tool.latency_us.average)}</td><td>{formatTime(tool.last_call_at)}</td></tr>)}</tbody></table></div>;
+  const [expanded, setExpanded] = useState(false);
+  const sorted = useMemo(() => [...tools].sort((a, b) => b.completed_calls - a.completed_calls || b.failed - a.failed), [tools]);
+  const visible = expanded ? sorted.slice(0, 24) : sorted.slice(0, 5);
+  if (!visible.length) return <div className="operations-inline-empty">No tool calls have completed yet.</div>;
+  return <>
+    <div className="operations-detail-section-head"><div><strong>Tool activity</strong><small>Ordered by completed calls.</small></div>{sorted.length > 5 && <button type="button" onClick={() => setExpanded(!expanded)}>{expanded ? "Show top 5" : `Show all ${Math.min(sorted.length, 24)}`}</button>}</div>
+    <div className="operations-table-wrap"><table className="operations-table"><thead><tr><th>Tool</th><th>Module</th><th>Calls</th><th>Failed</th><th>Avg latency</th><th>Last call</th></tr></thead><tbody>{visible.map((tool) => <tr key={tool.tool}><td><code>{tool.tool}</code></td><td>{tool.module}</td><td>{tool.completed_calls}</td><td className={tool.failed ? "danger" : ""}>{tool.failed}</td><td>{formatMicros(tool.latency_us.average)}</td><td>{formatTime(tool.last_call_at)}</td></tr>)}</tbody></table></div>
+  </>;
 }
 
 function ApprovalsPanel({ approvals, loading, error, status, workspace, workspaces, onStatus, onWorkspace, onDecision, decidingId, mutationError, truncated }: {
@@ -322,6 +384,12 @@ function formatTime(value?: string): string {
   if (!value) return "Never";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function workspaceHealth(workspace: OperationsWorkspace): { label: string; tone: "success" | "warning" | "danger" } {
+  if (workspace.startupWarnings.length > 0) return { label: "Warning", tone: "danger" };
+  if (workspace.metrics.failed > 0) return { label: "Failures", tone: "warning" };
+  return { label: "Healthy", tone: "success" };
 }
 
 function approvalTone(status: string): "neutral" | "success" | "warning" | "danger" | "info" {
