@@ -3,7 +3,9 @@ import type {
   Bootstrap,
   CodebridgeConfig,
   ConfigSnapshot,
+  ProfilesResponse,
   SecretsResponse,
+  ToolCatalogResponse,
   WorkspaceBrowseResponse,
   WorkspaceConfigResponse,
   WorkspaceMutationResponse,
@@ -69,6 +71,8 @@ export const api = {
     }),
   logout: () => request<{ authenticated: false }>("/auth/logout", { method: "POST" }),
   bootstrap: () => request<Bootstrap>("/bootstrap"),
+  profiles: () => request<ProfilesResponse>("/profiles"),
+  toolCatalog: () => request<ToolCatalogResponse>("/tools/catalog"),
   config: () => request<ConfigSnapshot>("/config"),
   validateConfig: (config: CodebridgeConfig) =>
     request<{ valid: true; config: CodebridgeConfig }>("/config/validate", {

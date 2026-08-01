@@ -571,6 +571,131 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 	}
 }
 
+func TestAdminToolCatalogExposesSelectableGroupsAndUnfilteredTools(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.Tools.AllowedGroups = []string{"repo"}
+		cfg.Tools.DeniedTools = []string{"read_file"}
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/tools/catalog", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get tool catalog = %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		WorkspaceCount int `json:"workspaceCount"`
+		Groups         []struct {
+			Name      string `json:"name"`
+			ToolCount int    `json:"toolCount"`
+		} `json:"groups"`
+		Tools []struct {
+			Name         string   `json:"name"`
+			Groups       []string `json:"groups"`
+			WorkspaceIDs []string `json:"workspaceIds"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.WorkspaceCount != 1 || len(payload.Groups) == 0 || len(payload.Tools) == 0 {
+		t.Fatalf("unexpected tool catalog payload: %#v", payload)
+	}
+	groups := map[string]int{}
+	for _, group := range payload.Groups {
+		groups[group.Name] = group.ToolCount
+	}
+	if groups["filesystem"] == 0 || groups["repo"] == 0 {
+		t.Fatalf("expected filesystem and repo groups: %#v", groups)
+	}
+	var readFileGroups []string
+	var readFileWorkspaces []string
+	for _, tool := range payload.Tools {
+		if tool.Name == "read_file" {
+			readFileGroups = tool.Groups
+			readFileWorkspaces = tool.WorkspaceIDs
+			break
+		}
+	}
+	if len(readFileGroups) != 1 || readFileGroups[0] != "filesystem" {
+		t.Fatalf("denied tool missing from unfiltered catalog: groups=%v", readFileGroups)
+	}
+	if len(readFileWorkspaces) != 1 || readFileWorkspaces[0] != "default" {
+		t.Fatalf("unexpected read_file workspaces: %v", readFileWorkspaces)
+	}
+}
+
+func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.NoTunnel = false
+		cfg.Tunnels = map[string]config.TunnelConfig{
+			"fast": {TunnelID: "tunnel_fast", Mode: "fast", Profile: "codebridge-fast", RuntimeKeyEnv: "FAST_KEY"},
+			"full": {TunnelID: "tunnel_full", Mode: "full", Profile: "codebridge-full", RuntimeKeyEnv: "FULL_KEY"},
+		}
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/profiles", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get profiles = %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		WorkspaceCount int `json:"workspaceCount"`
+		Profiles       []struct {
+			ID       string `json:"id"`
+			Endpoint string `json:"endpoint"`
+			Tools    []struct {
+				Name         string   `json:"name"`
+				Scope        string   `json:"scope"`
+				WorkspaceIDs []string `json:"workspaceIds"`
+			} `json:"tools"`
+			Tunnels []struct {
+				Name    string `json:"name"`
+				Enabled bool   `json:"enabled"`
+			} `json:"tunnels"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.WorkspaceCount != 1 || len(payload.Profiles) != 2 {
+		t.Fatalf("unexpected profile payload: %#v", payload)
+	}
+	profiles := map[string]struct {
+		Endpoint       string
+		Tools          map[string]string
+		ToolWorkspaces map[string][]string
+		Tunnels        map[string]bool
+	}{}
+	for _, profile := range payload.Profiles {
+		item := struct {
+			Endpoint       string
+			Tools          map[string]string
+			ToolWorkspaces map[string][]string
+			Tunnels        map[string]bool
+		}{profile.Endpoint, map[string]string{}, map[string][]string{}, map[string]bool{}}
+		for _, tool := range profile.Tools {
+			item.Tools[tool.Name] = tool.Scope
+			item.ToolWorkspaces[tool.Name] = tool.WorkspaceIDs
+		}
+		for _, tunnel := range profile.Tunnels {
+			item.Tunnels[tunnel.Name] = tunnel.Enabled
+		}
+		profiles[profile.ID] = item
+	}
+	fast := profiles["fast"]
+	if fast.Endpoint != "/mcp/session/fast" || len(fast.Tools) != 15 || fast.Tools["workspace_select"] != "session" || fast.Tools["read_file"] != "workspace" {
+		t.Fatalf("unexpected fast profile: %#v", fast)
+	}
+	if len(fast.ToolWorkspaces["read_file"]) != 1 || fast.ToolWorkspaces["read_file"][0] != "default" || !fast.Tunnels["fast"] {
+		t.Fatalf("unexpected fast availability/tunnels: %#v", fast)
+	}
+	if _, exposed := fast.Tools["memory_search"]; exposed {
+		t.Fatal("fast admin profile unexpectedly exposed memory_search")
+	}
+	full := profiles["full"]
+	if full.Endpoint != "/mcp/session" || len(full.Tools) <= len(fast.Tools) || !full.Tunnels["full"] {
+		t.Fatalf("unexpected full profile: %#v", full)
+	}
+}
+
 func TestAdminSecretsIncludeNamedTunnelRuntimeKeys(t *testing.T) {
 	handler := newAdminHandler(t, func(cfg *config.Config) {
 		cfg.NoTunnel = false

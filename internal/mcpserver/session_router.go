@@ -42,6 +42,24 @@ If a coding tool reports that no workspace is selected or that a binding expired
 
 ` + Instructions
 
+type ProfileToolInfo struct {
+	Name         string   `json:"name"`
+	Title        string   `json:"title"`
+	Description  string   `json:"description"`
+	Scope        string   `json:"scope"`
+	ReadOnly     bool     `json:"readOnly"`
+	Destructive  bool     `json:"destructive"`
+	OpenWorld    bool     `json:"openWorld"`
+	WorkspaceIDs []string `json:"workspaceIds"`
+}
+
+var sessionControlProfileTools = []ProfileToolInfo{
+	{Name: "workspace_clear", Title: "Clear workspace", Description: "Remove the workspace binding from this chat.", Scope: "session", WorkspaceIDs: []string{}},
+	{Name: "workspace_current", Title: "Current workspace", Description: "Return the workspace currently bound to this chat.", Scope: "session", ReadOnly: true, WorkspaceIDs: []string{}},
+	{Name: "workspace_list", Title: "List workspaces", Description: "List workspaces available to the session router.", Scope: "session", ReadOnly: true, WorkspaceIDs: []string{}},
+	{Name: "workspace_select", Title: "Select workspace", Description: "Bind this chat to one Codebridge workspace.", Scope: "session", WorkspaceIDs: []string{}},
+}
+
 type workspaceBinding struct {
 	Token       string
 	WorkspaceID string
@@ -351,6 +369,33 @@ func (r *SessionRouter) clear(sessionID, explicitToken string) bool {
 	return true
 }
 
+func (r *SessionRouter) ProfileTools(profile ToolProfile) []ProfileToolInfo {
+	tools := append([]ProfileToolInfo(nil), sessionControlProfileTools...)
+	workspaceIDs := r.workspaceIDs()
+	for _, spec := range r.specs {
+		if profile == ToolProfileFast && !fastCodingTools[spec.Name] {
+			continue
+		}
+		availableIn := make([]string, 0, len(workspaceIDs))
+		for _, id := range workspaceIDs {
+			runtime := r.runtimes[id]
+			if runtime == nil || !runtime.ToolEnabled(spec.Name) {
+				continue
+			}
+			if _, registered := runtime.ToolSpec(spec.Name); registered {
+				availableIn = append(availableIn, id)
+			}
+		}
+		tools = append(tools, ProfileToolInfo{
+			Name: spec.Name, Title: spec.Title, Description: spec.Description,
+			Scope: "workspace", ReadOnly: spec.ReadOnly, Destructive: spec.Destructive,
+			OpenWorld: spec.OpenWorld, WorkspaceIDs: availableIn,
+		})
+	}
+	sort.Slice(tools, func(left, right int) bool { return tools[left].Name < tools[right].Name })
+	return tools
+}
+
 func (r *SessionRouter) Stats() map[string]any {
 	now := r.now().UTC()
 	r.mu.Lock()
@@ -364,12 +409,6 @@ func (r *SessionRouter) Stats() map[string]any {
 	if maxBindings <= 0 {
 		maxBindings = defaultMaxBindings
 	}
-	fastTools := 4
-	for _, spec := range r.specs {
-		if fastCodingTools[spec.Name] {
-			fastTools++
-		}
-	}
 	return map[string]any{
 		"endpoint": SessionEndpoint, "fast_endpoint": SessionFastEndpoint,
 		"binding_ttl_seconds":      int64(r.ttl / time.Second),
@@ -377,8 +416,8 @@ func (r *SessionRouter) Stats() map[string]any {
 		"active_bindings":          len(r.bindings), "max_bindings": maxBindings,
 		"bound_sessions": len(r.sessions), "expired_bindings": r.expiredCount,
 		"evicted_bindings": r.evictedCount,
-		"workspace_count":  len(r.runtimes), "tool_count": len(r.specs) + 4,
-		"fast_tool_count": fastTools,
+		"workspace_count":  len(r.runtimes), "tool_count": len(r.ProfileTools(ToolProfileFull)),
+		"fast_tool_count": len(r.ProfileTools(ToolProfileFast)),
 	}
 }
 

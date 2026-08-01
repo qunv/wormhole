@@ -30,6 +30,7 @@ import (
 	"codebridge/internal/adminui"
 	"codebridge/internal/agent"
 	"codebridge/internal/config"
+	"codebridge/internal/mcpserver"
 	"codebridge/internal/workspaceregistry"
 )
 
@@ -284,6 +285,10 @@ func (h *Handler) serveAPI(writer http.ResponseWriter, request *http.Request) {
 	switch {
 	case suffix == "/bootstrap" && request.Method == http.MethodGet:
 		h.getBootstrap(writer)
+	case suffix == "/profiles" && request.Method == http.MethodGet:
+		h.getProfiles(writer)
+	case suffix == "/tools/catalog" && request.Method == http.MethodGet:
+		h.getToolCatalog(writer)
 	case suffix == "/config" && request.Method == http.MethodGet:
 		h.getConfig(writer)
 	case suffix == "/config" && request.Method == http.MethodPut:
@@ -323,6 +328,142 @@ func (h *Handler) getBootstrap(writer http.ResponseWriter) {
 			"adminAuthentication": true, "secretValuesReadable": false,
 		},
 		"startupWarnings": h.Runtime.StartupWarnings(),
+	})
+}
+
+type adminToolCatalogEntry struct {
+	Name         string   `json:"name"`
+	Title        string   `json:"title"`
+	Description  string   `json:"description"`
+	Groups       []string `json:"groups"`
+	ReadOnly     bool     `json:"readOnly"`
+	Destructive  bool     `json:"destructive"`
+	OpenWorld    bool     `json:"openWorld"`
+	WorkspaceIDs []string `json:"workspaceIds"`
+	groups       map[string]struct{}
+	workspaces   map[string]struct{}
+}
+
+func (h *Handler) getToolCatalog(writer http.ResponseWriter) {
+	type runtimeEntry struct {
+		id      string
+		runtime *agent.Runtime
+	}
+	runtimes := []runtimeEntry{{id: h.Runtime.WorkspaceID, runtime: h.Runtime}}
+	namedIDs := make([]string, 0, len(h.Runtimes))
+	for id := range h.Runtimes {
+		namedIDs = append(namedIDs, id)
+	}
+	sort.Strings(namedIDs)
+	for _, id := range namedIDs {
+		runtimes = append(runtimes, runtimeEntry{id: id, runtime: h.Runtimes[id]})
+	}
+
+	byName := map[string]*adminToolCatalogEntry{}
+	groupTools := map[string]map[string]struct{}{}
+	workspaceIDs := map[string]struct{}{}
+	for _, item := range runtimes {
+		if item.runtime == nil {
+			continue
+		}
+		workspaceID := strings.TrimSpace(item.runtime.WorkspaceID)
+		if workspaceID == "" {
+			workspaceID = strings.TrimSpace(item.id)
+		}
+		if workspaceID == "" {
+			workspaceID = "default"
+		}
+		workspaceIDs[workspaceID] = struct{}{}
+		for _, spec := range item.runtime.Tools() {
+			group := item.runtime.ToolModuleName(spec.Name)
+			if group == "" {
+				continue
+			}
+			entry := byName[spec.Name]
+			if entry == nil {
+				entry = &adminToolCatalogEntry{
+					Name: spec.Name, Title: spec.Title, Description: spec.Description,
+					ReadOnly: spec.ReadOnly, Destructive: spec.Destructive, OpenWorld: spec.OpenWorld,
+					groups: map[string]struct{}{}, workspaces: map[string]struct{}{},
+				}
+				byName[spec.Name] = entry
+			} else {
+				entry.ReadOnly = entry.ReadOnly && spec.ReadOnly
+				entry.Destructive = entry.Destructive || spec.Destructive
+				entry.OpenWorld = entry.OpenWorld || spec.OpenWorld
+			}
+			entry.groups[group] = struct{}{}
+			entry.workspaces[workspaceID] = struct{}{}
+			if groupTools[group] == nil {
+				groupTools[group] = map[string]struct{}{}
+			}
+			groupTools[group][spec.Name] = struct{}{}
+		}
+	}
+
+	toolNames := make([]string, 0, len(byName))
+	for name := range byName {
+		toolNames = append(toolNames, name)
+	}
+	sort.Strings(toolNames)
+	tools := make([]adminToolCatalogEntry, 0, len(toolNames))
+	for _, name := range toolNames {
+		entry := byName[name]
+		for group := range entry.groups {
+			entry.Groups = append(entry.Groups, group)
+		}
+		for workspaceID := range entry.workspaces {
+			entry.WorkspaceIDs = append(entry.WorkspaceIDs, workspaceID)
+		}
+		sort.Strings(entry.Groups)
+		sort.Strings(entry.WorkspaceIDs)
+		tools = append(tools, *entry)
+	}
+
+	groupNames := make([]string, 0, len(groupTools))
+	for name := range groupTools {
+		groupNames = append(groupNames, name)
+	}
+	sort.Strings(groupNames)
+	groups := make([]map[string]any, 0, len(groupNames))
+	for _, name := range groupNames {
+		groups = append(groups, map[string]any{"name": name, "toolCount": len(groupTools[name])})
+	}
+	h.sendJSON(writer, http.StatusOK, map[string]any{
+		"tools": tools, "groups": groups, "workspaceCount": len(workspaceIDs),
+	})
+}
+
+func (h *Handler) getProfiles(writer http.ResponseWriter) {
+	router := mcpserver.NewSessionRouter(h.Runtime, h.Runtimes)
+	tunnelsByMode := map[string][]map[string]any{"fast": []map[string]any{}, "full": []map[string]any{}}
+	for _, tunnel := range h.Runtime.Config.EffectiveTunnels() {
+		mode := strings.ToLower(strings.TrimSpace(tunnel.Config.Mode))
+		if mode == "" {
+			mode = "full"
+		}
+		if mode != "fast" && mode != "full" {
+			continue
+		}
+		tunnelsByMode[mode] = append(tunnelsByMode[mode], map[string]any{
+			"name": tunnel.Name, "enabled": tunnel.Config.IsEnabled(),
+			"tunnelId": tunnel.Config.TunnelID, "profile": tunnel.Config.Profile,
+		})
+	}
+	profiles := []map[string]any{
+		{
+			"id": "fast", "name": "Fast", "endpoint": mcpserver.SessionFastEndpoint,
+			"description": "Compact profile with workspace routing and high-value coding tools.",
+			"tools":       router.ProfileTools(mcpserver.ToolProfileFast), "tunnels": tunnelsByMode["fast"],
+		},
+		{
+			"id": "full", "name": "Full", "endpoint": mcpserver.SessionEndpoint,
+			"description": "Complete profile with workspace routing and every enabled runtime tool.",
+			"tools":       router.ProfileTools(mcpserver.ToolProfileFull), "tunnels": tunnelsByMode["full"],
+		},
+	}
+	h.sendJSON(writer, http.StatusOK, map[string]any{
+		"profiles": profiles, "workspaceCount": 1 + len(h.Runtimes),
 	})
 }
 

@@ -101,6 +101,60 @@ export interface CodebridgeConfig {
   httpLog?: boolean;
 }
 
+export interface ProfileTool {
+  name: string;
+  title: string;
+  description: string;
+  scope: "session" | "workspace" | string;
+  readOnly: boolean;
+  destructive: boolean;
+  openWorld: boolean;
+  workspaceIds: string[];
+}
+
+export interface ProfileTunnel {
+  name: string;
+  enabled: boolean;
+  tunnelId: string;
+  profile: string;
+}
+
+export interface ToolProfile {
+  id: "fast" | "full" | string;
+  name: string;
+  endpoint: string;
+  description: string;
+  tools: ProfileTool[];
+  tunnels: ProfileTunnel[];
+}
+
+export interface ProfilesResponse {
+  profiles: ToolProfile[];
+  workspaceCount: number;
+}
+
+export interface ToolCatalogTool {
+  name: string;
+  title: string;
+  description: string;
+  groups: string[];
+  readOnly: boolean;
+  destructive: boolean;
+  openWorld: boolean;
+  workspaceIds: string[];
+}
+
+export interface ToolCatalogGroup {
+  name: string;
+  toolCount: number;
+}
+
+export interface ToolCatalogResponse {
+  tools: ToolCatalogTool[];
+  groups: ToolCatalogGroup[];
+  workspaceCount: number;
+}
+
 export interface ConfigSnapshot {
   config: CodebridgeConfig;
   revision: string;

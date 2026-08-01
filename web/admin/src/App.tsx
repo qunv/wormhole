@@ -14,6 +14,7 @@ import {
   Moon,
   Rocket,
   Settings2,
+  Wrench,
   ShieldCheck,
   Sun,
   Terminal,
@@ -23,15 +24,17 @@ import { api, APIError, AUTH_REQUIRED_EVENT } from "./api";
 import { Button, Notice, TextInput } from "./components";
 import { Configuration } from "./Configuration";
 import { Overview } from "./Overview";
+import { Profiles } from "./Profiles";
 import { Secrets } from "./Secrets";
 import { Setup } from "./Setup";
 import { Workspaces } from "./Workspaces";
 import type { AdminAuthStatus } from "./types";
 
-type Page = "setup" | "overview" | "configuration" | "workspaces" | "secrets";
+type Page = "setup" | "overview" | "profiles" | "configuration" | "workspaces" | "secrets";
 const nav: { id: Page; label: string; icon: React.ReactNode; description: string }[] = [
   { id: "setup", label: "Setup", icon: <Rocket size={19} />, description: "Guided first run" },
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={19} />, description: "Health and posture" },
+  { id: "profiles", label: "Profiles", icon: <Wrench size={19} />, description: "Exposed tool contracts" },
   { id: "configuration", label: "Configuration", icon: <Settings2 size={19} />, description: "Global runtime settings" },
   { id: "workspaces", label: "Workspaces", icon: <FolderGit2 size={19} />, description: "Named overrides" },
   { id: "secrets", label: "Secrets", icon: <KeyRound size={19} />, description: "Write-only values" },
@@ -133,7 +136,7 @@ export default function App() {
           <button className="theme-button" onClick={() => logout.mutate()} disabled={logout.isPending} aria-label="Sign out">{logout.isPending ? <LoaderCircle size={17} className="spin" /> : <LogOut size={17} />}</button>
         </div>
       </div>
-      <div className="page-container">{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
+      <div className="page-container">{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "profiles" && <Profiles />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
     </main>
   </div>;
 }

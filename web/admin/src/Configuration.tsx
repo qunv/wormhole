@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Braces, Cpu, Database, Gauge, Network, Plus, Save, Shield, Trash2, Waypoints } from "lucide-react";
 import { api, APIError } from "./api";
-import { Badge, Button, Card, Field as BaseField, LoadingPage, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
-import type { CodebridgeConfig, MCPServerConfig } from "./types";
+import { Badge, Button, Card, Field as BaseField, LoadingPage, MultiSelect, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
+import type { CodebridgeConfig, MCPServerConfig, ToolCatalogResponse } from "./types";
 
 type Tab = "general" | "memory" | "mcp" | "tools" | "advanced";
 const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -87,6 +87,7 @@ function Toggle(props: ComponentProps<typeof BaseToggle>) {
 export function Configuration() {
   const queryClient = useQueryClient();
   const snapshot = useQuery({ queryKey: ["config"], queryFn: api.config });
+  const toolCatalog = useQuery({ queryKey: ["tool-catalog"], queryFn: api.toolCatalog });
   const [tab, setTab] = useState<Tab>("general");
   const [draft, setDraft] = useState<CodebridgeConfig | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -144,7 +145,7 @@ export function Configuration() {
           {tab === "general" && <GeneralEditor value={draft} onChange={update} />}
           {tab === "memory" && <MemoryEditor value={draft} onChange={update} />}
           {tab === "mcp" && <MCPServersEditor value={draft} onChange={update} />}
-          {tab === "tools" && <ToolsEditor value={draft} onChange={update} />}
+          {tab === "tools" && <ToolsEditor value={draft} onChange={update} catalog={toolCatalog.data} catalogLoading={toolCatalog.isLoading} />}
           {tab === "advanced" && <AdvancedEditor value={draft} onChange={update} />}
         </div>
       </div>
@@ -280,16 +281,27 @@ function MCPServersEditor({ value, onChange }: EditorProps) {
   </Card>;
 }
 
-function ToolsEditor({ value, onChange }: EditorProps) {
+function ToolsEditor({ value, onChange, catalog, catalogLoading }: EditorProps & { catalog?: ToolCatalogResponse; catalogLoading: boolean }) {
   const tools = value.tools ?? {};
   const set = <K extends keyof CodebridgeConfig>(key: K, next: CodebridgeConfig[K]) => onChange({ ...value, [key]: next });
   const setTools = (patch: Partial<typeof tools>) => onChange({ ...value, tools: { ...tools, ...patch } });
+  const groupOptions = (catalog?.groups ?? []).map((group) => ({
+    value: group.name,
+    label: group.name,
+    description: `${group.toolCount} tool${group.toolCount === 1 ? "" : "s"}`,
+  }));
+  const toolOptions = (catalog?.tools ?? []).map((tool) => ({
+    value: tool.name,
+    label: tool.name,
+    description: `${tool.title} · ${tool.groups.join(", ")}`,
+  }));
+  const loadingHint = catalogLoading ? "Loading available values…" : `${toolOptions.length} tools from ${groupOptions.length} groups`;
   return <div className="stack">
     <Card title="Tool exposure" description="Deny lists and allow lists are enforced before MCP tools are exposed.">
       <div className="form-grid">
-        <ListField label="Allowed groups" value={tools.allowedGroups ?? []} onChange={(allowedGroups) => setTools({ allowedGroups })} />
-        <ListField label="Allowed tools" value={tools.allowedTools ?? []} onChange={(allowedTools) => setTools({ allowedTools })} />
-        <ListField label="Denied tools" value={tools.deniedTools ?? []} onChange={(deniedTools) => setTools({ deniedTools })} />
+        <Field label="Allowed groups" hint={loadingHint} wide><MultiSelect options={groupOptions} value={tools.allowedGroups ?? []} onChange={(allowedGroups) => setTools({ allowedGroups })} placeholder="All groups are allowed" searchPlaceholder="Search tool groups…" /></Field>
+        <Field label="Allowed tools" hint="When selected, tools not listed here are hidden." wide><MultiSelect options={toolOptions} value={tools.allowedTools ?? []} onChange={(allowedTools) => setTools({ allowedTools })} placeholder="No explicit tool allowlist" searchPlaceholder="Search available tools…" /></Field>
+        <Field label="Denied tools" hint="Denied tools override allowed groups and allowed tools." wide><MultiSelect options={toolOptions} value={tools.deniedTools ?? []} onChange={(deniedTools) => setTools({ deniedTools })} placeholder="No denied tools" searchPlaceholder="Search available tools…" /></Field>
       </div>
     </Card>
     <Card title="Resource limits" description="Keep output and process limits bounded to protect the local daemon.">
