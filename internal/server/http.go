@@ -82,7 +82,7 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 	instance.SessionRouter = mcpserver.NewSessionRouter(runtime, instance.Runtimes)
 
 	mux := http.NewServeMux()
-	adminHandler := admin.New(runtime, instance.Runtimes)
+	adminHandler := admin.New(runtime, instance.Runtimes, instance.SessionRouter)
 	mux.Handle("/admin", adminHandler)
 	mux.Handle("/admin/", adminHandler)
 	mux.HandleFunc("GET /{$}", instance.root)

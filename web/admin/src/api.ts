@@ -1,8 +1,12 @@
 import type {
   AdminAuthStatus,
+  ApprovalRecord,
+  ApprovalsResponse,
+  AuditResponse,
   Bootstrap,
   CodebridgeConfig,
   ConfigSnapshot,
+  OperationsResponse,
   ProfilesResponse,
   SecretsResponse,
   ToolCatalogResponse,
@@ -73,6 +77,25 @@ export const api = {
   bootstrap: () => request<Bootstrap>("/bootstrap"),
   profiles: () => request<ProfilesResponse>("/profiles"),
   toolCatalog: () => request<ToolCatalogResponse>("/tools/catalog"),
+  operations: () => request<OperationsResponse>("/operations"),
+  approvals: (status = "pending", workspace = "", limit = 100) => {
+    const query = new URLSearchParams({ status, limit: String(limit) });
+    if (workspace) query.set("workspace", workspace);
+    return request<ApprovalsResponse>(`/approvals?${query.toString()}`);
+  },
+  decideApproval: (workspaceId: string, id: string, decision: "approved" | "denied") =>
+    request<ApprovalRecord>(`/approvals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(id)}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
+  audit: (filters: { workspace?: string; tool?: string; status?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (filters.workspace) query.set("workspace", filters.workspace);
+    if (filters.tool) query.set("tool", filters.tool);
+    if (filters.status) query.set("status", filters.status);
+    query.set("limit", String(filters.limit ?? 100));
+    return request<AuditResponse>(`/audit?${query.toString()}`);
+  },
   config: () => request<ConfigSnapshot>("/config"),
   validateConfig: (config: CodebridgeConfig) =>
     request<{ valid: true; config: CodebridgeConfig }>("/config/validate", {

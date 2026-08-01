@@ -178,6 +178,40 @@ func TestApprovalManagerRestoresPersistedActiveIndex(t *testing.T) {
 	}
 }
 
+func TestApprovalListAndLocalDecision(t *testing.T) {
+	manager := newTestApprovalManager(t)
+	first, err := manager.Request([]string{"run:first"}, "first", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	second, err := manager.Request([]string{"run:second"}, "second", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.List("pending", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 || pending[0].ID != second.ID || pending[1].ID != first.ID {
+		t.Fatalf("pending list = %#v", pending)
+	}
+	decided, err := manager.DecideLocal(second.ID, "approved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decided.Status != "approved" {
+		t.Fatalf("local decision = %#v", decided)
+	}
+	approved, err := manager.List("approved", 1)
+	if err != nil || len(approved) != 1 || approved[0].ID != second.ID {
+		t.Fatalf("approved list = %#v err=%v", approved, err)
+	}
+	if _, err := manager.List("unknown", 10); err == nil {
+		t.Fatal("invalid status filter was accepted")
+	}
+}
+
 func TestUUID4ReturnsValidVersion4Identifier(t *testing.T) {
 	id, err := uuid4()
 	if err != nil {

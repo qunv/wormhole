@@ -163,6 +163,119 @@ export interface ConfigSnapshot {
   restartRequired: boolean;
 }
 
+export interface RuntimeToolMetric {
+  tool: string;
+  module: string;
+  started_calls: number;
+  completed_calls: number;
+  succeeded: number;
+  failed: number;
+  policy_rejected: number;
+  canceled: number;
+  deadline_exceeded: number;
+  in_flight: number;
+  max_in_flight: number;
+  last_call_at?: string;
+  last_failure_at?: string;
+  latency_us: { total: number; average: number; max: number };
+}
+
+export interface RuntimeRecentCall {
+  call_id: string;
+  tool: string;
+  module: string;
+  status: string;
+  started_at: string;
+  duration_us: number;
+  audit_write_failed: boolean;
+  memory_observation?: string;
+}
+
+export interface RuntimeMetrics {
+  started_at: string;
+  uptime_seconds: number;
+  started_calls: number;
+  completed_calls: number;
+  succeeded: number;
+  failed: number;
+  policy_rejected: number;
+  canceled: number;
+  deadline_exceeded: number;
+  in_flight: number;
+  max_in_flight: number;
+  concurrency: { limit: number; executing: number };
+  latency_us: { total: number; average: number; max: number };
+  tools?: RuntimeToolMetric[];
+  recent_calls?: RuntimeRecentCall[];
+  audit: Record<string, unknown>;
+  memory_observations: Record<string, number>;
+  repository_cache: Record<string, unknown>;
+}
+
+export interface OperationsWorkspace {
+  id: string;
+  root: string;
+  configId: string;
+  mode: string;
+  policy: string;
+  startupWarnings: string[];
+  metrics: RuntimeMetrics;
+  modules: Record<string, unknown>;
+}
+
+export interface OperationsResponse {
+  generatedAt: string;
+  workspaces: OperationsWorkspace[];
+  sharedResources: Record<string, unknown>;
+  sessionRouter: Record<string, unknown>;
+}
+
+export interface ApprovalRecord {
+  workspaceId: string;
+  root: string;
+  id: string;
+  action: string;
+  actions: string[];
+  consumed_actions: string[];
+  reason: string;
+  status: string;
+  created: string;
+  expires_at: string;
+  approved_at?: string;
+  denied_at?: string;
+  consumed_at?: string;
+}
+
+export interface ApprovalsResponse {
+  approvals: ApprovalRecord[];
+  count: number;
+  truncated: boolean;
+}
+
+export interface AuditRecord {
+  workspaceId: string;
+  ts: string;
+  call_id: string;
+  tool: string;
+  tool_module: string;
+  status: string;
+  ok: boolean;
+  duration_us: number;
+  workspace_id: string;
+  workspace: string;
+  session_id: string;
+  error?: string;
+  error_kind?: string;
+  args?: unknown;
+  [key: string]: unknown;
+}
+
+export interface AuditResponse {
+  records: AuditRecord[];
+  count: number;
+  truncated: boolean;
+}
+
 export interface AdminAuthStatus {
   configured: boolean;
   authenticated: boolean;

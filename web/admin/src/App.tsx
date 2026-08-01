@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Activity,
   Boxes,
   ChevronLeft,
   Code2,
@@ -24,16 +25,18 @@ import { api, APIError, AUTH_REQUIRED_EVENT } from "./api";
 import { Button, Notice, TextInput } from "./components";
 import { Configuration } from "./Configuration";
 import { Overview } from "./Overview";
+import { Operations } from "./Operations";
 import { Profiles } from "./Profiles";
 import { Secrets } from "./Secrets";
 import { Setup } from "./Setup";
 import { Workspaces } from "./Workspaces";
 import type { AdminAuthStatus } from "./types";
 
-type Page = "setup" | "overview" | "profiles" | "configuration" | "workspaces" | "secrets";
+type Page = "setup" | "overview" | "operations" | "profiles" | "configuration" | "workspaces" | "secrets";
 const nav: { id: Page; label: string; icon: React.ReactNode; description: string }[] = [
   { id: "setup", label: "Setup", icon: <Rocket size={19} />, description: "Guided first run" },
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={19} />, description: "Health and posture" },
+  { id: "operations", label: "Operations", icon: <Activity size={19} />, description: "Runtime, approvals, audit" },
   { id: "profiles", label: "Profiles", icon: <Wrench size={19} />, description: "Exposed tool contracts" },
   { id: "configuration", label: "Configuration", icon: <Settings2 size={19} />, description: "Global runtime settings" },
   { id: "workspaces", label: "Workspaces", icon: <FolderGit2 size={19} />, description: "Named overrides" },
@@ -136,7 +139,7 @@ export default function App() {
           <button className="theme-button" onClick={() => logout.mutate()} disabled={logout.isPending} aria-label="Sign out">{logout.isPending ? <LoaderCircle size={17} className="spin" /> : <LogOut size={17} />}</button>
         </div>
       </div>
-      <div className="page-container">{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "profiles" && <Profiles />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
+      <div className="page-container">{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "operations" && <Operations />}{page === "profiles" && <Profiles />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
     </main>
   </div>;
 }

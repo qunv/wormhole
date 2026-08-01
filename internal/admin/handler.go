@@ -55,6 +55,7 @@ var workspaceOwnedFields = map[string]bool{
 type Handler struct {
 	Runtime  *agent.Runtime
 	Runtimes map[string]*agent.Runtime
+	Router   *mcpserver.SessionRouter
 	assets   fs.FS
 	auth     *adminauth.Manager
 	mu       sync.Mutex
@@ -62,13 +63,20 @@ type Handler struct {
 
 // New creates an admin handler. Every route remains loopback-only regardless
 // of the MCP listener configuration.
-func New(runtime *agent.Runtime, named map[string]*agent.Runtime) *Handler {
+func New(runtime *agent.Runtime, named map[string]*agent.Runtime, routers ...*mcpserver.SessionRouter) *Handler {
 	copyNamed := make(map[string]*agent.Runtime, len(named))
 	for id, child := range named {
 		copyNamed[id] = child
 	}
+	var router *mcpserver.SessionRouter
+	if len(routers) > 0 {
+		router = routers[0]
+	}
+	if router == nil {
+		router = mcpserver.NewSessionRouter(runtime, copyNamed)
+	}
 	return &Handler{
-		Runtime: runtime, Runtimes: copyNamed, assets: adminui.FS(),
+		Runtime: runtime, Runtimes: copyNamed, Router: router, assets: adminui.FS(),
 		auth: adminauth.NewManager(config.AdminAuthPath()),
 	}
 }
@@ -289,6 +297,14 @@ func (h *Handler) serveAPI(writer http.ResponseWriter, request *http.Request) {
 		h.getProfiles(writer)
 	case suffix == "/tools/catalog" && request.Method == http.MethodGet:
 		h.getToolCatalog(writer)
+	case suffix == "/operations" && request.Method == http.MethodGet:
+		h.getOperations(writer, request)
+	case suffix == "/approvals" && request.Method == http.MethodGet:
+		h.getApprovals(writer, request)
+	case strings.HasPrefix(suffix, "/approvals/"):
+		h.approvalDecision(writer, request, strings.TrimPrefix(suffix, "/approvals/"))
+	case suffix == "/audit" && request.Method == http.MethodGet:
+		h.getAudit(writer, request)
 	case suffix == "/config" && request.Method == http.MethodGet:
 		h.getConfig(writer)
 	case suffix == "/config" && request.Method == http.MethodPut:
@@ -435,7 +451,10 @@ func (h *Handler) getToolCatalog(writer http.ResponseWriter) {
 }
 
 func (h *Handler) getProfiles(writer http.ResponseWriter) {
-	router := mcpserver.NewSessionRouter(h.Runtime, h.Runtimes)
+	router := h.Router
+	if router == nil {
+		router = mcpserver.NewSessionRouter(h.Runtime, h.Runtimes)
+	}
 	tunnelsByMode := map[string][]map[string]any{"fast": []map[string]any{}, "full": []map[string]any{}}
 	for _, tunnel := range h.Runtime.Config.EffectiveTunnels() {
 		mode := strings.ToLower(strings.TrimSpace(tunnel.Config.Mode))

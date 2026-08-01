@@ -571,6 +571,64 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 	}
 }
 
+func TestAdminOperationsApprovalsAndAuditExplorer(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.Audit = true
+		cfg.AuditArgs = true
+	})
+
+	if _, err := handler.Runtime.Handle(context.Background(), "workspace_info", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Runtime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	approval, err := handler.Runtime.Approvals.Request([]string{"delete_path:important.txt"}, "Admin approval test", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operationsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(operationsResponse, localRequest(http.MethodGet, apiPrefix+"/operations", nil))
+	if operationsResponse.Code != http.StatusOK {
+		t.Fatalf("operations = %d %s", operationsResponse.Code, operationsResponse.Body.String())
+	}
+	operationsBody := operationsResponse.Body.String()
+	for _, want := range []string{`"sessionRouter"`, `"sharedResources"`, `"workspaces"`, `"metrics"`, `"modules"`} {
+		if !strings.Contains(operationsBody, want) {
+			t.Fatalf("operations response missing %s: %s", want, operationsBody)
+		}
+	}
+
+	approvalsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(approvalsResponse, localRequest(http.MethodGet, apiPrefix+"/approvals?status=pending", nil))
+	if approvalsResponse.Code != http.StatusOK || !strings.Contains(approvalsResponse.Body.String(), approval.ID) || !strings.Contains(approvalsResponse.Body.String(), `"workspaceId":"default"`) {
+		t.Fatalf("pending approvals = %d %s", approvalsResponse.Code, approvalsResponse.Body.String())
+	}
+	csrf := csrfCookie(t, approvalsResponse.Result())
+	decisionRequest := localRequest(http.MethodPost, apiPrefix+"/approvals/default/"+approval.ID, strings.NewReader(`{"decision":"approved"}`))
+	decisionRequest.Header.Set("Origin", "http://127.0.0.1:8789")
+	decisionRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	decisionRequest.AddCookie(csrf)
+	decisionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(decisionResponse, decisionRequest)
+	if decisionResponse.Code != http.StatusOK || !strings.Contains(decisionResponse.Body.String(), `"status":"approved"`) {
+		t.Fatalf("approval decision = %d %s", decisionResponse.Code, decisionResponse.Body.String())
+	}
+	if err := handler.Runtime.Approvals.Consume("delete_path:important.txt"); err != nil {
+		t.Fatalf("Admin-approved action was not consumable: %v", err)
+	}
+
+	auditResponse := httptest.NewRecorder()
+	handler.ServeHTTP(auditResponse, localRequest(http.MethodGet, apiPrefix+"/audit?workspace=default&tool=workspace_info&status=succeeded&limit=10", nil))
+	if auditResponse.Code != http.StatusOK || !strings.Contains(auditResponse.Body.String(), `"tool":"workspace_info"`) || !strings.Contains(auditResponse.Body.String(), `"workspaceId":"default"`) {
+		t.Fatalf("audit explorer = %d %s", auditResponse.Code, auditResponse.Body.String())
+	}
+	if strings.Contains(auditResponse.Body.String(), "workspace_binding") {
+		t.Fatalf("audit explorer exposed a workspace binding: %s", auditResponse.Body.String())
+	}
+}
+
 func TestAdminToolCatalogExposesSelectableGroupsAndUnfilteredTools(t *testing.T) {
 	handler := newAdminHandler(t, func(cfg *config.Config) {
 		cfg.Tools.AllowedGroups = []string{"repo"}

@@ -222,6 +222,8 @@ The SPA assets and authentication-status/login endpoints remain readable from th
 
 Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by the legacy `runtimeKeyEnv`, named `tunnels.*.runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
 
+The authenticated Admin Operations surface reads bounded runtime/module metrics, router and pooled-resource summaries, exact approval records, and at most a 2 MiB tail of each active workspace's current redacted audit file. Approval decisions call a tokenless `DecideLocal` entrypoint only after the Admin handler has enforced loopback, login, same-origin, and CSRF checks; the MCP operator token is never returned to or accepted from the browser. Audit queries return at most 200 newest matching JSONL records and never read rotated history implicitly.
+
 Named-workspace override writes use the existing schema-versioned format and reject daemon- or registry-owned fields. The Admin API can register and remove named workspaces using optimistic registry revisions and rollback-safe config/registry ordering. Directory browsing is bounded to directories under the current user's home and does not return file contents; users may still enter another existing absolute directory explicitly. Removing a registration preserves its instance state and, by default, its override file for later re-registration. Enable/disable, restart, and tunnel lifecycle remain CLI-owned operations so the browser cannot terminate or replace its own serving daemon.
 
 ### Configuration locations

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,14 +100,26 @@ func (m *ApprovalManager) Request(actions []string, reason string, ttl time.Dura
 }
 
 func (m *ApprovalManager) Decide(id, token, decision string) (*ApprovalRecord, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.Token == "" {
 		return nil, errors.New("MCP approval is disabled; set AGENT_APPROVAL_TOKEN")
 	}
 	if subtle.ConstantTimeCompare([]byte(token), []byte(m.Token)) != 1 {
 		return nil, errors.New("invalid local operator approval token")
 	}
+	return m.decide(id, decision)
+}
+
+// DecideLocal applies a decision from an already authenticated local control
+// plane. Callers must enforce their own loopback, authentication, origin, and
+// CSRF boundary; this method intentionally does not accept or expose the MCP
+// operator token.
+func (m *ApprovalManager) DecideLocal(id, decision string) (*ApprovalRecord, error) {
+	return m.decide(id, decision)
+}
+
+func (m *ApprovalManager) decide(id, decision string) (*ApprovalRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if !approvalID.MatchString(id) {
 		return nil, errors.New("invalid approval id")
 	}
@@ -148,6 +161,58 @@ func (m *ApprovalManager) Decide(id, token, decision string) (*ApprovalRecord, e
 	}
 	m.pruneTerminalLocked(now)
 	return cloneApproval(record), nil
+}
+
+// List returns a newest-first bounded snapshot. Status may be empty or "all"
+// to include every record, or one exact persisted status.
+func (m *ApprovalManager) List(status string, limit int) ([]ApprovalRecord, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		status = "all"
+	}
+	if status != "all" && status != "pending" && status != "approved" && status != "denied" && status != "consumed" && status != "expired" {
+		return nil, errors.New("invalid approval status filter")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	limit = min(limit, 200)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	if err := m.ensureLoadedLocked(now); err != nil {
+		return nil, err
+	}
+	items := make([]ApprovalRecord, 0, min(len(m.records), limit))
+	for id := range m.records {
+		record, err := m.read(id)
+		if err != nil {
+			continue
+		}
+		m.records[id] = record
+		if (record.Status == "pending" || record.Status == "approved") && expiredAt(record, now) {
+			record.Status = "expired"
+			m.removeActiveLocked(record)
+			_ = m.write(record)
+		}
+		if status != "all" && record.Status != status {
+			continue
+		}
+		items = append(items, *cloneApproval(record))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left, right := parseRecordTime(items[i].Created), parseRecordTime(items[j].Created)
+		if left.Equal(right) {
+			return items[i].ID > items[j].ID
+		}
+		return left.After(right)
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	m.pruneTerminalLocked(now)
+	return items, nil
 }
 
 func (m *ApprovalManager) Consume(action string) error {

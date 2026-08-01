@@ -304,7 +304,7 @@ http://127.0.0.1:8789/admin/
 
 ## Admin UI
 
-Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, and referenced secrets.
+Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, referenced secrets, live operations, exact approvals, and bounded audit exploration.
 
 Open `http://127.0.0.1:8789/admin/`. When no local admin credential exists, the loopback-only first-run screen asks for a username and password, creates the account once, signs in, and opens the guided setup wizard. The wizard covers workspace, mode, policy, port, OpenAI tunnel ID, write-only Runtime API key, and optional memory settings.
 
@@ -338,7 +338,7 @@ Security boundaries are enforced by the Go server:
 - Referenced `.env` secrets are write-only; the UI can see only whether each value exists.
 - Changes are persisted atomically and require a Codebridge restart before active runtimes use them.
 
-The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, and optionally delete a workspace override file. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
+The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, and explore a bounded tail of already-redacted audit records. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
 
 ### Admin UI development
 
