@@ -731,10 +731,13 @@ func TestAdminOperationsApprovalsAndAuditExplorer(t *testing.T) {
 		t.Fatalf("operations = %d %s", operationsResponse.Code, operationsResponse.Body.String())
 	}
 	operationsBody := operationsResponse.Body.String()
-	for _, want := range []string{`"sessionRouter"`, `"sharedResources"`, `"workspaces"`, `"metrics"`, `"modules"`} {
+	for _, want := range []string{`"sessionRouter"`, `"sharedResources"`, `"workspaces"`, `"metrics"`, `"modules"`, `"startupWarnings":[]`} {
 		if !strings.Contains(operationsBody, want) {
 			t.Fatalf("operations response missing %s: %s", want, operationsBody)
 		}
+	}
+	if strings.Contains(operationsBody, `"startupWarnings":null`) {
+		t.Fatalf("operations response returned nullable startupWarnings: %s", operationsBody)
 	}
 
 	approvalsResponse := httptest.NewRecorder()

@@ -55,11 +55,14 @@ export function Operations() {
     },
   });
 
-  const workspaces = operations.data?.workspaces ?? [];
+  const workspaces = useMemo(
+    () => (operations.data?.workspaces ?? []).map(normalizeOperationsWorkspace),
+    [operations.data?.workspaces],
+  );
   const pendingCount = pendingApprovals.data?.count ?? 0;
   const totalCompleted = workspaces.reduce((total, item) => total + item.metrics.completed_calls, 0);
   const totalFailed = workspaces.reduce((total, item) => total + item.metrics.failed, 0);
-  const activeBindings = numberValue(operations.data?.sessionRouter.active_bindings);
+  const activeBindings = numberValue(operations.data?.sessionRouter?.active_bindings);
 
   const refresh = async () => {
     await Promise.all([
@@ -87,7 +90,7 @@ export function Operations() {
       <Summary icon={<Activity />} label="Completed calls" value={totalCompleted} detail={`${workspaces.length} active workspace${workspaces.length === 1 ? "" : "s"}`} />
       <Summary icon={<X />} label="Failed calls" value={totalFailed} detail={totalCompleted ? `${Math.round(totalFailed * 100 / totalCompleted)}% of completed` : "No completed calls"} tone={totalFailed ? "danger" : "success"} />
       <Summary icon={<ShieldCheck />} label="Pending approvals" value={pendingCount} detail="Exact, expiring actions" tone={pendingCount ? "warning" : "success"} />
-      <Summary icon={<Timer />} label="Active bindings" value={activeBindings} detail={`${numberValue(operations.data?.sessionRouter.max_bindings)} capacity`} />
+      <Summary icon={<Timer />} label="Active bindings" value={activeBindings} detail={`${numberValue(operations.data?.sessionRouter?.max_bindings)} capacity`} />
     </div>
 
     <div className="operations-tabs" role="tablist">
@@ -96,7 +99,7 @@ export function Operations() {
       <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><ScrollText size={15} /> Audit</button>
     </div>
 
-    {tab === "runtime" && <RuntimePanel workspaces={workspaces} router={operations.data?.sessionRouter ?? {}} shared={operations.data?.sharedResources ?? {}} />}
+    {tab === "runtime" && <RuntimePanel workspaces={workspaces} router={recordValue(operations.data?.sessionRouter)} shared={recordValue(operations.data?.sharedResources)} />}
     {tab === "approvals" && <ApprovalsPanel
       approvals={approvals.data?.approvals ?? []}
       loading={approvals.isLoading}
@@ -191,7 +194,7 @@ function ApprovalsPanel({ approvals, loading, error, status, workspace, workspac
     {!!mutationError && <Notice tone="danger">{errorMessage(mutationError)}</Notice>}
     {truncated && <Notice tone="warning">Only the newest bounded result set is shown.</Notice>}
     {loading ? <div className="operations-inline-empty">Loading approvals…</div> : approvals.length === 0 ? <EmptyState title="No matching approvals" description="Exact approval requests will appear here when an agent reaches a gated action." /> : <div className="approval-list">{approvals.map((approval) => <div className="approval-row" key={`${approval.workspaceId}:${approval.id}`}>
-      <div className="approval-main"><div><Badge tone={approvalTone(approval.status)}>{approval.status}</Badge><Badge>{approval.workspaceId}</Badge><span>{formatTime(approval.created)}</span></div><code>{approval.action}</code><p>{approval.reason || "No reason supplied."}</p><small>Expires {formatTime(approval.expires_at)} · {approval.actions.length} exact action{approval.actions.length === 1 ? "" : "s"}</small></div>
+      <div className="approval-main"><div><Badge tone={approvalTone(approval.status)}>{approval.status}</Badge><Badge>{approval.workspaceId}</Badge><span>{formatTime(approval.created)}</span></div><code>{approval.action}</code><p>{approval.reason || "No reason supplied."}</p><small>Expires {formatTime(approval.expires_at)} · {approvalActionCount(approval)} exact action{approvalActionCount(approval) === 1 ? "" : "s"}</small></div>
       {approval.status === "pending" && <div className="approval-actions"><Button variant="secondary" loading={decidingId === approval.id} onClick={() => onDecision(approval, "denied")}><X size={14} /> Deny</Button><Button loading={decidingId === approval.id} onClick={() => onDecision(approval, "approved")}><Check size={14} /> Approve</Button></div>}
     </div>)}</div>}
   </Card>;
@@ -228,6 +231,73 @@ function AuditPanel({ records, loading, error, workspace, tool, status, workspac
 function KeyValueGrid({ value }: { value: Record<string, unknown> }) {
   const entries = Object.entries(value).filter(([, item]) => typeof item !== "object" || item === null).slice(0, 16);
   return <div className="operations-kv-grid">{entries.map(([key, item]) => <div key={key}><small>{key.replaceAll("_", " ")}</small><strong>{String(item)}</strong></div>)}</div>;
+}
+
+function normalizeOperationsWorkspace(workspace: OperationsWorkspace): OperationsWorkspace {
+  const metrics = workspace.metrics ?? {} as OperationsWorkspace["metrics"];
+  const concurrency = metrics.concurrency ?? { limit: 0, executing: 0 };
+  const latency = metrics.latency_us ?? { total: 0, average: 0, max: 0 };
+  const tools = Array.isArray(metrics.tools) ? metrics.tools.map((tool) => ({
+    ...tool,
+    started_calls: numberValue(tool.started_calls),
+    completed_calls: numberValue(tool.completed_calls),
+    succeeded: numberValue(tool.succeeded),
+    failed: numberValue(tool.failed),
+    policy_rejected: numberValue(tool.policy_rejected),
+    canceled: numberValue(tool.canceled),
+    deadline_exceeded: numberValue(tool.deadline_exceeded),
+    in_flight: numberValue(tool.in_flight),
+    max_in_flight: numberValue(tool.max_in_flight),
+    latency_us: {
+      total: numberValue(tool.latency_us?.total),
+      average: numberValue(tool.latency_us?.average),
+      max: numberValue(tool.latency_us?.max),
+    },
+  })) : [];
+  return {
+    ...workspace,
+    startupWarnings: Array.isArray(workspace.startupWarnings) ? workspace.startupWarnings : [],
+    modules: recordValue(workspace.modules),
+    metrics: {
+      ...metrics,
+      started_at: typeof metrics.started_at === "string" ? metrics.started_at : "",
+      uptime_seconds: numberValue(metrics.uptime_seconds),
+      started_calls: numberValue(metrics.started_calls),
+      completed_calls: numberValue(metrics.completed_calls),
+      succeeded: numberValue(metrics.succeeded),
+      failed: numberValue(metrics.failed),
+      policy_rejected: numberValue(metrics.policy_rejected),
+      canceled: numberValue(metrics.canceled),
+      deadline_exceeded: numberValue(metrics.deadline_exceeded),
+      in_flight: numberValue(metrics.in_flight),
+      max_in_flight: numberValue(metrics.max_in_flight),
+      concurrency: {
+        limit: numberValue(concurrency.limit),
+        executing: numberValue(concurrency.executing),
+      },
+      latency_us: {
+        total: numberValue(latency.total),
+        average: numberValue(latency.average),
+        max: numberValue(latency.max),
+      },
+      tools,
+      audit: recordValue(metrics.audit),
+      memory_observations: numericRecord(metrics.memory_observations),
+      repository_cache: recordValue(metrics.repository_cache),
+    },
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numericRecord(value: unknown): Record<string, number> {
+  return Object.fromEntries(Object.entries(recordValue(value)).map(([key, item]) => [key, numberValue(item)]));
+}
+
+function approvalActionCount(approval: ApprovalRecord): number {
+  return Array.isArray(approval.actions) ? approval.actions.length : 0;
 }
 
 function numberValue(value: unknown): number {

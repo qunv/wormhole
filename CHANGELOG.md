@@ -34,6 +34,7 @@ All notable changes to Codebridge are documented in this file.
 
 ### Fixed
 
+- Prevented the Admin Operations page from rendering blank when a workspace has no startup warnings, and added a page-level render error fallback.
 - Prevented stale or recycled PIDs from being signaled and made stop failures visible instead of always printing success.
 - Rolled back workspace config changes when registry persistence fails, and restored force-removed configs when unregistering fails.
 - Propagated recursive tree traversal errors and cancellation instead of returning silently incomplete trees.

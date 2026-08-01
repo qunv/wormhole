@@ -232,7 +232,7 @@ func (r *Runtime) addStartupWarning(message string) {
 }
 
 func (r *Runtime) StartupWarnings() []string {
-	return append([]string(nil), r.startupWarnings...)
+	return append([]string{}, r.startupWarnings...)
 }
 
 func (r *Runtime) SharedResourceStats() map[string]any {

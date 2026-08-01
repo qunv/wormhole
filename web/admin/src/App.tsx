@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Component, useEffect, useState, type ErrorInfo, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -139,9 +139,30 @@ export default function App() {
           <button className="theme-button" onClick={() => logout.mutate()} disabled={logout.isPending} aria-label="Sign out">{logout.isPending ? <LoaderCircle size={17} className="spin" /> : <LogOut size={17} />}</button>
         </div>
       </div>
-      <div className="page-container">{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "operations" && <Operations />}{page === "profiles" && <Profiles />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
+      <div className="page-container"><PageErrorBoundary key={page} page={page}>{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "operations" && <Operations />}{page === "profiles" && <Profiles />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</PageErrorBoundary></div>
     </main>
   </div>;
+}
+
+class PageErrorBoundary extends Component<{ page: Page; children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error(`Unable to render Admin page ${this.props.page}`, error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <Notice tone="danger">
+      <strong>Unable to render {this.props.page}</strong>
+      <p>{this.state.error.message || "The page encountered an unexpected browser-side error."}</p>
+      <Button variant="secondary" onClick={() => this.setState({ error: null })}>Retry page</Button>
+    </Notice>;
+  }
 }
 
 function LoginScreen({ status, dark, onToggleTheme, onLoggedIn }: {
