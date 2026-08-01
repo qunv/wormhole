@@ -96,44 +96,65 @@ export function Operations() {
     </div>
 
     <div className="operations-tabs" role="tablist">
-      <button className={tab === "runtime" ? "active" : ""} onClick={() => setTab("runtime")}><Gauge size={15} /> Runtime</button>
-      <button className={tab === "approvals" ? "active" : ""} onClick={() => setTab("approvals")}><ShieldCheck size={15} /> Approvals{pendingCount > 0 && <span>{pendingCount}</span>}</button>
-      <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><ScrollText size={15} /> Audit</button>
+      <button className={tab === "runtime" ? "active" : ""} onClick={() => setTab("runtime")}><Gauge size={16} /> Runtime</button>
+      <button className={tab === "approvals" ? "active" : ""} onClick={() => setTab("approvals")}><ShieldCheck size={16} /> Approvals{pendingCount > 0 && <span>{pendingCount}</span>}</button>
+      <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><ScrollText size={16} /> Audit</button>
     </div>
 
-    {tab === "runtime" && <RuntimePanel workspaces={workspaces} router={recordValue(operations.data?.sessionRouter)} shared={recordValue(operations.data?.sharedResources)} />}
-    {tab === "approvals" && <ApprovalsPanel
-      approvals={approvals.data?.approvals ?? []}
-      loading={approvals.isLoading}
-      error={approvals.error}
-      status={approvalStatus}
-      workspace={approvalWorkspace}
-      workspaces={workspaces}
-      onStatus={setApprovalStatus}
-      onWorkspace={setApprovalWorkspace}
-      onDecision={(approval, decision) => decide.mutate({ approval, decision })}
-      decidingId={decide.isPending ? decide.variables?.approval.id : undefined}
-      mutationError={decide.error}
-      truncated={approvals.data?.truncated ?? false}
-    />}
-    {tab === "audit" && <AuditPanel
-      records={audit.data?.records ?? []}
-      loading={audit.isLoading}
-      error={audit.error}
-      workspace={auditWorkspace}
-      tool={auditTool}
-      status={auditStatus}
-      workspaces={workspaces}
-      onWorkspace={setAuditWorkspace}
-      onTool={setAuditTool}
-      onStatus={setAuditStatus}
-      truncated={audit.data?.truncated ?? false}
-    />}
+    <OperationsTabStage tab={tab}>
+      {tab === "runtime" && <RuntimePanel workspaces={workspaces} router={recordValue(operations.data?.sessionRouter)} shared={recordValue(operations.data?.sharedResources)} />}
+      {tab === "approvals" && <ApprovalsPanel
+        approvals={approvals.data?.approvals ?? []}
+        loading={approvals.isLoading}
+        error={approvals.error}
+        status={approvalStatus}
+        workspace={approvalWorkspace}
+        workspaces={workspaces}
+        onStatus={setApprovalStatus}
+        onWorkspace={setApprovalWorkspace}
+        onDecision={(approval, decision) => decide.mutate({ approval, decision })}
+        decidingId={decide.isPending ? decide.variables?.approval.id : undefined}
+        mutationError={decide.error}
+        truncated={approvals.data?.truncated ?? false}
+      />}
+      {tab === "audit" && <AuditPanel
+        records={audit.data?.records ?? []}
+        loading={audit.isLoading}
+        error={audit.error}
+        workspace={auditWorkspace}
+        tool={auditTool}
+        status={auditStatus}
+        workspaces={workspaces}
+        onWorkspace={setAuditWorkspace}
+        onTool={setAuditTool}
+        onStatus={setAuditStatus}
+        truncated={audit.data?.truncated ?? false}
+      />}
+    </OperationsTabStage>
   </>;
 }
 
 function Summary({ icon, label, value, detail, tone = "info" }: { icon: React.ReactNode; label: string; value: number; detail: string; tone?: "info" | "success" | "warning" | "danger" }) {
   return <div className={`operations-summary ${tone}`}><span>{icon}</span><div><small>{label}</small><strong>{value.toLocaleString()}</strong><em>{detail}</em></div></div>;
+}
+
+function OperationsTabStage({ tab, children }: { tab: OperationsTab; children: React.ReactNode }) {
+  const presentation = tab === "runtime"
+    ? { label: "Runtime", description: "Workspace execution, tool activity, module health, and daemon-wide resources.", icon: <Gauge size={18} /> }
+    : tab === "approvals"
+      ? { label: "Approvals", description: "Review and decide exact actions waiting at the local policy boundary.", icon: <ShieldCheck size={18} /> }
+      : { label: "Audit", description: "Explore bounded, redacted runtime events across active workspaces.", icon: <ScrollText size={18} /> };
+
+  return <section className={`operations-tab-stage ${tab}`}>
+    <header className="operations-tab-stage-head">
+      <span className="operations-tab-stage-icon">{presentation.icon}</span>
+      <div>
+        <div className="operations-tab-breadcrumb"><span>Operations</span><ChevronRight size={13} /><strong>{presentation.label}</strong></div>
+        <p>{presentation.description}</p>
+      </div>
+    </header>
+    <div className="operations-tab-stage-body">{children}</div>
+  </section>;
 }
 
 function RuntimePanel({ workspaces, router, shared }: { workspaces: OperationsWorkspace[]; router: Record<string, unknown>; shared: Record<string, unknown> }) {
@@ -149,9 +170,12 @@ function RuntimePanel({ workspaces, router, shared }: { workspaces: OperationsWo
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? workspaces[0];
 
   return <div className="operations-runtime-stack">
-    <div className="operations-runtime-switch" role="tablist" aria-label="Runtime scope">
-      <button className={scope === "workspaces" ? "active" : ""} onClick={() => setScope("workspaces")}><Gauge size={14} /> Workspaces <span>{workspaces.length}</span></button>
-      <button className={scope === "daemon" ? "active" : ""} onClick={() => setScope("daemon")}><Activity size={14} /> Daemon</button>
+    <div className="operations-runtime-subnav">
+      <div className="operations-runtime-subnav-copy"><span>Runtime views</span><small>Choose between per-workspace execution and daemon-wide resources.</small></div>
+      <div className="operations-runtime-switch" role="tablist" aria-label="Runtime scope">
+        <button className={scope === "workspaces" ? "active" : ""} onClick={() => setScope("workspaces")}><Gauge size={15} /> Workspaces <span>{workspaces.length}</span></button>
+        <button className={scope === "daemon" ? "active" : ""} onClick={() => setScope("daemon")}><Activity size={15} /> Daemon</button>
+      </div>
     </div>
 
     {scope === "workspaces" && (workspaces.length === 0 ?

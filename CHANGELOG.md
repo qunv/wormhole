@@ -24,7 +24,7 @@ All notable changes to Codebridge are documented in this file.
 
 ### Changed
 
-- Reworked the Operations runtime view into a compact workspace master-detail layout with a bounded overview list, one selected workspace detail panel, top-tool expansion, and separate daemon metrics.
+- Reworked the Operations runtime view into a compact workspace master-detail layout with a bounded overview list, one selected workspace detail panel, top-tool expansion, separate daemon metrics, clearer parent/child tab hierarchy, and larger Operations-specific typography.
 - Daemon identity now fingerprints the complete effective config and all referenced secrets while hashing binary/widget inputs only once per reconciliation.
 - Explicit test/build/lint overrides require full mode and exact approval; all quality commands invalidate repository caches after execution.
 - Missing workspace roots now fail validation instead of being silently recreated.
