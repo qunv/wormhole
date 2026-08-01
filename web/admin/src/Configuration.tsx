@@ -72,6 +72,7 @@ const CONFIG_HELP: Record<string, string> = {
   "Default command output": "Default command output limit when a tool call does not specify one.",
   "Max HTTP body bytes": "Largest HTTP request body accepted by the local Admin and MCP server.",
   "Max managed processes": "Maximum number of background processes Codebridge may manage at the same time.",
+  "Max concurrent tool calls": "Maximum number of tool requests that may execute concurrently inside one workspace runtime. Additional calls wait and remain cancellable.",
   "Git status cache (ms)": "How long a git status result is reused before Codebridge executes git status again.",
   "Complete JSON document": "Raw editor for the entire non-secret configuration. Changes are applied to the structured form before validation and saving.",
 };
@@ -313,6 +314,7 @@ function ToolsEditor({ value, onChange, catalog, catalogLoading }: EditorProps &
         <NumberField label="Default command output" value={value.commandOutputDefault} onChange={(v) => set("commandOutputDefault", v)} />
         <NumberField label="Max HTTP body bytes" value={value.maxBodyBytes} onChange={(v) => set("maxBodyBytes", v)} />
         <NumberField label="Max managed processes" value={value.maxProcesses} onChange={(v) => set("maxProcesses", v)} />
+        <NumberField label="Max concurrent tool calls" value={value.maxConcurrentToolCalls} onChange={(v) => set("maxConcurrentToolCalls", v)} />
         <NumberField label="Git status cache (ms)" value={value.gitStatusCacheMs} onChange={(v) => set("gitStatusCacheMs", v)} />
       </div>
     </Card>

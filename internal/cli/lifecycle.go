@@ -272,6 +272,7 @@ func (a App) spawnServer(executable string, cfg config.Config, configID, runtime
 		"CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
 		"CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
 		"CODEBRIDGE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
+		"CODEBRIDGE_MAX_CONCURRENT_TOOL_CALLS="+strconv.Itoa(cfg.MaxConcurrentToolCalls),
 		"CODEBRIDGE_DAEMON_CONFIG_ID="+configID,
 		"CODEBRIDGE_RUNTIME_KEY_FINGERPRINT="+runtimeKeyFingerprint,
 	)

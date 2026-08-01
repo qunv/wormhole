@@ -369,6 +369,21 @@ func TestSessionRouterMergesConflictingToolContractsConservatively(t *testing.T)
 	if merged.Schema["additionalProperties"] != true || !strings.Contains(merged.Description, "Arguments vary by workspace") {
 		t.Fatalf("conflicting schema was not generalized: %#v", merged)
 	}
+
+	chat := connectSessionGateway(t, router)
+	defaultBinding := selectWorkspaceForTest(t, chat, "default")
+	callSessionTool(t, chat, "workspace_variant", map[string]any{"workspace_binding": defaultBinding, "alpha": "ok"}, false)
+	invalidDefault := callSessionTool(t, chat, "workspace_variant", map[string]any{"workspace_binding": defaultBinding, "beta": 2}, true)
+	if !strings.Contains(resultText(invalidDefault), "invalid arguments") || !strings.Contains(resultText(invalidDefault), "default") {
+		t.Fatalf("default workspace schema was not enforced: %s", resultText(invalidDefault))
+	}
+
+	apiBinding := selectWorkspaceForTest(t, chat, "api")
+	callSessionTool(t, chat, "workspace_variant", map[string]any{"workspace_binding": apiBinding, "beta": 2}, false)
+	invalidAPI := callSessionTool(t, chat, "workspace_variant", map[string]any{"workspace_binding": apiBinding, "alpha": "wrong"}, true)
+	if !strings.Contains(resultText(invalidAPI), "invalid arguments") || !strings.Contains(resultText(invalidAPI), "api") {
+		t.Fatalf("API workspace schema was not enforced: %s", resultText(invalidAPI))
+	}
 }
 
 type sessionContractModule struct {

@@ -331,6 +331,10 @@ func (r *Runtime) RuntimeMetrics(includeTools bool, recentLimit int) map[string]
 		"policy_rejected": snapshot.policyRejected, "canceled": snapshot.canceled,
 		"deadline_exceeded": snapshot.deadlineExceeded,
 		"in_flight":         snapshot.inFlight, "max_in_flight": snapshot.maxInFlight,
+		"concurrency": map[string]any{
+			"limit":     r.Config.MaxConcurrentToolCalls,
+			"executing": ternary(r.toolSlots != nil, len(r.toolSlots), 0),
+		},
 		"latency_us": durationSummary(snapshot.totalDuration, snapshot.maxDuration, snapshot.completed),
 		"latency_buckets": map[string]uint64{
 			"lt_10ms": snapshot.latencyBuckets[0], "lt_100ms": snapshot.latencyBuckets[1],

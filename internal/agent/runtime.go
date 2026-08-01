@@ -71,6 +71,7 @@ type Runtime struct {
 	memoryHealthRefreshing bool
 	metricsOnce            sync.Once
 	metrics                *runtimeCallTracker
+	toolSlots              chan struct{}
 }
 
 // StartupReporter receives human-readable startup phase updates. Reporters
@@ -176,6 +177,7 @@ func newWorkspaceContext(ctx context.Context, workspaceID, dataDir string, cfg c
 		MemoryProject: memoryProject, MemoryFallbackSessionID: memorySessionID,
 		Version: version, Tier: tier, ConfigID: configID, profile: profile,
 		shared: shared, ownsShared: ownsShared,
+		toolSlots: make(chan struct{}, cfg.MaxConcurrentToolCalls),
 	}
 	runtime.metricsTracker()
 	runtime.Patches = &patch.Engine{Workspace: manager, Store: store}
@@ -247,6 +249,9 @@ func (r *Runtime) Handle(ctx context.Context, name string, args map[string]any) 
 }
 
 func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, args map[string]any) (value any, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if args == nil {
 		args = map[string]any{}
 	}
@@ -257,23 +262,36 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 	identity := CallIdentity{SessionID: sessionID, WorkspaceID: r.WorkspaceID}
 	outcome := toolCallOutcome{}
 	auditAttempted := false
-	returnedNormally := false
+	acquiredSlot := false
 	defer func() {
-		if !returnedNormally {
-			outcome.Err = errToolCallPanicked
+		if recovered := recover(); recovered != nil {
+			value = nil
+			err = errToolCallPanicked
 			if !auditAttempted {
+				auditAttempted = true
 				outcome.AuditErr = r.audit(
 					call, identity, name, args, nil, false, errToolCallPanicked,
 					"failed", time.Since(call.Started),
 				)
 			}
-		} else {
-			outcome.Err = err
 		}
+		if acquiredSlot {
+			r.releaseToolSlot()
+		}
+		outcome.Err = err
 		outcome.Duration = time.Since(call.Started)
 		r.finishToolCall(call, outcome)
 	}()
 
+	if err = r.acquireToolSlot(ctx); err != nil {
+		auditAttempted = true
+		outcome.AuditErr = r.audit(
+			call, identity, name, args, nil, false, err,
+			classifyToolCallStatus(err, false), time.Since(call.Started),
+		)
+		return nil, err
+	}
+	acquiredSlot = true
 	ctx = context.WithValue(ctx, memorySessionContextKey{}, identity.SessionID)
 	if policyErr := r.enforcePolicy(name, args); policyErr != nil {
 		err = policyErr
@@ -282,7 +300,6 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 		outcome.AuditErr = r.audit(
 			call, identity, name, args, nil, false, err, "policy_rejected", time.Since(call.Started),
 		)
-		returnedNormally = true
 		return nil, err
 	}
 	value, err = r.dispatch(ctx, identity, name, args)
@@ -301,8 +318,26 @@ func (r *Runtime) HandleSession(ctx context.Context, sessionID, name string, arg
 	outcome.ObservationAttempted, outcome.ObservationAccepted = r.captureMemoryObservation(
 		call.ID, sessionID, name, args, value, err,
 	)
-	returnedNormally = true
 	return value, err
+}
+
+func (r *Runtime) acquireToolSlot(ctx context.Context) error {
+	if r == nil || r.toolSlots == nil {
+		return nil
+	}
+	select {
+	case r.toolSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Runtime) releaseToolSlot() {
+	if r == nil || r.toolSlots == nil {
+		return
+	}
+	<-r.toolSlots
 }
 
 type memorySessionContextKey struct{}
@@ -338,11 +373,12 @@ func (r *Runtime) audit(call trackedToolCall, identity CallIdentity, tool string
 		}
 	}
 	if callErr != nil {
+		errorText := callErr.Error()
 		if customAudit {
-			record["error"] = auditProvider.AuditError(callErr)
-		} else {
-			record["error"] = callErr.Error()
+			errorText = auditProvider.AuditError(callErr)
 		}
+		record["error"] = security.RedactText(errorText, 8<<10)
+		record["error_kind"] = auditErrorKind(callErr, status)
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {
@@ -357,6 +393,21 @@ func (r *Runtime) audit(call trackedToolCall, identity CallIdentity, tool string
 		return fmt.Errorf("append audit record: %w", err)
 	}
 	return nil
+}
+
+func auditErrorKind(err error, status string) string {
+	switch {
+	case errors.Is(err, errToolCallPanicked):
+		return "panic"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case status == "policy_rejected":
+		return "policy"
+	default:
+		return "tool"
+	}
 }
 
 func (r *Runtime) FlushAudit(ctx context.Context) error {

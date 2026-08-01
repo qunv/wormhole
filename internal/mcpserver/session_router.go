@@ -83,13 +83,14 @@ type SessionRouter struct {
 	workspaceIDsCached []string
 	specs              []agent.ToolSpec
 
-	mu              sync.Mutex
-	sessions        map[string]string
-	bindingSessions map[string]map[string]struct{}
-	bindings        map[string]workspaceBinding
-	nextCleanup     time.Time
-	expiredCount    uint64
-	evictedCount    uint64
+	mu               sync.Mutex
+	sessions         map[string]string
+	bindingSessions  map[string]map[string]struct{}
+	bindings         map[string]workspaceBinding
+	schemaValidators sync.Map
+	nextCleanup      time.Time
+	expiredCount     uint64
+	evictedCount     uint64
 }
 
 func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Runtime) *SessionRouter {
@@ -182,8 +183,12 @@ func NewSessionGatewayProfile(router *SessionRouter, profile ToolProfile) *mcp.S
 			if !runtime.ToolEnabled(spec.Name) {
 				return toolError(fmt.Errorf("tool %q is unavailable in workspace %q", spec.Name, binding.WorkspaceID)), nil
 			}
-			if _, ok := runtime.ToolSpec(spec.Name); !ok {
+			targetSpec, ok := runtime.ToolSpec(spec.Name)
+			if !ok {
 				return toolError(fmt.Errorf("tool %q is not registered in workspace %q", spec.Name, binding.WorkspaceID)), nil
+			}
+			if err := router.validateToolArguments(binding.WorkspaceID, spec.Name, targetSpec.Schema, args); err != nil {
+				return toolError(err), nil
 			}
 			value, err := runtime.HandleSession(ctx, binding.SessionID, spec.Name, args)
 			if err != nil {

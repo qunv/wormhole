@@ -532,7 +532,10 @@ codebridge restart
 - `full` enables the complete workflow while catastrophic system commands remain blocked.
 - A non-loopback local MCP listener requires a bearer token.
 - Codebridge is not an operating-system sandbox; approved commands run with the current user's privileges.
-- Audit arguments are redacted before being written locally.
+- Audit arguments and error text are redacted and bounded before being written locally.
+- Each workspace runtime limits concurrent tool execution with `maxConcurrentToolCalls` (default `16`); queued calls remain cancellable.
+- Routed session tools are validated again against the selected workspace's exact input schema before dispatch.
+- Tool-module panics are converted into sanitized tool errors and recorded in audit/metrics without exposing panic payloads.
 - Raw workspace bindings are never persisted in audit, memory, health, or state.
 
 ## Troubleshooting

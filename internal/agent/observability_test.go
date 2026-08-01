@@ -3,12 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"codebridge/internal/config"
 )
 
 func TestRuntimeMetricsTrackOutcomesAndAuditCorrelation(t *testing.T) {
@@ -91,6 +94,47 @@ func TestRuntimeMetricsTrackOutcomesAndAuditCorrelation(t *testing.T) {
 	}
 }
 
+type auditErrorModule struct{}
+
+func (*auditErrorModule) Name() string { return "audit_error_probe" }
+func (*auditErrorModule) Specs() []ToolSpec {
+	return []ToolSpec{{
+		Name: "audit_error", Title: "Audit error", Description: "Return a credential-bearing error.",
+		ReadOnly: true, Schema: object(nil),
+	}}
+}
+func (*auditErrorModule) Handle(context.Context, CallIdentity, string, map[string]any) (any, error) {
+	return nil, errors.New("request failed Authorization: Bearer super-secret password=hunter2 " + strings.Repeat("x", 10<<10))
+}
+func (*auditErrorModule) Health(context.Context) any { return map[string]any{"available": true} }
+func (*auditErrorModule) Close() error               { return nil }
+
+func TestRuntimeAuditRedactsAndBoundsErrors(t *testing.T) {
+	runtime := newIsolatedRuntime(t, "audit-error", t.TempDir(), t.TempDir(), "full")
+	if err := runtime.RegisterModule(&auditErrorModule{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Handle(context.Background(), "audit_error", nil); err == nil {
+		t.Fatal("expected tool error")
+	}
+	if err := runtime.FlushAudit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(runtime.Store.AuditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, secret := range []string{"super-secret", "hunter2"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("audit leaked %q: %s", secret, text)
+		}
+	}
+	if len(raw) > 10<<10 || !strings.Contains(text, `"error_kind":"tool"`) {
+		t.Fatalf("audit error was not bounded and classified: bytes=%d text=%s", len(raw), text)
+	}
+}
+
 func TestRuntimeMetricsCountAuditFailuresWithoutFailingTool(t *testing.T) {
 	runtime := newIsolatedRuntime(t, "audit-failure", t.TempDir(), t.TempDir(), "full")
 	directory := filepath.Join(t.TempDir(), "audit-directory")
@@ -162,19 +206,15 @@ func (*panicMetricsModule) Handle(context.Context, CallIdentity, string, map[str
 func (*panicMetricsModule) Health(context.Context) any { return map[string]any{"available": true} }
 func (*panicMetricsModule) Close() error               { return nil }
 
-func TestRuntimeMetricsFinalizePanickingCalls(t *testing.T) {
+func TestRuntimeMetricsRecoverPanickingCalls(t *testing.T) {
 	runtime := newIsolatedRuntime(t, "panic-metrics", t.TempDir(), t.TempDir(), "full")
 	if err := runtime.RegisterModule(&panicMetricsModule{}); err != nil {
 		t.Fatal(err)
 	}
-	func() {
-		defer func() {
-			if recovered := recover(); recovered == nil {
-				t.Fatal("expected tool panic")
-			}
-		}()
-		_, _ = runtime.Handle(context.Background(), "metrics_panic", nil)
-	}()
+	value, err := runtime.Handle(context.Background(), "metrics_panic", nil)
+	if value != nil || !errors.Is(err, errToolCallPanicked) {
+		t.Fatalf("panic result = %#v, %v", value, err)
+	}
 	metrics := runtime.RuntimeMetrics(true, 1)
 	if metrics["completed_calls"] != uint64(1) || metrics["failed"] != uint64(1) || metrics["in_flight"] != int64(0) {
 		t.Fatalf("panicking call was not finalized: %#v", metrics)
@@ -190,7 +230,7 @@ func TestRuntimeMetricsFinalizePanickingCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"error":"tool call panicked"`) {
+	if !strings.Contains(string(raw), `"error":"tool call panicked"`) || !strings.Contains(string(raw), `"error_kind":"panic"`) {
 		t.Fatalf("panic audit was not sanitized: %s", raw)
 	}
 }
@@ -230,6 +270,57 @@ func (m *blockingMetricsModule) Handle(ctx context.Context, _ CallIdentity, _ st
 }
 func (*blockingMetricsModule) Health(context.Context) any { return map[string]any{"available": true} }
 func (*blockingMetricsModule) Close() error               { return nil }
+
+func TestRuntimeConcurrencyLimitKeepsQueuedCallsCancellable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
+	cfg.MaxConcurrentToolCalls = 2
+	runtime, err := NewWorkspaceContextWithReporter(context.Background(), "limited", t.TempDir(), cfg, "test", "pro", "config-limited", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	module := &blockingMetricsModule{started: make(chan struct{}, 4), release: make(chan struct{})}
+	if err := runtime.RegisterModule(module); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = runtime.Handle(context.Background(), "metrics_block", nil)
+		}()
+	}
+	for range 2 {
+		select {
+		case <-module.started:
+		case <-time.After(time.Second):
+			t.Fatal("initial calls did not acquire concurrency slots")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := runtime.Handle(ctx, "metrics_block", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("queued call error = %v, want deadline exceeded", err)
+	}
+	select {
+	case <-module.started:
+		t.Fatal("queued call reached module despite full concurrency limit")
+	default:
+	}
+	metrics := runtime.RuntimeMetrics(false, 1)
+	concurrency := metrics["concurrency"].(map[string]any)
+	if concurrency["limit"] != 2 || concurrency["executing"] != 2 {
+		t.Fatalf("unexpected concurrency metrics: %#v", concurrency)
+	}
+	close(module.release)
+	wg.Wait()
+	metrics = runtime.RuntimeMetrics(false, 3)
+	if metrics["completed_calls"] != uint64(3) || metrics["deadline_exceeded"] != uint64(1) {
+		t.Fatalf("queued cancellation was not tracked: %#v", metrics)
+	}
+}
 
 func TestRuntimeMetricsTrackConcurrentInFlightCalls(t *testing.T) {
 	runtime := newIsolatedRuntime(t, "concurrent-metrics", t.TempDir(), t.TempDir(), "full")

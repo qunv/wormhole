@@ -95,6 +95,7 @@ export interface CodebridgeConfig {
   commandOutputDefault?: number;
   maxBodyBytes?: number;
   maxProcesses?: number;
+  maxConcurrentToolCalls?: number;
   gitStatusCacheMs?: number;
   audit: boolean;
   auditArgs: boolean;

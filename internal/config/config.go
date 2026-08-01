@@ -128,14 +128,15 @@ type Config struct {
 	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 	Tools      ToolExposureConfig         `json:"tools,omitempty"`
 
-	MaxReadChars      int `json:"maxReadChars,omitempty"`
-	ReadDefault       int `json:"readDefault,omitempty"`
-	MaxBatchReadChars int `json:"maxBatchReadChars,omitempty"`
-	MaxCommandOutput  int `json:"maxCommandOutput,omitempty"`
-	CommandOutput     int `json:"commandOutputDefault,omitempty"`
-	MaxBodyBytes      int `json:"maxBodyBytes,omitempty"`
-	MaxProcesses      int `json:"maxProcesses,omitempty"`
-	GitStatusCacheMS  int `json:"gitStatusCacheMs,omitempty"`
+	MaxReadChars           int `json:"maxReadChars,omitempty"`
+	ReadDefault            int `json:"readDefault,omitempty"`
+	MaxBatchReadChars      int `json:"maxBatchReadChars,omitempty"`
+	MaxCommandOutput       int `json:"maxCommandOutput,omitempty"`
+	CommandOutput          int `json:"commandOutputDefault,omitempty"`
+	MaxBodyBytes           int `json:"maxBodyBytes,omitempty"`
+	MaxProcesses           int `json:"maxProcesses,omitempty"`
+	MaxConcurrentToolCalls int `json:"maxConcurrentToolCalls,omitempty"`
+	GitStatusCacheMS       int `json:"gitStatusCacheMs,omitempty"`
 
 	Audit     bool `json:"audit"`
 	AuditArgs bool `json:"auditArgs"`
@@ -161,18 +162,19 @@ func Default() Config {
 			QueueSize:       128, DeliveryWorkers: 4, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
 			RetryBackoffMS: 100, HealthCacheMS: 5_000,
 		},
-		MCPServers:        map[string]MCPServerConfig{},
-		MaxReadChars:      200_000,
-		ReadDefault:       30_000,
-		MaxBatchReadChars: 500_000,
-		MaxCommandOutput:  200_000,
-		CommandOutput:     20_000,
-		MaxBodyBytes:      16 * 1024 * 1024,
-		MaxProcesses:      24,
-		GitStatusCacheMS:  2_000,
-		Audit:             true,
-		AuditArgs:         true,
-		Workspace:         home,
+		MCPServers:             map[string]MCPServerConfig{},
+		MaxReadChars:           200_000,
+		ReadDefault:            30_000,
+		MaxBatchReadChars:      500_000,
+		MaxCommandOutput:       200_000,
+		CommandOutput:          20_000,
+		MaxBodyBytes:           16 * 1024 * 1024,
+		MaxProcesses:           24,
+		MaxConcurrentToolCalls: 16,
+		GitStatusCacheMS:       2_000,
+		Audit:                  true,
+		AuditArgs:              true,
+		Workspace:              home,
 	}
 }
 
@@ -541,7 +543,8 @@ func (c Config) Validate(requireWorkspace bool) error {
 		{"maxReadChars", c.MaxReadChars}, {"readDefault", c.ReadDefault},
 		{"maxBatchReadChars", c.MaxBatchReadChars}, {"maxCommandOutput", c.MaxCommandOutput},
 		{"commandOutputDefault", c.CommandOutput}, {"maxBodyBytes", c.MaxBodyBytes},
-		{"maxProcesses", c.MaxProcesses}, {"gitStatusCacheMs", c.GitStatusCacheMS},
+		{"maxProcesses", c.MaxProcesses}, {"maxConcurrentToolCalls", c.MaxConcurrentToolCalls},
+		{"gitStatusCacheMs", c.GitStatusCacheMS},
 		{"memory.timeoutMs", c.Memory.TimeoutMS}, {"memory.tokenBudget", c.Memory.TokenBudget},
 		{"memory.queueSize", c.Memory.QueueSize}, {"memory.deliveryWorkers", c.Memory.DeliveryWorkers},
 		{"memory.deliveryTimeoutMs", c.Memory.DeliveryTimeoutMS},
@@ -555,6 +558,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 	}
 	if c.Memory.DeliveryWorkers > 32 {
 		return fmt.Errorf("memory.deliveryWorkers must not exceed 32")
+	}
+	if c.MaxConcurrentToolCalls > 1024 {
+		return fmt.Errorf("maxConcurrentToolCalls must not exceed 1024")
 	}
 	if c.GitStatusCacheMS > 60_000 {
 		return fmt.Errorf("gitStatusCacheMs must not exceed 60000")
@@ -1031,6 +1037,9 @@ func normalize(c *Config) {
 	if c.MaxProcesses == 0 {
 		c.MaxProcesses = 24
 	}
+	if c.MaxConcurrentToolCalls == 0 {
+		c.MaxConcurrentToolCalls = 16
+	}
 	if c.GitStatusCacheMS == 0 {
 		c.GitStatusCacheMS = 2_000
 	}
@@ -1079,6 +1088,7 @@ func applyEnvironment(c *Config) {
 	intEnv("AGENT_MAX_COMMAND_OUTPUT", &c.MaxCommandOutput)
 	intEnv("AGENT_CMD_OUTPUT_DEFAULT", &c.CommandOutput)
 	intEnv("AGENT_MAX_BODY_BYTES", &c.MaxBodyBytes)
+	intEnv("CODEBRIDGE_MAX_CONCURRENT_TOOL_CALLS", &c.MaxConcurrentToolCalls)
 	intEnv("CODEBRIDGE_GIT_STATUS_CACHE_MS", &c.GitStatusCacheMS)
 	c.Memory.Enabled = envBool("CODEBRIDGE_MEMORY_ENABLED", c.Memory.Enabled)
 	c.Memory.Required = envBool("CODEBRIDGE_MEMORY_REQUIRED", c.Memory.Required)

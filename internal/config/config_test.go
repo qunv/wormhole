@@ -163,7 +163,7 @@ func TestAdminJSONParsingPreservesDefaultsForOmittedFields(t *testing.T) {
 	if !cfg.Audit || !cfg.AuditArgs {
 		t.Fatalf("omitted audit defaults were lost: audit=%t auditArgs=%t", cfg.Audit, cfg.AuditArgs)
 	}
-	if cfg.MaxProcesses != Default().MaxProcesses || cfg.Memory.TokenBudget != Default().Memory.TokenBudget {
+	if cfg.MaxProcesses != Default().MaxProcesses || cfg.MaxConcurrentToolCalls != Default().MaxConcurrentToolCalls || cfg.Memory.TokenBudget != Default().Memory.TokenBudget {
 		t.Fatalf("omitted resource defaults were lost: %#v", cfg)
 	}
 }
@@ -266,6 +266,7 @@ func TestConfigIDIncludesEffectiveSecurityLimitsAndTunnelIdentity(t *testing.T) 
 		{"audit arguments", func(cfg *Config) { cfg.AuditArgs = !cfg.AuditArgs }},
 		{"body limit", func(cfg *Config) { cfg.MaxBodyBytes++ }},
 		{"process limit", func(cfg *Config) { cfg.MaxProcesses++ }},
+		{"tool concurrency limit", func(cfg *Config) { cfg.MaxConcurrentToolCalls++ }},
 		{"tunnel id", func(cfg *Config) { cfg.TunnelID = "another-tunnel" }},
 		{"profile directory", func(cfg *Config) { cfg.ProfileDir = filepath.Join(t.TempDir(), "profiles") }},
 	}
@@ -297,6 +298,18 @@ func TestConfigIDDoesNotEmbedRawSecrets(t *testing.T) {
 		if strings.Contains(identity, secret) {
 			t.Fatalf("ConfigID leaked raw secret %q", secret)
 		}
+	}
+}
+
+func TestValidateBoundsConcurrentToolCalls(t *testing.T) {
+	cfg := Default()
+	cfg.MaxConcurrentToolCalls = 0
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "maxConcurrentToolCalls") {
+		t.Fatalf("zero concurrency limit was accepted: %v", err)
+	}
+	cfg.MaxConcurrentToolCalls = 1025
+	if err := cfg.Validate(false); err == nil || !strings.Contains(err.Error(), "must not exceed 1024") {
+		t.Fatalf("oversized concurrency limit was accepted: %v", err)
 	}
 }
 
