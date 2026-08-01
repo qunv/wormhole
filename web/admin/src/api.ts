@@ -57,6 +57,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   authStatus: () => request<AdminAuthStatus>("/auth/status"),
+  setupAdmin: (username: string, password: string) =>
+    request<{ configured: true; authenticated: true; username: string }>("/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
   login: (username: string, password: string) =>
     request<{ authenticated: true; username: string }>("/auth/login", {
       method: "POST",

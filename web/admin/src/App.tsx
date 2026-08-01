@@ -12,6 +12,7 @@ import {
   LogIn,
   LogOut,
   Moon,
+  Rocket,
   Settings2,
   ShieldCheck,
   Sun,
@@ -23,11 +24,13 @@ import { Button, Notice, TextInput } from "./components";
 import { Configuration } from "./Configuration";
 import { Overview } from "./Overview";
 import { Secrets } from "./Secrets";
+import { Setup } from "./Setup";
 import { Workspaces } from "./Workspaces";
 import type { AdminAuthStatus } from "./types";
 
-type Page = "overview" | "configuration" | "workspaces" | "secrets";
+type Page = "setup" | "overview" | "configuration" | "workspaces" | "secrets";
 const nav: { id: Page; label: string; icon: React.ReactNode; description: string }[] = [
+  { id: "setup", label: "Setup", icon: <Rocket size={19} />, description: "Guided first run" },
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={19} />, description: "Health and posture" },
   { id: "configuration", label: "Configuration", icon: <Settings2 size={19} />, description: "Global runtime settings" },
   { id: "workspaces", label: "Workspaces", icon: <FolderGit2 size={19} />, description: "Named overrides" },
@@ -97,7 +100,10 @@ export default function App() {
       status={auth.data}
       dark={dark}
       onToggleTheme={() => setDark(!dark)}
-      onRetry={() => void auth.refetch()}
+      onConfigured={() => {
+        window.location.hash = "setup";
+        void auth.refetch();
+      }}
     />;
   }
   if (!auth.data.authenticated) {
@@ -127,7 +133,7 @@ export default function App() {
           <button className="theme-button" onClick={() => logout.mutate()} disabled={logout.isPending} aria-label="Sign out">{logout.isPending ? <LoaderCircle size={17} className="spin" /> : <LogOut size={17} />}</button>
         </div>
       </div>
-      <div className="page-container">{page === "overview" && <Overview />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
+      <div className="page-container">{page === "setup" && <Setup />}{page === "overview" && <Overview />}{page === "configuration" && <Configuration />}{page === "workspaces" && <Workspaces />}{page === "secrets" && <Secrets />}</div>
     </main>
   </div>;
 }
@@ -173,20 +179,55 @@ function LoginScreen({ status, dark, onToggleTheme, onLoggedIn }: {
   </AuthFrame>;
 }
 
-function SetupRequired({ status, dark, onToggleTheme, onRetry }: {
+function SetupRequired({ status, dark, onToggleTheme, onConfigured }: {
   status: AdminAuthStatus;
   dark: boolean;
   onToggleTheme: () => void;
-  onRetry: () => void;
+  onConfigured: () => void;
 }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const setup = useMutation({
+    mutationFn: () => api.setupAdmin(username.trim(), password),
+    onSuccess: () => {
+      setPassword("");
+      setConfirmation("");
+      onConfigured();
+    },
+  });
+  const mismatch = !!confirmation && password !== confirmation;
+  const valid = !!username.trim() && password.length >= 8 && password === confirmation;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (valid) setup.mutate();
+  };
+
   return <AuthFrame dark={dark} onToggleTheme={onToggleTheme}>
     <div className="auth-state-icon warning"><ShieldCheck size={25} /></div>
     <span className="auth-eyebrow">One-time local setup</span>
     <h1>Create the admin account</h1>
-    <p>Browser-based password setup is disabled. Create the first account directly on this machine.</p>
-    <div className="auth-command"><Terminal size={18} /><code>codebridge admin set-password admin</code></div>
+    <p>This create-only endpoint is available only from the loopback Admin UI while no credential file exists. Password recovery and reset remain CLI-only.</p>
+    {setup.error && <Notice tone="danger">{errorMessage(setup.error)}</Notice>}
+    <form className="auth-form" onSubmit={submit}>
+      <label className="field">
+        <span className="field-label">Username</span>
+        <TextInput value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+      </label>
+      <label className="field">
+        <span className="field-label">Admin password</span>
+        <TextInput type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" autoFocus />
+        <span className="field-hint">At least 8 characters.</span>
+      </label>
+      <label className="field">
+        <span className="field-label">Confirm password</span>
+        <TextInput type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" />
+        {mismatch && <span className="field-hint auth-field-error">Passwords do not match.</span>}
+      </label>
+      <Button type="submit" loading={setup.isPending} disabled={!valid}><ShieldCheck size={15} /> Create account and continue</Button>
+    </form>
     <p className="auth-path">Credential file: <code>{status.credentialPath}</code></p>
-    <Button onClick={onRetry}>I have configured the account</Button>
+    <div className="auth-cli-note"><Terminal size={17} /><div><strong>Prefer the terminal?</strong><span>You can still create the first account locally:</span><code>codebridge admin set-password {username.trim() || "admin"}</code></div></div>
   </AuthFrame>;
 }
 

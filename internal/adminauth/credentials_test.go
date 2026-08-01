@@ -45,6 +45,26 @@ func TestCredentialsAreOwnerOnlyHashedAndVerifiable(t *testing.T) {
 	}
 }
 
+func TestInitialCredentialsNeverReplaceExistingAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin-auth.json")
+	if _, err := SetInitialCredentials(path, "admin", "first password value"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetInitialCredentials(path, "other", "second password value"); !errors.Is(err, ErrAlreadyConfigured) {
+		t.Fatalf("second initialization error = %v", err)
+	}
+	credential, err := LoadCredentials(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyPassword(credential, "admin", "first password value") {
+		t.Fatal("initial account was replaced")
+	}
+	if VerifyPassword(credential, "other", "second password value") {
+		t.Fatal("replacement account was accepted")
+	}
+}
+
 func TestCredentialResetInvalidatesExistingSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "admin-auth.json")
 	if _, err := setCredentials(path, "admin", "first password value", 20_000); err != nil {

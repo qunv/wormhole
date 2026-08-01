@@ -36,7 +36,10 @@ const (
 
 var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-var ErrNotConfigured = errors.New("admin credentials are not configured")
+var (
+	ErrNotConfigured     = errors.New("admin credentials are not configured")
+	ErrAlreadyConfigured = errors.New("admin credentials are already configured")
+)
 
 // Credentials is the owner-only persisted local Admin UI identity. It stores
 // only a salted one-way password derivation and a random version used to
@@ -52,22 +55,48 @@ type Credentials struct {
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
+// ValidateCredentialInput applies the public username and password constraints
+// without reading or writing credential state.
+func ValidateCredentialInput(username, password string) error {
+	username = strings.TrimSpace(username)
+	if !usernamePattern.MatchString(username) {
+		return errors.New("admin username must be 1-64 characters using letters, digits, dot, underscore, or hyphen")
+	}
+	if len(password) < MinPasswordLength {
+		return fmt.Errorf("admin password must contain at least %d characters", MinPasswordLength)
+	}
+	if len(password) > MaxPasswordLength {
+		return fmt.Errorf("admin password must not exceed %d characters", MaxPasswordLength)
+	}
+	return nil
+}
+
 // SetCredentials validates, hashes, and atomically stores a local Admin UI
-// username and password in an owner-only file.
+// username and password in an owner-only file, replacing an existing account.
 func SetCredentials(path, username, password string) (Credentials, error) {
 	return setCredentials(path, username, password, defaultIterations)
 }
 
+// SetInitialCredentials creates the first local Admin UI account without ever
+// replacing an existing credential file. The exclusive create keeps concurrent
+// first-run requests from resetting an account that another request just made.
+func SetInitialCredentials(path, username, password string) (Credentials, error) {
+	if _, err := LoadCredentials(path); err == nil {
+		return Credentials{}, ErrAlreadyConfigured
+	} else if !errors.Is(err, ErrNotConfigured) {
+		return Credentials{}, err
+	}
+	return storeCredentials(path, username, password, defaultIterations, false)
+}
+
 func setCredentials(path, username, password string, iterations int) (Credentials, error) {
+	return storeCredentials(path, username, password, iterations, true)
+}
+
+func storeCredentials(path, username, password string, iterations int, replace bool) (Credentials, error) {
 	username = strings.TrimSpace(username)
-	if !usernamePattern.MatchString(username) {
-		return Credentials{}, errors.New("admin username must be 1-64 characters using letters, digits, dot, underscore, or hyphen")
-	}
-	if len(password) < MinPasswordLength {
-		return Credentials{}, fmt.Errorf("admin password must contain at least %d characters", MinPasswordLength)
-	}
-	if len(password) > MaxPasswordLength {
-		return Credentials{}, fmt.Errorf("admin password must not exceed %d characters", MaxPasswordLength)
+	if err := ValidateCredentialInput(username, password); err != nil {
+		return Credentials{}, err
 	}
 	if iterations < 10_000 {
 		return Credentials{}, errors.New("password iteration count is too low")
@@ -96,8 +125,15 @@ func setCredentials(path, username, password string, iterations int) (Credential
 	if err != nil {
 		return Credentials{}, err
 	}
-	if err := atomicWrite(path, append(raw, '\n'), 0o600); err != nil {
-		return Credentials{}, fmt.Errorf("save admin credentials: %w", err)
+	data := append(raw, '\n')
+	var saveErr error
+	if replace {
+		saveErr = atomicWrite(path, data, 0o600)
+	} else {
+		saveErr = exclusiveWrite(path, data, 0o600)
+	}
+	if saveErr != nil {
+		return Credentials{}, fmt.Errorf("save admin credentials: %w", saveErr)
 	}
 	return credential, nil
 }
@@ -177,6 +213,40 @@ func deriveKey(password, salt []byte, iterations, keyLength int) []byte {
 		result = append(result, t...)
 	}
 	return result[:keyLength]
+}
+
+func exclusiveWrite(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if errors.Is(err, os.ErrExist) {
+		return ErrAlreadyConfigured
+	}
+	if err != nil {
+		return err
+	}
+	complete := false
+	defer func() {
+		_ = file.Close()
+		if !complete {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := file.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	complete = true
+	return nil
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

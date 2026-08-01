@@ -105,6 +105,8 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			h.authStatus(writer, request)
 		case suffix == "/auth/login" && request.Method == http.MethodPost:
 			h.login(writer, request)
+		case suffix == "/auth/setup" && request.Method == http.MethodPost:
+			h.setupAdmin(writer, request)
 		default:
 			if !h.requireAuthentication(writer, request) {
 				return
@@ -139,6 +141,50 @@ func (h *Handler) authStatus(writer http.ResponseWriter, request *http.Request) 
 	})
 }
 
+func (h *Handler) setupAdmin(writer http.ResponseWriter, request *http.Request) {
+	if h.auth == nil {
+		h.sendError(writer, http.StatusNotImplemented, "admin_auth_unavailable", "Admin authentication is unavailable.")
+		return
+	}
+	raw, err := readBody(writer, request, maxAuthBody)
+	if err != nil {
+		h.sendError(writer, http.StatusBadRequest, "invalid_body", err.Error())
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		h.sendError(writer, http.StatusBadRequest, "invalid_body", "Expected a JSON object containing username and password.")
+		return
+	}
+	if err := adminauth.ValidateCredentialInput(input.Username, input.Password); err != nil {
+		h.sendError(writer, http.StatusUnprocessableEntity, "admin_credentials_invalid", err.Error())
+		return
+	}
+
+	h.mu.Lock()
+	_, err = adminauth.SetInitialCredentials(config.AdminAuthPath(), input.Username, input.Password)
+	h.mu.Unlock()
+	switch {
+	case errors.Is(err, adminauth.ErrAlreadyConfigured):
+		h.sendError(writer, http.StatusConflict, "admin_already_configured", "The local admin account has already been configured. Sign in or reset it from the local CLI.")
+		return
+	case err != nil:
+		h.sendError(writer, http.StatusInternalServerError, "admin_setup_failed", "Unable to create the owner-only local admin credential file.")
+		return
+	}
+
+	token, username, _, err := h.auth.Login(input.Username, input.Password)
+	if err != nil {
+		h.sendError(writer, http.StatusInternalServerError, "admin_login_failed", "The account was created, but an authenticated browser session could not be created. Sign in with the new account.")
+		return
+	}
+	h.setSessionCookie(writer, request, token)
+	h.sendJSON(writer, http.StatusCreated, map[string]any{"configured": true, "authenticated": true, "username": username})
+}
+
 func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	if h.auth == nil {
 		h.sendError(writer, http.StatusNotImplemented, "admin_auth_unavailable", "Admin authentication is unavailable.")
@@ -160,7 +206,7 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	token, username, retryAfter, err := h.auth.Login(input.Username, input.Password)
 	switch {
 	case errors.Is(err, adminauth.ErrNotConfigured):
-		h.sendError(writer, http.StatusServiceUnavailable, "admin_setup_required", "Admin credentials are not configured. Run `codebridge admin set-password [username]` locally.")
+		h.sendError(writer, http.StatusServiceUnavailable, "admin_setup_required", "Admin credentials are not configured. Create the first account from this loopback-only Admin UI or use the local CLI.")
 		return
 	case errors.Is(err, adminauth.ErrRateLimited):
 		seconds := int(retryAfter.Round(time.Second) / time.Second)
@@ -177,11 +223,7 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 		h.sendError(writer, http.StatusInternalServerError, "admin_login_failed", "Unable to create an admin session.")
 		return
 	}
-	http.SetCookie(writer, &http.Cookie{
-		Name: sessionCookieName, Value: token, Path: basePath,
-		MaxAge: int(adminauth.SessionTTL / time.Second), SameSite: http.SameSiteStrictMode,
-		Secure: request.TLS != nil, HttpOnly: true,
-	})
+	h.setSessionCookie(writer, request, token)
 	h.sendJSON(writer, http.StatusOK, map[string]any{"authenticated": true, "username": username})
 }
 
@@ -208,7 +250,7 @@ func (h *Handler) requireAuthentication(writer http.ResponseWriter, request *htt
 		return false
 	}
 	if !configured {
-		h.sendError(writer, http.StatusServiceUnavailable, "admin_setup_required", "Admin credentials are not configured. Run `codebridge admin set-password [username]` locally.")
+		h.sendError(writer, http.StatusServiceUnavailable, "admin_setup_required", "Admin credentials are not configured. Create the first account from this loopback-only Admin UI or use the local CLI.")
 		return false
 	}
 	if !authenticated {
@@ -216,6 +258,14 @@ func (h *Handler) requireAuthentication(writer http.ResponseWriter, request *htt
 		return false
 	}
 	return true
+}
+
+func (h *Handler) setSessionCookie(writer http.ResponseWriter, request *http.Request, token string) {
+	http.SetCookie(writer, &http.Cookie{
+		Name: sessionCookieName, Value: token, Path: basePath,
+		MaxAge: int(adminauth.SessionTTL / time.Second), SameSite: http.SameSiteStrictMode,
+		Secure: request.TLS != nil, HttpOnly: true,
+	})
 }
 
 func (h *Handler) sessionToken(request *http.Request) string {

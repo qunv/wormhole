@@ -309,7 +309,9 @@ http://127.0.0.1:8789/admin/
 
 Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, and referenced secrets.
 
-Create the local admin account before opening the console:
+Open `http://127.0.0.1:8789/admin/`. When no local admin credential exists, the loopback-only first-run screen asks for a username and password, creates the account once, signs in, and opens the guided setup wizard. The wizard covers workspace, mode, policy, port, OpenAI tunnel ID, write-only Runtime API key, and optional memory settings.
+
+The CLI remains available for account creation and administration:
 
 ```bash
 codebridge admin set-password admin
@@ -317,7 +319,7 @@ codebridge restart
 codebridge admin
 ```
 
-The command prompts twice without echoing the password when run from a terminal. The username and a salted one-way password hash are stored in the owner-only file `~/.codebridge/admin-auth.json`; the plaintext password is never persisted. The default URL is `http://127.0.0.1:8789/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
+The username and a salted one-way password hash are stored in the owner-only file `~/.codebridge/admin-auth.json`; the plaintext password is never persisted. The browser bootstrap endpoint uses exclusive create semantics and stops accepting setup after that file exists. The default URL is `http://127.0.0.1:8789/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
 
 There is no browser password-recovery flow. If the password is forgotten, reset it from the local machine:
 
@@ -330,8 +332,8 @@ Changing the username or password immediately invalidates existing Admin UI brow
 Security boundaries are enforced by the Go server:
 
 - Admin routes accept only loopback clients and `localhost` or loopback-IP Host headers.
-- Every Admin API route except login status and login requires an authenticated, bounded HttpOnly session cookie.
-- Failed logins are throttled, and password setup/reset is available only through the local Codebridge CLI.
+- Every Admin API route except login status, login, and the create-only first-account endpoint requires an authenticated, bounded HttpOnly session cookie.
+- Failed logins are throttled. The first account may be created once from the loopback UI; password changes, reset, and recovery remain local-CLI-only.
 - Every write, including login and logout, requires an exact same-origin request and a CSRF token.
 - Configuration and workspace-registry saves use revision checks to prevent overwriting concurrent changes.
 - The workspace browser is directory-only, bounded, and confined to the current user's home directory; an existing absolute path may still be entered manually.
@@ -339,7 +341,7 @@ Security boundaries are enforced by the Go server:
 - Referenced `.env` secrets are write-only; the UI can see only whether each value exists.
 - Changes are persisted atomically and require a Codebridge restart before active runtimes use them.
 
-The Admin UI can browse directories, register named workspaces, remove registrations, and optionally delete a workspace override file. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
+The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, and optionally delete a workspace override file. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
 
 ### Admin UI development
 

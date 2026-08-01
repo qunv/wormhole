@@ -84,7 +84,7 @@ func TestAdminRequiresConfiguredLoginAndSupportsLogout(t *testing.T) {
 	}
 }
 
-func TestAdminMissingCredentialsRequiresCLISetup(t *testing.T) {
+func TestAdminMissingCredentialsCanBeInitializedOnceFromLoopbackUI(t *testing.T) {
 	handler := newAdminHandler(t, nil)
 	handler.auth = adminauth.NewManager(config.AdminAuthPath())
 
@@ -93,10 +93,52 @@ func TestAdminMissingCredentialsRequiresCLISetup(t *testing.T) {
 	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"configured":false`) {
 		t.Fatalf("missing auth status = %d %s", statusResponse.Code, statusResponse.Body.String())
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/config", nil))
-	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "admin_setup_required") {
-		t.Fatalf("missing credential protection = %d %s", response.Code, response.Body.String())
+	csrf := csrfCookie(t, statusResponse.Result())
+
+	setupRequest := localRequest(http.MethodPost, apiPrefix+"/auth/setup", strings.NewReader(`{"username":"admin","password":"correct horse battery staple"}`))
+	setupRequest.Header.Set("Origin", "http://127.0.0.1:8789")
+	setupRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	setupRequest.AddCookie(csrf)
+	setupResponse := httptest.NewRecorder()
+	handler.ServeHTTP(setupResponse, setupRequest)
+	if setupResponse.Code != http.StatusCreated || !strings.Contains(setupResponse.Body.String(), `"authenticated":true`) {
+		t.Fatalf("admin setup = %d %s", setupResponse.Code, setupResponse.Body.String())
+	}
+	sessionCookie := cookieByName(t, setupResponse.Result(), sessionCookieName)
+	if !sessionCookie.HttpOnly || sessionCookie.Value == "" {
+		t.Fatalf("unexpected setup session cookie: %#v", sessionCookie)
+	}
+	credential, err := adminauth.LoadCredentials(config.AdminAuthPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !adminauth.VerifyPassword(credential, "admin", "correct horse battery staple") {
+		t.Fatal("created browser credential did not verify")
+	}
+
+	protectedRequest := localRequest(http.MethodGet, apiPrefix+"/config", nil)
+	protectedRequest.AddCookie(sessionCookie)
+	protectedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(protectedResponse, protectedRequest)
+	if protectedResponse.Code != http.StatusOK {
+		t.Fatalf("setup session config = %d %s", protectedResponse.Code, protectedResponse.Body.String())
+	}
+
+	secondRequest := localRequest(http.MethodPost, apiPrefix+"/auth/setup", strings.NewReader(`{"username":"other","password":"replacement password"}`))
+	secondRequest.Header.Set("Origin", "http://127.0.0.1:8789")
+	secondRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	secondRequest.AddCookie(csrf)
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusConflict || !strings.Contains(secondResponse.Body.String(), "admin_already_configured") {
+		t.Fatalf("second admin setup = %d %s", secondResponse.Code, secondResponse.Body.String())
+	}
+	credential, err = adminauth.LoadCredentials(config.AdminAuthPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !adminauth.VerifyPassword(credential, "admin", "correct horse battery staple") || adminauth.VerifyPassword(credential, "other", "replacement password") {
+		t.Fatal("second browser setup replaced the initial account")
 	}
 }
 
