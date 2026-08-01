@@ -1,0 +1,1309 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Federated Agent Orchestration — Kiến trúc, luồng và kế hoạch triển khai</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --surface: #0c1a2d;
+      --surface-2: #10243d;
+      --surface-3: #15304f;
+      --text: #e8f0fb;
+      --muted: #9fb1c8;
+      --line: #284666;
+      --blue: #5ab0ff;
+      --cyan: #52e0df;
+      --green: #67db9a;
+      --amber: #ffc766;
+      --red: #ff7a90;
+      --purple: #b99bff;
+      --shadow: 0 18px 55px rgba(0,0,0,.32);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% -5%, rgba(82,224,223,.15), transparent 28rem),
+        radial-gradient(circle at 95% 10%, rgba(185,155,255,.14), transparent 30rem),
+        linear-gradient(180deg, #07111f, #091526 45%, #07111f);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.58;
+    }
+
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code {
+      padding: .12rem .38rem;
+      border: 1px solid rgba(90,176,255,.22);
+      border-radius: 7px;
+      background: rgba(90,176,255,.09);
+      color: #d7ecff;
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 1.1rem 1.2rem;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: #dcecff;
+      background: #06101d;
+      box-shadow: inset 0 1px rgba(255,255,255,.025);
+      font-size: .88rem;
+      line-height: 1.5;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 285px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 1.4rem 1.15rem;
+      border-right: 1px solid var(--line);
+      background: rgba(5,14,25,.88);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand {
+      margin-bottom: 1.35rem;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(145deg, rgba(82,224,223,.12), rgba(90,176,255,.05));
+    }
+    .brand strong { display: block; font-size: 1rem; letter-spacing: .02em; }
+    .brand small { color: var(--muted); }
+
+    nav a {
+      display: block;
+      padding: .48rem .62rem;
+      margin: .15rem 0;
+      border-radius: 9px;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+    nav a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+
+    main { min-width: 0; }
+    .hero {
+      padding: 4.5rem clamp(1.5rem, 5vw, 5.5rem) 3.5rem;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(110deg, rgba(82,224,223,.09), transparent 45%),
+        linear-gradient(245deg, rgba(185,155,255,.08), transparent 45%);
+    }
+    .eyebrow {
+      color: var(--cyan);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 1100px;
+      margin: .65rem 0 1rem;
+      font-size: clamp(2.25rem, 5vw, 4.75rem);
+      line-height: 1.02;
+      letter-spacing: -.045em;
+    }
+    .lead {
+      max-width: 960px;
+      margin: 0;
+      color: #bdd0e6;
+      font-size: clamp(1.05rem, 1.7vw, 1.3rem);
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .65rem;
+      margin-top: 1.5rem;
+    }
+    .pill {
+      padding: .35rem .7rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(12,26,45,.7);
+      font-size: .8rem;
+    }
+
+    .content { padding: 2.2rem clamp(1.25rem, 4vw, 4.5rem) 5rem; }
+    section {
+      max-width: 1240px;
+      margin: 0 auto 2rem;
+      padding: clamp(1.2rem, 3vw, 2rem);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(16,36,61,.82), rgba(9,23,40,.84));
+      box-shadow: var(--shadow);
+    }
+    section > h2 {
+      margin: 0 0 1rem;
+      font-size: clamp(1.55rem, 2.7vw, 2.2rem);
+      letter-spacing: -.025em;
+    }
+    h3 { margin-top: 1.65rem; color: #cce4ff; }
+    h4 { color: #d8e8fa; }
+    p, li { color: #c0d0e2; }
+
+    .grid-2, .grid-3, .grid-4 {
+      display: grid;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .card {
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(7,17,31,.58);
+    }
+    .card h3, .card h4 { margin: 0 0 .45rem; }
+    .card p { margin: 0; }
+    .card.accent { border-color: rgba(82,224,223,.48); }
+    .card.green { border-color: rgba(103,219,154,.48); }
+    .card.amber { border-color: rgba(255,199,102,.48); }
+    .card.purple { border-color: rgba(185,155,255,.48); }
+
+    .callout {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      border-left: 4px solid var(--blue);
+      border-radius: 10px;
+      background: rgba(90,176,255,.09);
+      color: #cde5ff;
+    }
+    .callout.success { border-color: var(--green); background: rgba(103,219,154,.08); }
+    .callout.warning { border-color: var(--amber); background: rgba(255,199,102,.08); }
+    .callout.danger { border-color: var(--red); background: rgba(255,122,144,.08); }
+
+    .diagram {
+      margin: 1.2rem 0;
+      padding: 1.2rem;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background:
+        linear-gradient(rgba(40,70,102,.13) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(40,70,102,.13) 1px, transparent 1px),
+        #071421;
+      background-size: 24px 24px;
+    }
+    .flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .7rem;
+      min-width: 760px;
+    }
+    .flow.vertical {
+      min-width: 0;
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .node {
+      flex: 1;
+      min-width: 150px;
+      padding: .9rem;
+      border: 1px solid #35628e;
+      border-radius: 12px;
+      background: rgba(13,34,57,.94);
+      text-align: center;
+      box-shadow: 0 10px 28px rgba(0,0,0,.24);
+    }
+    .node strong { display: block; color: #eaf4ff; }
+    .node small { display: block; margin-top: .22rem; color: var(--muted); }
+    .node.cyan { border-color: var(--cyan); }
+    .node.green { border-color: var(--green); }
+    .node.amber { border-color: var(--amber); }
+    .node.purple { border-color: var(--purple); }
+    .arrow { flex: 0 0 auto; color: var(--cyan); font-size: 1.55rem; font-weight: 900; }
+
+    .layer {
+      margin: .7rem 0;
+      padding: .9rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(10,27,46,.76);
+    }
+    .layer-title {
+      margin-bottom: .55rem;
+      color: var(--cyan);
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      font-size: .78rem;
+    }
+    .layer-items { display: flex; gap: .6rem; flex-wrap: wrap; }
+    .chip {
+      padding: .45rem .65rem;
+      border: 1px solid #315777;
+      border-radius: 9px;
+      background: #0c2036;
+      color: #cfe2f6;
+      font-size: .86rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: .9rem;
+    }
+    th, td {
+      padding: .72rem .75rem;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: #dcecff; background: #102b47; }
+    td { color: #bdcfe1; background: rgba(7,17,31,.38); }
+
+    .state-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: .45rem;
+      margin: .75rem 0;
+    }
+    .state {
+      padding: .38rem .62rem;
+      border: 1px solid var(--blue);
+      border-radius: 999px;
+      color: #dbeeff;
+      background: rgba(90,176,255,.09);
+      font-size: .78rem;
+      font-weight: 800;
+    }
+    .state.done { border-color: var(--green); }
+    .state.wait { border-color: var(--amber); }
+    .state.fail { border-color: var(--red); }
+    .state-arrow { color: var(--muted); }
+
+    .timeline {
+      position: relative;
+      margin: 1rem 0;
+      padding-left: 1.75rem;
+    }
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: .45rem;
+      top: .5rem;
+      bottom: .5rem;
+      width: 2px;
+      background: var(--line);
+    }
+    .phase {
+      position: relative;
+      margin: 0 0 1rem;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(7,17,31,.5);
+    }
+    .phase::before {
+      content: "";
+      position: absolute;
+      left: -1.65rem;
+      top: 1.25rem;
+      width: .8rem;
+      height: .8rem;
+      border-radius: 50%;
+      border: 3px solid #07111f;
+      background: var(--cyan);
+    }
+    .phase h3 { margin-top: 0; }
+
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { position: relative; padding-left: 1.65rem; margin: .55rem 0; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 900; }
+
+    .footer {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 0 2rem 3rem;
+      color: var(--muted);
+      text-align: center;
+      font-size: .85rem;
+    }
+
+    @media (max-width: 1050px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      nav { display: flex; flex-wrap: wrap; }
+      nav a { margin-right: .25rem; }
+      .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .hero { padding-top: 2.6rem; }
+      .content { padding-inline: .75rem; }
+      section { border-radius: 13px; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="brand">
+      <strong>Federated Agent Orchestration</strong>
+      <small>Architecture & implementation plan</small>
+    </div>
+    <nav>
+      <a href="#summary">1. Tóm tắt</a>
+      <a href="#problem">2. Bài toán</a>
+      <a href="#principles">3. Nguyên tắc</a>
+      <a href="#model">4. Domain model</a>
+      <a href="#architecture">5. Kiến trúc</a>
+      <a href="#graphs">6. Ba loại graph</a>
+      <a href="#flow">7. Luồng end-to-end</a>
+      <a href="#handoff">8. Cross-repo handoff</a>
+      <a href="#runner">9. Agent Runner</a>
+      <a href="#contracts">10. Contract & API</a>
+      <a href="#storage">11. Data model</a>
+      <a href="#scheduling">12. Scheduling</a>
+      <a href="#verification">13. Verification</a>
+      <a href="#security">14. Security</a>
+      <a href="#failure">15. Failure handling</a>
+      <a href="#plan">16. Kế hoạch triển khai</a>
+      <a href="#acceptance">17. Acceptance criteria</a>
+      <a href="#decisions">18. Quyết định kiến trúc</a>
+    </nav>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">Architecture proposal · 2026-08-01</div>
+      <h1>Điều phối coding agent phân tán giữa nhiều người, nhiều máy và nhiều repository</h1>
+      <p class="lead">
+        Mỗi nhân sự sở hữu coding agent và local repository riêng. Agent đăng ký vào một logical workspace trung tâm,
+        nhận task qua resident runner, làm việc bằng CodeBridge tại máy cục bộ, rồi publish commit và artifact để kích hoạt
+        công việc phụ thuộc ở cùng repo hoặc repo khác.
+      </p>
+      <div class="meta">
+        <span class="pill">Federated workspace</span>
+        <span class="pill">Cross-repo dependency</span>
+        <span class="pill">Artifact-driven trigger</span>
+        <span class="pill">MCP execution plane</span>
+        <span class="pill">DAG scheduler</span>
+      </div>
+    </header>
+
+    <div class="content">
+      <section id="summary">
+        <h2>1. Tóm tắt giải pháp</h2>
+        <div class="callout success">
+          <strong>Đề xuất:</strong> xây dựng một <code>Central Orchestrator</code> quản lý logical workspace, agent registration,
+          workspace dependency, task DAG, artifact và trạng thái run. Trên mỗi máy nhân sự chạy một <code>Agent Runner</code>
+          kết nối outbound tới orchestrator và sử dụng CodeBridge để thao tác local repository.
+        </div>
+
+        <div class="grid-4">
+          <div class="card accent">
+            <h4>Logical Workspace</h4>
+            <p>Đại diện cho một repository hoặc project logic, không phải một thư mục local duy nhất.</p>
+          </div>
+          <div class="card green">
+            <h4>Workspace Registration</h4>
+            <p>Liên kết agent, máy và local clone với logical workspace tương ứng.</p>
+          </div>
+          <div class="card amber">
+            <h4>Artifact Handoff</h4>
+            <p>Output đã xác minh được chuyển sang task phụ thuộc dưới dạng immutable artifact.</p>
+          </div>
+          <div class="card purple">
+            <h4>Resident Runner</h4>
+            <p>Kênh đánh thức agent qua WebSocket hoặc long-poll; MCP không đảm nhiệm wake-up.</p>
+          </div>
+        </div>
+
+        <h3>Ví dụ mục tiêu</h3>
+        <div class="diagram">
+          <div class="flow">
+            <div class="node cyan"><strong>Blob</strong><small>Backend agent · repo A</small></div>
+            <div class="arrow">→</div>
+            <div class="node amber"><strong>Verified API Artifact</strong><small>OpenAPI, commit, notes, tests</small></div>
+            <div class="arrow">→</div>
+            <div class="node green"><strong>Alice</strong><small>Frontend agent · repo B</small></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="problem">
+        <h2>2. Bài toán cần giải quyết</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Trong cùng repository</h3>
+            <p>Nhiều nhân sự có local clone riêng của cùng repository. Khi một task hoàn tất, task phụ thuộc có thể được giao cho agent khác mà không chia sẻ working directory.</p>
+          </div>
+          <div class="card">
+            <h3>Giữa nhiều repository</h3>
+            <p>Backend, Frontend, Mobile hoặc shared library nằm ở các repo khác nhau nhưng có dependency nghiệp vụ và contract cần được truyền giao tự động.</p>
+          </div>
+        </div>
+
+        <h3>Các khoảng trống của MCP đơn thuần</h3>
+        <table>
+          <thead><tr><th>Khả năng</th><th>MCP / CodeBridge</th><th>Orchestrator cần bổ sung</th></tr></thead>
+          <tbody>
+            <tr><td>Thao tác file, Git, command, test</td><td>Phù hợp</td><td>Không cần nhân bản chức năng</td></tr>
+            <tr><td>Đánh thức agent đang không chạy</td><td>Không phải vai trò của MCP</td><td>Resident runner + assignment channel</td></tr>
+            <tr><td>Quản lý dependency giữa task</td><td>Không</td><td>Task DAG + dependency resolver</td></tr>
+            <tr><td>Quản lý dependency giữa repo</td><td>Không</td><td>Workspace graph + contract registry</td></tr>
+            <tr><td>Chuyển output giữa máy</td><td>Local execution only</td><td>Git remote + artifact store</td></tr>
+            <tr><td>Exactly-once assignment</td><td>Không</td><td>Lease, run token, idempotency</td></tr>
+            <tr><td>Independent verification</td><td>Cung cấp tool để kiểm tra</td><td>Verifier quyết định trạng thái cuối</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="principles">
+        <h2>3. Nguyên tắc thiết kế</h2>
+        <div class="grid-3">
+          <div class="card accent"><h4>1. Local-first</h4><p>Mỗi nhân sự giữ local clone và credential của mình; orchestrator không cần mount trực tiếp repo cá nhân.</p></div>
+          <div class="card accent"><h4>2. Outbound connection</h4><p>Runner chủ động kết nối ra ngoài, giảm yêu cầu mở inbound port vào máy developer.</p></div>
+          <div class="card accent"><h4>3. Artifact-driven</h4><p>Task sau được kích hoạt bởi output versioned đã verified, không phải bởi message mơ hồ hoặc local path.</p></div>
+          <div class="card green"><h4>4. Immutable identity</h4><p>Mọi run, attempt, commit và artifact có ID/hash bất biến để chống stale result.</p></div>
+          <div class="card green"><h4>5. Independent verification</h4><p>Không tin tuyệt đối vào lời khai của agent; kiểm tra Git state, test và artifact thực tế.</p></div>
+          <div class="card green"><h4>6. Pluggable agent</h4><p>Codex, Claude hoặc agent khác được bao quanh bởi adapter chung thay vì nhúng logic vendor vào scheduler.</p></div>
+          <div class="card amber"><h4>7. Explicit dependency</h4><p>Workspace link mô tả quan hệ dài hạn; task dependency mô tả thứ tự công việc cụ thể.</p></div>
+          <div class="card amber"><h4>8. Least privilege</h4><p>Mỗi runner chỉ nhận task của registration hợp lệ và chỉ dùng tool được policy cho phép.</p></div>
+          <div class="card amber"><h4>9. Recoverable state</h4><p>Orchestrator restart phải khôi phục task, run, lease và artifact từ persistent store.</p></div>
+        </div>
+      </section>
+
+      <section id="model">
+        <h2>4. Domain model</h2>
+        <table>
+          <thead><tr><th>Entity</th><th>Ý nghĩa</th><th>Ví dụ</th></tr></thead>
+          <tbody>
+            <tr><td><code>Workspace</code></td><td>Logical repository/project identity.</td><td><code>backend-payment</code>, <code>frontend-web</code></td></tr>
+            <tr><td><code>Agent</code></td><td>Coding executor gắn với nhân sự hoặc service account.</td><td><code>blob-agent</code>, <code>alice-agent</code></td></tr>
+            <tr><td><code>Machine</code></td><td>Thiết bị chạy runner và CodeBridge.</td><td><code>blob-macbook</code></td></tr>
+            <tr><td><code>WorkspaceRegistration</code></td><td>Một local clone cụ thể được agent đăng ký vào logical workspace.</td><td>Blob + máy X + <code>/work/backend</code></td></tr>
+            <tr><td><code>WorkspaceLink</code></td><td>Quan hệ dài hạn giữa hai workspace.</td><td>Backend <code>provides_api_to</code> Frontend</td></tr>
+            <tr><td><code>Contract</code></td><td>Giao diện được workspace producer publish cho consumer.</td><td><code>payment-api</code>, <code>user-events</code></td></tr>
+            <tr><td><code>Job</code></td><td>Mục tiêu nghiệp vụ tổng thể.</td><td>Implement checkout v2</td></tr>
+            <tr><td><code>Task</code></td><td>Đơn vị công việc có workspace đích, role, dependency và output kỳ vọng.</td><td>Implement POST /payments</td></tr>
+            <tr><td><code>AgentRun</code></td><td>Một lần thực thi task cụ thể bởi một registration.</td><td><code>run-104</code>, attempt 2</td></tr>
+            <tr><td><code>Artifact</code></td><td>Output immutable có hash và producer lineage.</td><td>OpenAPI, patch, test report, notes</td></tr>
+            <tr><td><code>Lease</code></td><td>Quyền tạm thời cho runner xử lý run.</td><td>TTL 60s, heartbeat 20s</td></tr>
+          </tbody>
+        </table>
+
+        <div class="callout warning">
+          <strong>Identity rule:</strong> không dùng tên workspace làm identity duy nhất. Nên dùng canonical repository ID hoặc normalized remote URL hash, kèm provider/organization/repository UUID khi có thể.
+        </div>
+
+        <h3>Cardinality chính</h3>
+        <pre>Workspace 1 ── * WorkspaceRegistration
+Agent     1 ── * WorkspaceRegistration
+Machine   1 ── * WorkspaceRegistration
+Workspace * ── * Workspace              (qua WorkspaceLink)
+Job       1 ── * Task
+Task      1 ── * AgentRun
+Task      * ── * Task                   (dependency DAG)
+AgentRun  1 ── * Artifact
+Contract  1 ── * ArtifactVersion</pre>
+      </section>
+
+      <section id="architecture">
+        <h2>5. Kiến trúc tổng thể</h2>
+        <div class="diagram">
+          <div class="layer">
+            <div class="layer-title">Control plane — Central Orchestrator</div>
+            <div class="layer-items">
+              <span class="chip">Job API</span>
+              <span class="chip">Workspace Catalog</span>
+              <span class="chip">Agent Registry</span>
+              <span class="chip">Workspace Link Registry</span>
+              <span class="chip">Contract Registry</span>
+              <span class="chip">Task DAG</span>
+              <span class="chip">Dependency Resolver</span>
+              <span class="chip">Scheduler</span>
+              <span class="chip">Lease Manager</span>
+              <span class="chip">Verifier</span>
+              <span class="chip">Artifact Service</span>
+              <span class="chip">Audit/Event Log</span>
+            </div>
+          </div>
+          <div class="flow" style="min-width:900px;margin:1rem 0">
+            <div class="node purple"><strong>Blob Runner</strong><small>Outbound WebSocket</small></div>
+            <div class="node purple"><strong>Alice Runner</strong><small>Outbound WebSocket</small></div>
+            <div class="node purple"><strong>CI / Integration Runner</strong><small>Dedicated merge & validation</small></div>
+          </div>
+          <div class="flow" style="min-width:900px;margin:1rem 0">
+            <div class="node cyan"><strong>Blob CodeBridge</strong><small>Backend tools & policy</small></div>
+            <div class="node cyan"><strong>Alice CodeBridge</strong><small>Frontend tools & policy</small></div>
+            <div class="node cyan"><strong>CI CodeBridge</strong><small>Integration tools</small></div>
+          </div>
+          <div class="flow" style="min-width:900px">
+            <div class="node green"><strong>Backend local clone</strong><small>repo A</small></div>
+            <div class="node green"><strong>Frontend local clone</strong><small>repo B</small></div>
+            <div class="node green"><strong>Integration clone</strong><small>controlled environment</small></div>
+          </div>
+        </div>
+
+        <h3>Trách nhiệm theo lớp</h3>
+        <div class="grid-3">
+          <div class="card">
+            <h4>Orchestrator</h4>
+            <p>Quyết định task nào READY, chọn registration, cấp lease, lưu state, publish artifact, resolve dependency và audit.</p>
+          </div>
+          <div class="card">
+            <h4>Agent Runner</h4>
+            <p>Duy trì kết nối, nhận assignment, gọi agent adapter, gửi heartbeat, upload result và xử lý cancellation.</p>
+          </div>
+          <div class="card">
+            <h4>CodeBridge</h4>
+            <p>Cung cấp execution plane local: file, Git, command, test, policy, audit và context cho agent đang chạy.</p>
+          </div>
+        </div>
+
+        <div class="callout danger">
+          Orchestrator không nên trực tiếp thao tác thư mục local của Blob hoặc Alice. Cross-machine handoff phải đi qua Git remote hoặc artifact store.
+        </div>
+      </section>
+
+      <section id="graphs">
+        <h2>6. Ba loại graph cần quản lý</h2>
+        <div class="grid-3">
+          <div class="card accent">
+            <h3>Workspace Graph</h3>
+            <p>Mối quan hệ dài hạn giữa các repo.</p>
+            <pre>backend
+  └─ provides_api_to → frontend
+shared-contracts
+  └─ publishes_package_to → frontend</pre>
+          </div>
+          <div class="card green">
+            <h3>Task DAG</h3>
+            <p>Trình tự cụ thể của một job.</p>
+            <pre>BE: implement API
+  └─ FE: integrate API
+       └─ E2E: checkout flow</pre>
+          </div>
+          <div class="card amber">
+            <h3>Artifact Graph</h3>
+            <p>Lineage của output và input.</p>
+            <pre>OpenAPI v17
+  ├─ produced_by → run-blob-104
+  └─ consumed_by → run-alice-008</pre>
+          </div>
+        </div>
+
+        <h3>Vì sao phải tách?</h3>
+        <table>
+          <thead><tr><th>Graph</th><th>Thay đổi khi nào?</th><th>Không nên dùng thay cho</th></tr></thead>
+          <tbody>
+            <tr><td>Workspace Graph</td><td>Khi kiến trúc sản phẩm hoặc ownership thay đổi.</td><td>Không tự động đồng nghĩa với task phải chạy.</td></tr>
+            <tr><td>Task DAG</td><td>Mỗi job/feature có thể tạo DAG mới.</td><td>Không chứa toàn bộ binary payload của output.</td></tr>
+            <tr><td>Artifact Graph</td><td>Mỗi run tạo version mới.</td><td>Không thay thế dependency business dài hạn.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="flow">
+        <h2>7. Luồng end-to-end</h2>
+        <h3>7.1 Đăng ký agent và local workspace</h3>
+        <div class="diagram">
+          <div class="flow">
+            <div class="node"><strong>Runner starts</strong><small>machine identity + credentials</small></div>
+            <div class="arrow">→</div>
+            <div class="node cyan"><strong>Register agent</strong><small>capabilities, adapter, concurrency</small></div>
+            <div class="arrow">→</div>
+            <div class="node amber"><strong>Register workspace clone</strong><small>logical workspace + local repo metadata</small></div>
+            <div class="arrow">→</div>
+            <div class="node green"><strong>READY</strong><small>heartbeat + assignment stream</small></div>
+          </div>
+        </div>
+
+        <h3>7.2 Backend → Frontend cross-repo flow</h3>
+        <ol>
+          <li>Job được tạo với task Backend và Frontend; Frontend phụ thuộc artifact contract từ Backend.</li>
+          <li>Scheduler chọn Blob registration có workspace Backend, capability phù hợp và còn capacity.</li>
+          <li>Blob Runner nhận assignment, launch coding agent và trỏ MCP tới CodeBridge local.</li>
+          <li>Agent sửa code, chạy test, commit và push branch hoặc upload patch/bundle.</li>
+          <li>Runner trả structured result kèm commit, artifact manifest và check result.</li>
+          <li>Verifier độc lập xác nhận commit truy cập được, tests pass và contract hợp lệ.</li>
+          <li>Artifact Service publish OpenAPI, API diff, integration notes và test report.</li>
+          <li>Dependency Resolver nhận <code>artifact.published</code>, kiểm tra consumer và trigger policy.</li>
+          <li>Frontend task chuyển từ <code>PENDING</code> sang <code>READY</code>.</li>
+          <li>Scheduler chọn Alice registration cho workspace Frontend.</li>
+          <li>Alice Runner nhận task envelope chứa toàn bộ artifact reference và acceptance criteria.</li>
+          <li>Alice Agent tích hợp client/UI/tests trong repo B, commit và publish result.</li>
+          <li>Integration Runner chạy contract/E2E validation giữa hai output.</li>
+        </ol>
+
+        <h3>7.3 Task state machine</h3>
+        <div class="state-row">
+          <span class="state wait">PENDING</span><span class="state-arrow">→</span>
+          <span class="state">READY</span><span class="state-arrow">→</span>
+          <span class="state">ASSIGNED</span><span class="state-arrow">→</span>
+          <span class="state">RUNNING</span><span class="state-arrow">→</span>
+          <span class="state">VERIFYING</span><span class="state-arrow">→</span>
+          <span class="state done">COMPLETED</span>
+        </div>
+        <div class="state-row">
+          <span class="state wait">BLOCKED</span>
+          <span class="state fail">FAILED</span>
+          <span class="state fail">LOST</span>
+          <span class="state">CANCELLED</span>
+        </div>
+
+        <h3>7.4 Registration state</h3>
+        <div class="state-row">
+          <span class="state wait">OFFLINE</span><span class="state-arrow">→</span>
+          <span class="state done">AVAILABLE</span><span class="state-arrow">→</span>
+          <span class="state">LEASED</span><span class="state-arrow">→</span>
+          <span class="state">RUNNING</span><span class="state-arrow">→</span>
+          <span class="state done">AVAILABLE</span>
+        </div>
+        <div class="state-row"><span class="state fail">QUARANTINED</span><span class="state wait">DRAINING</span></div>
+      </section>
+
+      <section id="handoff">
+        <h2>8. Cross-repo artifact handoff</h2>
+        <h3>8.1 Không trigger trực tiếp bằng commit event</h3>
+        <div class="grid-2">
+          <div class="card amber">
+            <h4>Commit event</h4>
+            <p>Có thể là local-only, chưa push, chưa test, commit tạm hoặc không phản ánh contract đã hoàn thành.</p>
+          </div>
+          <div class="card green">
+            <h4>Verified artifact event</h4>
+            <p>Có lineage, hash, producer run, remote reference, verifier verdict và schema rõ ràng.</p>
+          </div>
+        </div>
+
+        <h3>8.2 Handoff package cho API integration</h3>
+        <pre>{
+  "artifact_id": "artifact-payment-api-v17",
+  "type": "api_contract",
+  "contract_key": "payment-api",
+  "producer_workspace_id": "workspace-backend",
+  "producer_task_id": "task-be-payment-create",
+  "producer_run_id": "run-blob-104",
+  "source": {
+    "repository": "git.company.com/payment/backend",
+    "branch": "agents/blob/payment-api",
+    "commit": "def456"
+  },
+  "payloads": [
+    {"type": "openapi", "uri": "artifact://openapi-v17", "sha256": "..."},
+    {"type": "api_diff", "uri": "artifact://api-diff-v17", "sha256": "..."},
+    {"type": "integration_notes", "uri": "artifact://notes-v17", "sha256": "..."},
+    {"type": "test_report", "uri": "artifact://tests-v17", "sha256": "..."}
+  ],
+  "breaking_change": false,
+  "verified": true
+}</pre>
+
+        <h3>8.3 Trigger policy</h3>
+        <pre>{
+  "workspace_link_id": "link-backend-frontend",
+  "contract_key": "payment-api",
+  "event": "artifact.published",
+  "require_verified": true,
+  "trigger_when": [
+    "endpoint_added",
+    "endpoint_changed",
+    "schema_changed",
+    "breaking_change"
+  ],
+  "ignore_when": [
+    "documentation_only",
+    "internal_refactor"
+  ]
+}</pre>
+
+        <h3>8.4 Consumer usage manifest</h3>
+        <p>Để không trigger tất cả consumer, mỗi repo có thể khai báo phần contract đang sử dụng.</p>
+        <pre>{
+  "workspace_id": "workspace-frontend",
+  "consumes": [
+    {
+      "contract": "payment-api",
+      "operations": [
+        "POST /payments",
+        "GET /payments/{id}"
+      ]
+    }
+  ]
+}</pre>
+
+        <div class="callout">
+          Dependency Resolver so sánh API diff với usage manifest. Nếu Backend chỉ đổi endpoint mà Frontend không dùng, task của Alice không được tạo hoặc không chuyển READY.
+        </div>
+      </section>
+
+      <section id="runner">
+        <h2>9. Agent Runner và cơ chế đánh thức</h2>
+        <h3>9.1 Thành phần resident trên máy nhân sự</h3>
+        <div class="grid-3">
+          <div class="card"><h4>Connection Manager</h4><p>Duy trì WebSocket/long-poll, reconnect, auth refresh và receive assignment.</p></div>
+          <div class="card"><h4>Agent Adapter</h4><p>Chuẩn hoá cách launch Codex, Claude hoặc agent khác và parse structured output.</p></div>
+          <div class="card"><h4>Workspace Adapter</h4><p>Kiểm tra local clone, branch policy, base commit, cleanup và CodeBridge endpoint.</p></div>
+          <div class="card"><h4>Run Supervisor</h4><p>Heartbeat, timeout, cancellation, process isolation, log streaming và resource limit.</p></div>
+          <div class="card"><h4>Artifact Uploader</h4><p>Upload report, diff, schema, log và metadata theo content hash.</p></div>
+          <div class="card"><h4>Credential Provider</h4><p>Lấy token ngắn hạn cho orchestrator, Git remote và artifact store.</p></div>
+        </div>
+
+        <h3>9.2 Assignment channel</h3>
+        <div class="diagram">
+          <div class="flow">
+            <div class="node cyan"><strong>Runner connects</strong><small>registration_id + token</small></div>
+            <div class="arrow">⇄</div>
+            <div class="node purple"><strong>Assignment Stream</strong><small>WebSocket or long-poll</small></div>
+            <div class="arrow">⇄</div>
+            <div class="node green"><strong>Lease Manager</strong><small>TTL + heartbeat + fencing token</small></div>
+          </div>
+        </div>
+
+        <h3>9.3 Agent adapter interface</h3>
+        <pre>interface AgentAdapter {
+  capabilities(): AgentCapabilities
+  launch(input: AgentLaunchInput): RunningAgent
+}
+
+interface RunningAgent {
+  streamLogs(): AsyncIterable&lt;LogEvent&gt;
+  wait(): Promise&lt;AgentStructuredResult&gt;
+  cancel(reason: string): Promise&lt;void&gt;
+}</pre>
+
+        <h3>9.4 Wake-up invariant</h3>
+        <ul>
+          <li>MCP chỉ cung cấp tool cho agent đang chạy.</li>
+          <li>Runner mới là tiến trình luôn sống để nhận task.</li>
+          <li>Assignment phải chứa <code>run_id</code>, <code>attempt</code>, <code>lease_token</code> và deadline.</li>
+          <li>Runner phải ACK trước khi task chuyển <code>ASSIGNED → RUNNING</code>.</li>
+          <li>Mọi result thiếu hoặc sai fencing token đều bị từ chối.</li>
+        </ul>
+      </section>
+
+      <section id="contracts">
+        <h2>10. Contract giữa orchestrator, runner và agent</h2>
+        <h3>10.1 Task envelope</h3>
+        <pre>{
+  "schema_version": 1,
+  "job_id": "job-payment-feature",
+  "task_id": "task-fe-payment-integration",
+  "run_id": "run-alice-008",
+  "attempt": 1,
+  "lease_token": "lease-opaque-token",
+  "role": "frontend-implementer",
+  "goal": "Integrate the new payment creation API",
+  "destination": {
+    "workspace_id": "workspace-frontend",
+    "registration_id": "alice-frontend-registration",
+    "base_commit": "frontend123",
+    "mcp_endpoint": "local://codebridge/frontend/fast"
+  },
+  "source_workspace_refs": [
+    {
+      "workspace_id": "workspace-backend",
+      "relation": "provides_api_to",
+      "repository": "git.company.com/payment/backend",
+      "commit": "def456"
+    }
+  ],
+  "inputs": [
+    {"type": "openapi", "artifact_id": "artifact-openapi-v17", "sha256": "..."},
+    {"type": "integration_notes", "artifact_id": "artifact-notes-v17", "sha256": "..."},
+    {"type": "test_report", "artifact_id": "artifact-tests-v17", "sha256": "..."}
+  ],
+  "acceptance_criteria": [
+    "Update the payment API client",
+    "Implement payment submission UI",
+    "Handle validation and API errors",
+    "Add frontend integration tests"
+  ],
+  "expected_output": {
+    "commit_required": true,
+    "required_checks": ["test", "lint"],
+    "artifact_types": ["implementation_summary", "test_report"]
+  }
+}</pre>
+
+        <h3>10.2 Structured result</h3>
+        <pre>{
+  "schema_version": 1,
+  "job_id": "job-payment-feature",
+  "task_id": "task-fe-payment-integration",
+  "run_id": "run-alice-008",
+  "attempt": 1,
+  "lease_token": "lease-opaque-token",
+  "status": "completed",
+  "summary": "Integrated payment creation API and error states",
+  "base_commit": "frontend123",
+  "head_commit": "frontend789",
+  "remote_ref": "refs/heads/agents/alice/payment-ui",
+  "changed_files": [
+    "src/api/payment.ts",
+    "src/features/payment/PaymentForm.tsx",
+    "src/features/payment/PaymentForm.test.tsx"
+  ],
+  "checks": [
+    {"name": "npm test", "passed": true, "exit_code": 0},
+    {"name": "npm run lint", "passed": true, "exit_code": 0}
+  ],
+  "artifacts": [
+    {"type": "test_report", "local_ref": "runner://artifacts/test-report.json"}
+  ],
+  "blockers": []
+}</pre>
+
+        <h3>10.3 API đề xuất</h3>
+        <table>
+          <thead><tr><th>Endpoint</th><th>Mục đích</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /v1/agents/register</code></td><td>Đăng ký hoặc rotate agent identity.</td></tr>
+            <tr><td><code>POST /v1/workspace-registrations</code></td><td>Gắn local clone vào logical workspace.</td></tr>
+            <tr><td><code>POST /v1/workspace-registrations/{id}/heartbeat</code></td><td>Capacity, health, current run và repo state summary.</td></tr>
+            <tr><td><code>GET /v1/assignments/stream</code></td><td>WebSocket/SSE/long-poll nhận task.</td></tr>
+            <tr><td><code>POST /v1/runs/{id}/ack</code></td><td>Runner xác nhận nhận assignment.</td></tr>
+            <tr><td><code>POST /v1/runs/{id}/heartbeat</code></td><td>Gia hạn lease và gửi progress.</td></tr>
+            <tr><td><code>POST /v1/runs/{id}/complete</code></td><td>Nộp structured result.</td></tr>
+            <tr><td><code>POST /v1/runs/{id}/fail</code></td><td>Nộp lỗi có phân loại retryable/fatal.</td></tr>
+            <tr><td><code>POST /v1/artifacts/init</code></td><td>Tạo upload session/content-addressed artifact.</td></tr>
+            <tr><td><code>POST /v1/contracts/{key}/versions</code></td><td>Publish contract version sau verification.</td></tr>
+            <tr><td><code>POST /v1/workspace-links</code></td><td>Khai báo quan hệ producer/consumer.</td></tr>
+            <tr><td><code>POST /v1/jobs</code></td><td>Tạo job và task DAG.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="storage">
+        <h2>11. Persistent data model</h2>
+        <h3>11.1 Bảng cốt lõi</h3>
+        <pre>workspaces(
+  id, canonical_repo_id, display_name, remote_url,
+  default_branch, status, created_at, updated_at
+)
+
+agents(
+  id, owner_id, display_name, adapter_type,
+  capabilities_json, status, created_at, updated_at
+)
+
+machines(
+  id, owner_id, hostname_hash, platform,
+  runner_version, status, last_seen_at
+)
+
+workspace_registrations(
+  id, workspace_id, agent_id, machine_id,
+  local_repo_fingerprint, capabilities_json,
+  max_concurrency, active_runs, status, last_seen_at
+)
+
+workspace_links(
+  id, source_workspace_id, target_workspace_id,
+  relation, contract_key, trigger_policy_json, enabled
+)
+
+contracts(
+  id, contract_key, producer_workspace_id,
+  contract_type, compatibility_policy, current_version
+)
+
+jobs(id, goal, status, priority, created_by, created_at)
+
+tasks(
+  id, job_id, workspace_id, role, goal,
+  state, priority, max_attempts, expected_output_json
+)
+
+task_dependencies(
+  task_id, depends_on_task_id,
+  dependency_type, selector_json
+)
+
+agent_runs(
+  id, task_id, attempt, registration_id,
+  lease_token_hash, state, started_at, heartbeat_at, ended_at
+)
+
+artifacts(
+  id, producer_run_id, producer_workspace_id,
+  type, contract_key, version, content_hash,
+  storage_uri, metadata_json, verified_at
+)
+
+artifact_consumptions(
+  artifact_id, consumer_task_id, consumer_run_id
+)
+
+events(
+  id, aggregate_type, aggregate_id,
+  event_type, payload_json, created_at
+)</pre>
+
+        <h3>11.2 Constraints quan trọng</h3>
+        <ul>
+          <li><code>workspace_registrations</code> unique theo workspace + agent + machine + local repo fingerprint.</li>
+          <li>Mỗi task attempt chỉ có tối đa một active run.</li>
+          <li>Mỗi registration không vượt quá <code>max_concurrency</code>.</li>
+          <li>Artifact content hash là immutable; cùng hash có thể deduplicate storage.</li>
+          <li>Không cho phép cycle trong task DAG và workspace link loại <code>depends_on</code> nếu policy cấm.</li>
+          <li>Result chỉ được nhận khi run state active và lease token hợp lệ.</li>
+        </ul>
+      </section>
+
+      <section id="scheduling">
+        <h2>12. Dependency resolution và scheduling</h2>
+        <h3>12.1 Điều kiện task READY</h3>
+        <pre>ready(task) =
+  all(task_dependencies completed)
+  AND all(required artifact selectors resolved)
+  AND destination workspace enabled
+  AND no policy blocker
+  AND attempts &lt; max_attempts</pre>
+
+        <h3>12.2 Chọn registration</h3>
+        <pre>eligible(registration, task) =
+  registration.status == AVAILABLE
+  AND registration.workspace_id == task.workspace_id
+  AND registration.capabilities contains task.required_capabilities
+  AND registration.active_runs &lt; registration.max_concurrency
+  AND registration.last_seen_at within heartbeat threshold
+  AND registration satisfies policy / ownership / locality constraints</pre>
+
+        <h3>12.3 Ranking gợi ý</h3>
+        <table>
+          <thead><tr><th>Tiêu chí</th><th>Ý nghĩa</th><th>Trọng số gợi ý</th></tr></thead>
+          <tbody>
+            <tr><td>Workspace affinity</td><td>Registration đúng local clone và branch context mong muốn.</td><td>Rất cao</td></tr>
+            <tr><td>Capability match</td><td>Ngôn ngữ, framework, agent adapter, tool policy.</td><td>Rất cao</td></tr>
+            <tr><td>Owner affinity</td><td>Task thuộc ownership của nhân sự/team cụ thể.</td><td>Cao</td></tr>
+            <tr><td>Current load</td><td>Ưu tiên runner ít active run hơn.</td><td>Trung bình</td></tr>
+            <tr><td>Warm context</td><td>Runner vừa xử lý task liên quan hoặc đã có dependency artifact cache.</td><td>Trung bình</td></tr>
+            <tr><td>Reliability</td><td>Tỷ lệ success, timeout và stale lease gần đây.</td><td>Trung bình</td></tr>
+          </tbody>
+        </table>
+
+        <h3>12.4 Lease protocol</h3>
+        <ol>
+          <li>Scheduler transactionally chuyển task <code>READY → ASSIGNED</code> và tạo run.</li>
+          <li>Lease gồm TTL, heartbeat interval và fencing token tăng đơn điệu.</li>
+          <li>Runner ACK trong khoảng ngắn; nếu không ACK, lease bị thu hồi.</li>
+          <li>Heartbeat gia hạn lease; quá hạn chuyển run sang <code>LOST</code>.</li>
+          <li>Run retry tạo attempt mới và token mới; result cũ không còn quyền cập nhật.</li>
+        </ol>
+      </section>
+
+      <section id="verification">
+        <h2>13. Verification và integration</h2>
+        <h3>13.1 Verifier checks</h3>
+        <div class="grid-3">
+          <div class="card"><h4>Identity</h4><p>run_id, task_id, attempt và lease token đúng.</p></div>
+          <div class="card"><h4>Git</h4><p>Base/head commit tồn tại, remote ref truy cập được, diff nằm trong policy.</p></div>
+          <div class="card"><h4>Workspace</h4><p>Không còn uncommitted intended changes và không sửa file bị cấm.</p></div>
+          <div class="card"><h4>Checks</h4><p>Test/lint/build bắt buộc pass bằng lệnh trusted hoặc CI.</p></div>
+          <div class="card"><h4>Artifact</h4><p>Schema hợp lệ, hash khớp, lineage đầy đủ và không chứa secret.</p></div>
+          <div class="card"><h4>Contract</h4><p>OpenAPI/schema parse được, compatibility policy pass và diff được phân loại.</p></div>
+        </div>
+
+        <h3>13.2 Integration strategy</h3>
+        <p>Không dùng repo local của nhân sự làm integration authority. Dùng dedicated Integration Runner hoặc CI.</p>
+        <div class="diagram">
+          <div class="flow">
+            <div class="node cyan"><strong>Backend verified ref</strong><small>repo A commit</small></div>
+            <div class="arrow">+</div>
+            <div class="node cyan"><strong>Frontend verified ref</strong><small>repo B commit</small></div>
+            <div class="arrow">→</div>
+            <div class="node amber"><strong>Integration Runner</strong><small>contract + E2E tests</small></div>
+            <div class="arrow">→</div>
+            <div class="node green"><strong>Release/PR artifacts</strong><small>verdict + links</small></div>
+          </div>
+        </div>
+
+        <h3>13.3 Merge ownership</h3>
+        <ul>
+          <li>Agent worker chỉ tạo branch/commit cho task của mình.</li>
+          <li>Merge vào protected branch được thực hiện bởi CI, merge bot hoặc integration agent chuyên dụng.</li>
+          <li>Cross-repo feature có thể tạo nhiều PR được liên kết bằng job ID.</li>
+          <li>Completion của job có thể yêu cầu tất cả PR merged hoặc chỉ yêu cầu output verified, tuỳ policy.</li>
+        </ul>
+      </section>
+
+      <section id="security">
+        <h2>14. Security và trust boundary</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Orchestrator trust</h3>
+            <ul>
+              <li>Phát hành short-lived runner token.</li>
+              <li>Không lưu credential Git cá nhân nếu không cần.</li>
+              <li>Authorize theo workspace, registration, role và task.</li>
+              <li>Audit mọi state transition và artifact access.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Runner trust</h3>
+            <ul>
+              <li>Isolate process theo run.</li>
+              <li>Giới hạn command/tool bằng CodeBridge policy.</li>
+              <li>Redact secret khỏi logs và artifact.</li>
+              <li>Không expose inbound port công khai mặc định.</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>Threats và controls</h3>
+        <table>
+          <thead><tr><th>Threat</th><th>Control</th></tr></thead>
+          <tbody>
+            <tr><td>Runner giả mạo registration</td><td>mTLS hoặc device-bound token, signed registration challenge.</td></tr>
+            <tr><td>Replay result cũ</td><td>Attempt + fencing token + state check.</td></tr>
+            <tr><td>Artifact bị thay đổi</td><td>Content hash, immutable storage, signed manifest.</td></tr>
+            <tr><td>Agent đọc artifact không thuộc quyền</td><td>Scoped artifact URL và authorization theo task.</td></tr>
+            <tr><td>Command nguy hiểm</td><td>CodeBridge policy, approval gate, sandbox/container khi cần.</td></tr>
+            <tr><td>Prompt injection từ artifact</td><td>Artifact type allowlist, provenance, trusted/untrusted labels, verifier rules.</td></tr>
+            <tr><td>Leaked secrets trong logs</td><td>Redaction tại runner và server, retention policy.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="failure">
+        <h2>15. Failure handling</h2>
+        <table>
+          <thead><tr><th>Tình huống</th><th>Phản ứng</th><th>State</th></tr></thead>
+          <tbody>
+            <tr><td>Runner mất kết nối trước ACK</td><td>Thu hồi assignment và chọn registration khác.</td><td>Task quay lại READY.</td></tr>
+            <tr><td>Runner mất heartbeat khi đang chạy</td><td>Đánh dấu LOST, chờ grace period, không nhận result cũ.</td><td>Retry hoặc manual review.</td></tr>
+            <tr><td>Commit chỉ tồn tại local</td><td>Từ chối completion; yêu cầu push hoặc upload patch/bundle.</td><td>VERIFYING → FAILED/READY.</td></tr>
+            <tr><td>Artifact upload dở</td><td>Multipart resume; chỉ publish manifest sau khi đủ hash.</td><td>Run chưa complete.</td></tr>
+            <tr><td>Contract breaking change</td><td>Tạo approval gate hoặc downstream migration tasks.</td><td>Consumer tasks BLOCKED/READY theo policy.</td></tr>
+            <tr><td>Frontend task fail</td><td>Giữ artifact Backend immutable; tạo attempt mới chỉ cho Frontend.</td><td>Frontend READY hoặc FAILED.</td></tr>
+            <tr><td>Dependency cycle</td><td>Reject job/workspace link ngay khi validate.</td><td>Job creation failed.</td></tr>
+            <tr><td>Orchestrator restart</td><td>Khôi phục từ DB; reconcile lease theo heartbeat deadline.</td><td>Không mất state.</td></tr>
+            <tr><td>Local clone bẩn trước run</td><td>Runner không nhận task hoặc chuyển registration QUARANTINED.</td><td>Task chọn runner khác.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Idempotency rules</h3>
+        <ul>
+          <li>Mọi write API nhận <code>idempotency_key</code>.</li>
+          <li><code>complete(run_id)</code> gọi lặp lại với cùng payload phải trả cùng kết quả.</li>
+          <li>Event consumer lưu cursor hoặc event ID đã xử lý.</li>
+          <li>Artifact publish dùng unique constraint theo producer run + logical name + version.</li>
+        </ul>
+      </section>
+
+      <section id="plan">
+        <h2>16. Kế hoạch triển khai</h2>
+        <div class="callout">
+          Mục tiêu là chứng minh luồng đáng tin cậy trước, sau đó mới tối ưu dynamic scheduling, contract intelligence và nhiều agent vendor.
+        </div>
+
+        <div class="timeline">
+          <div class="phase">
+            <h3>P0 — Architecture foundation</h3>
+            <p><strong>Deliverables:</strong> ADR, domain schema, state machine, API contract, threat model và quyết định deployment topology.</p>
+            <ul>
+              <li>Chốt identity của workspace, agent, machine và registration.</li>
+              <li>Chốt Git transport: push branch là mặc định; patch/bundle là fallback.</li>
+              <li>Chốt artifact backend: local filesystem/S3-compatible storage.</li>
+              <li>Chốt runner connection: WebSocket hoặc long-poll.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P1 — Orchestrator core</h3>
+            <p><strong>Deliverables:</strong> service skeleton, persistent store, Job/Task APIs, DAG validation và event log.</p>
+            <ul>
+              <li>Tạo tables/migrations cho workspace, agent, registration, job, task, run, lease và event.</li>
+              <li>Implement task state machine với transaction boundary rõ ràng.</li>
+              <li>Implement DAG cycle detection và dependency completion logic.</li>
+              <li>Thêm audit correlation: job_id, task_id, run_id, registration_id.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P2 — Resident Agent Runner</h3>
+            <p><strong>Deliverables:</strong> runner daemon, registration, heartbeat, assignment stream và generic agent adapter.</p>
+            <ul>
+              <li>Runner config local: agent identity, workspace mappings, CodeBridge endpoints.</li>
+              <li>Process supervision, log streaming, cancellation và timeout.</li>
+              <li>ACK/heartbeat/complete/fail protocol với fencing token.</li>
+              <li>Single-run concurrency trước; mở rộng multi-run sau.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P3 — CodeBridge workspace adapter</h3>
+            <p><strong>Deliverables:</strong> preflight, local Git validation, task context bootstrap và post-run inspection.</p>
+            <ul>
+              <li>Kiểm tra repo identity, branch, clean state và base commit.</li>
+              <li>Generate agent MCP config trỏ vào fixed local workspace endpoint.</li>
+              <li>Thu changed files, diff summary, test output và commit metadata.</li>
+              <li>Quarantine registration khi workspace state không an toàn.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P4 — Artifact service và verifier</h3>
+            <p><strong>Deliverables:</strong> immutable artifact manifest, upload/download, content hash và verification pipeline.</p>
+            <ul>
+              <li>Artifact types: commit_ref, patch, report, schema, OpenAPI, logs.</li>
+              <li>Verifier kiểm tra Git remote ref, base/head relation và required checks.</li>
+              <li>Chỉ publish <code>artifact.published</code> sau khi verifier pass.</li>
+              <li>Scoped artifact access cho task consumer.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P5 — Federated same-repo orchestration MVP</h3>
+            <p><strong>Deliverables:</strong> hai người, hai local clone, một logical workspace, task dependency và handoff commit.</p>
+            <ul>
+              <li>Blob hoàn tất task A và push branch.</li>
+              <li>Task B READY sau khi task A verified.</li>
+              <li>Alice nhận commit/diff artifact, fetch ref và làm tiếp.</li>
+              <li>Chứng minh stale result, runner disconnect và retry an toàn.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P6 — Cross-repo workspace links</h3>
+            <p><strong>Deliverables:</strong> WorkspaceLink, Contract Registry, contract artifact và dependency resolver.</p>
+            <ul>
+              <li>Backend workspace publish <code>payment-api</code>.</li>
+              <li>Frontend workspace subscribe contract với trigger policy.</li>
+              <li>Task envelope của Alice chứa OpenAPI, API diff, notes và Backend commit.</li>
+              <li>Breaking-change policy tạo approval hoặc migration task.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P7 — Integration runner và quality gates</h3>
+            <p><strong>Deliverables:</strong> dedicated CI/integration registration, contract tests, E2E checks và linked PR artifacts.</p>
+            <ul>
+              <li>Không merge tại local workspace của nhân sự.</li>
+              <li>Chạy multi-repo E2E với verified refs.</li>
+              <li>Publish final job verdict và release readiness.</li>
+              <li>Tạo conflict/resolution task khi gate fail.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P8 — Production hardening</h3>
+            <p><strong>Deliverables:</strong> RBAC, secrets, observability, quotas, HA và operational tooling.</p>
+            <ul>
+              <li>Metrics: queue latency, run duration, lease loss, verification failure, artifact size.</li>
+              <li>Tracing xuyên suốt orchestrator → runner → CodeBridge.</li>
+              <li>Runner auto-update, version compatibility và drain mode.</li>
+              <li>Backup/restore, event retention và incident runbook.</li>
+            </ul>
+          </div>
+
+          <div class="phase">
+            <h3>P9 — Intelligent dependency optimization</h3>
+            <p><strong>Deliverables:</strong> usage-aware trigger, semantic artifact summary và scheduler ranking nâng cao.</p>
+            <ul>
+              <li>Đọc consumer usage manifest để giảm false trigger.</li>
+              <li>Phân loại API diff: compatible, risky, breaking.</li>
+              <li>Cache artifact theo runner locality.</li>
+              <li>Optional planner agent tạo DAG nhưng phải qua schema validation và limits.</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>Thứ tự ưu tiên MVP</h3>
+        <table>
+          <thead><tr><th>Milestone</th><th>Scope</th><th>Tiêu chí exit</th></tr></thead>
+          <tbody>
+            <tr><td>M1</td><td>Orchestrator + runner ping/assignment</td><td>Một runner nhận task, ACK, heartbeat và complete.</td></tr>
+            <tr><td>M2</td><td>Same-repo handoff</td><td>Hai máy, hai clone, task B dùng commit verified của task A.</td></tr>
+            <tr><td>M3</td><td>Cross-repo API handoff</td><td>Backend artifact kích hoạt Frontend với OpenAPI và notes đầy đủ.</td></tr>
+            <tr><td>M4</td><td>Verifier + integration</td><td>Stale result bị chặn; contract/E2E gate chạy độc lập.</td></tr>
+            <tr><td>M5</td><td>Production controls</td><td>RBAC, audit, metrics, retry, backup và runbook đạt chuẩn.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="acceptance">
+        <h2>17. Acceptance criteria</h2>
+        <h3>MVP same-repo</h3>
+        <ul class="checklist">
+          <li>Hai runner trên hai máy đăng ký hai local clone vào cùng logical workspace.</li>
+          <li>Task A hoàn tất và publish remote commit artifact.</li>
+          <li>Task B chỉ READY sau khi commit artifact của A verified.</li>
+          <li>Task B được giao đúng registration còn capacity.</li>
+          <li>Result từ attempt cũ không thể cập nhật task sau retry.</li>
+          <li>Runner mất heartbeat được mark LOST và lease được thu hồi an toàn.</li>
+        </ul>
+
+        <h3>MVP cross-repo</h3>
+        <ul class="checklist">
+          <li>Workspace Backend có link <code>provides_api_to</code> Workspace Frontend.</li>
+          <li>Backend publish OpenAPI, API diff, notes và test report có content hash.</li>
+          <li>Frontend task nhận chính xác artifact version đã resolve.</li>
+          <li>Internal Backend refactor không trigger Frontend khi contract không đổi.</li>
+          <li>Breaking API change được phát hiện và áp dụng approval/migration policy.</li>
+          <li>Alice không cần truy cập filesystem local của Blob.</li>
+          <li>Integration runner xác minh hai repository bằng verified refs.</li>
+        </ul>
+
+        <h3>Operational</h3>
+        <ul class="checklist">
+          <li>Orchestrator restart không mất job/task/run/lease/artifact state.</li>
+          <li>Mọi transition có audit event với correlation IDs đầy đủ.</li>
+          <li>Artifact download được authorize theo task và hết hạn.</li>
+          <li>Runner có drain, quarantine và manual recovery workflow.</li>
+          <li>Dashboard hiển thị queue, active runs, offline runner và blocked dependencies.</li>
+        </ul>
+      </section>
+
+      <section id="decisions">
+        <h2>18. Các quyết định kiến trúc đề xuất</h2>
+        <table>
+          <thead><tr><th>#</th><th>Quyết định</th><th>Khuyến nghị</th></tr></thead>
+          <tbody>
+            <tr><td>D1</td><td>Workspace là local directory hay logical repo?</td><td>Logical repo; local directory nằm trong WorkspaceRegistration.</td></tr>
+            <tr><td>D2</td><td>Wake-up agent bằng MCP?</td><td>Không. Dùng resident Agent Runner qua outbound WebSocket/long-poll.</td></tr>
+            <tr><td>D3</td><td>Cross-machine handoff bằng gì?</td><td>Git remote ref là mặc định; patch/bundle và artifact store là fallback.</td></tr>
+            <tr><td>D4</td><td>Trigger bằng commit hay artifact?</td><td>Verified artifact event.</td></tr>
+            <tr><td>D5</td><td>Dependency giữa repo?</td><td>WorkspaceLink + Contract Registry + task artifact selector.</td></tr>
+            <tr><td>D6</td><td>State store MVP?</td><td>SQLite WAL nếu single-node; PostgreSQL nếu multi-node ngay từ đầu.</td></tr>
+            <tr><td>D7</td><td>Artifact store?</td><td>S3-compatible immutable storage, local filesystem cho dev.</td></tr>
+            <tr><td>D8</td><td>Ai merge?</td><td>CI/Integration Runner hoặc merge bot, không phải worker agent.</td></tr>
+            <tr><td>D9</td><td>Agent vendor integration?</td><td>Generic AgentAdapter; scheduler không phụ thuộc vendor.</td></tr>
+            <tr><td>D10</td><td>Exactly-once?</td><td>At-least-once delivery + transactional state + idempotency + fencing token.</td></tr>
+            <tr><td>D11</td><td>Cross-repo trigger có tự động hoàn toàn?</td><td>Có theo policy; breaking/risky changes có approval gate.</td></tr>
+            <tr><td>D12</td><td>Orchestrator có giữ local path?</td><td>Có thể lưu fingerprint/opaque metadata; không coi path là portable reference.</td></tr>
+          </tbody>
+        </table>
+
+        <div class="callout success">
+          <strong>Kiến trúc khuyến nghị để bắt đầu:</strong><br>
+          <code>codebridge-orchestrator</code> + persistent DB + S3-compatible artifact store + resident runner trên mỗi máy + fixed local CodeBridge workspace endpoint + verified Git/artifact handoff + dedicated integration runner.
+        </div>
+      </section>
+    </div>
+
+    <div class="footer">
+      Tài liệu kiến trúc đề xuất cho federated coding-agent orchestration và cross-repository artifact handoff.
+    </div>
+  </main>
+</div>
+</body>
+</html>
