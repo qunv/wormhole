@@ -373,7 +373,7 @@ Options:
   --mode safe|full
   --policy strict|balanced|full
   --host <host>           Default 127.0.0.1
-  --port <port>           Default 8789
+  --port <port>           Default 8132
   --auth-token <token>    Runtime-only MCP bearer token
   --background            Run detached
   --no-tunnel             Start only the local MCP server

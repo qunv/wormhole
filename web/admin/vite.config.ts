@@ -17,10 +17,10 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/admin/api": {
-        target: "http://127.0.0.1:8789",
+        target: "http://127.0.0.1:8132",
         changeOrigin: true,
         headers: {
-          Origin: "http://127.0.0.1:8789",
+          Origin: "http://127.0.0.1:8132",
         },
       },
     },

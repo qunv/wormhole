@@ -36,7 +36,7 @@ admin-ui-check:
 	cd $(ADMIN_UI_DIR) && $(NPM) ci && $(NPM) run check
 
 run:
-	go run ./cmd/codebridge serve --no-tunnel
+	go run ./cmd/codebridge serve --no-tunnel --port 8132
 
 clean:
 	go clean

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	DefaultPort                 = 8789
+	DefaultPort                 = 8132
 	DefaultTunnelVersion        = "v0.0.10"
 	legacyLayoutMigrationMarker = ".legacy-layout-v1-complete"
 )

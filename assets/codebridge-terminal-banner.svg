@@ -131,7 +131,7 @@
         <text x="98" y="246" class="ui term"><tspan class="cyan">[memory]</tspan><tspan> project scope </tspan><tspan class="blue">git:github.com/qunv/codebridge</tspan></text>
       </g>
 
-      <text x="98" y="286" class="ui term"><tspan class="green">✓</tspan><tspan> Codebridge is ready </tspan><tspan class="termDim">(localhost:8789)</tspan></text>
+      <text x="98" y="286" class="ui term"><tspan class="green">✓</tspan><tspan> Codebridge is ready </tspan><tspan class="termDim">(localhost:8132)</tspan></text>
       <text x="98" y="316" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  codebridge</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan> </tspan></text>
       <rect x="326" y="304" width="8" height="16" rx="1" fill="#E2E8F0" class="cursor"/>
     </g>

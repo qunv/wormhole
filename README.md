@@ -73,7 +73,7 @@ The complete flow is:
 ChatGPT MCP app
   → OpenAI Secure MCP Tunnel
   → tunnel-client running on your machine
-  → Codebridge at http://127.0.0.1:8789
+  → Codebridge at http://127.0.0.1:8132
   → selected local workspace
 ```
 
@@ -293,22 +293,22 @@ codebridge serve --workspace /path/to/repository --no-tunnel
 Local endpoints:
 
 ```text
-http://127.0.0.1:8789/mcp/session/fast
-http://127.0.0.1:8789/mcp/session
-http://127.0.0.1:8789/mcp/session/profiles/<profile-id>
-http://127.0.0.1:8789/mcp/fast
-http://127.0.0.1:8789/mcp/profiles/<profile-id>
-http://127.0.0.1:8789/mcp
-http://127.0.0.1:8789/healthz
-http://127.0.0.1:8789/internal/healthz
-http://127.0.0.1:8789/admin/
+http://127.0.0.1:8132/mcp/session/fast
+http://127.0.0.1:8132/mcp/session
+http://127.0.0.1:8132/mcp/session/profiles/<profile-id>
+http://127.0.0.1:8132/mcp/fast
+http://127.0.0.1:8132/mcp/profiles/<profile-id>
+http://127.0.0.1:8132/mcp
+http://127.0.0.1:8132/healthz
+http://127.0.0.1:8132/internal/healthz
+http://127.0.0.1:8132/admin/
 ```
 
 ## Admin UI
 
 Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, referenced secrets, live operations, exact approvals, and bounded audit exploration.
 
-Open `http://127.0.0.1:8789/admin/`. When no local admin credential exists, the loopback-only first-run screen asks for a username and password, creates the account once, signs in, and opens the guided setup wizard. The wizard covers workspace, mode, policy, port, OpenAI tunnel ID, write-only Runtime API key, and optional memory settings.
+Open `http://127.0.0.1:8132/admin/`. When no local admin credential exists, the loopback-only first-run screen asks for a username and password, creates the account once, signs in, and opens the guided setup wizard. The wizard covers workspace, mode, policy, port, OpenAI tunnel ID, write-only Runtime API key, and optional memory settings.
 
 The CLI remains available for account creation and administration:
 
@@ -318,7 +318,7 @@ codebridge restart
 codebridge admin
 ```
 
-The username and a salted one-way password hash are stored in the owner-only file `~/.codebridge/admin-auth.json`; the plaintext password is never persisted. The browser bootstrap endpoint uses exclusive create semantics and stops accepting setup after that file exists. The default URL is `http://127.0.0.1:8789/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
+The username and a salted one-way password hash are stored in the owner-only file `~/.codebridge/admin-auth.json`; the plaintext password is never persisted. The browser bootstrap endpoint uses exclusive create semantics and stops accepting setup after that file exists. The default URL is `http://127.0.0.1:8132/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
 
 There is no browser password-recovery flow. If the password is forgotten, reset it from the local machine:
 
@@ -459,7 +459,7 @@ Minimal tunnel-related configuration:
   "mode": "safe",
   "policy": "balanced",
   "host": "127.0.0.1",
-  "port": 8789,
+  "port": 8132,
   "noTunnel": false,
   "tunnelId": "tunnel_0123456789abcdef0123456789abcdef",
   "runtimeKeyEnv": "CONTROL_PLANE_API_KEY"

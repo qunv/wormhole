@@ -243,7 +243,7 @@ goreleaser release --snapshot --clean
 For the external Streamable HTTP path, use the documented smoke test when a local server is available:
 
 ```bash
-CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8789/mcp \
+CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8132/mcp \
   go test ./internal/server -run TestExternalStreamableHTTP -v
 ```
 
