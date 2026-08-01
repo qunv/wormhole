@@ -30,15 +30,21 @@ import (
 	"golang.org/x/term"
 )
 
+type tunnelProcessState struct {
+	PID      int    `json:"pid,omitempty"`
+	Identity string `json:"identity,omitempty"`
+}
+
 type processState struct {
-	ServerPID      int       `json:"serverPid,omitempty"`
-	ServerIdentity string    `json:"serverIdentity,omitempty"`
-	TunnelPID      int       `json:"tunnelPid,omitempty"`
-	TunnelIdentity string    `json:"tunnelIdentity,omitempty"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	ConfigID       string    `json:"configId"`
-	Port           int       `json:"port"`
-	Workspace      string    `json:"workspace"`
+	ServerPID      int                           `json:"serverPid,omitempty"`
+	ServerIdentity string                        `json:"serverIdentity,omitempty"`
+	TunnelPID      int                           `json:"tunnelPid,omitempty"`
+	TunnelIdentity string                        `json:"tunnelIdentity,omitempty"`
+	Tunnels        map[string]tunnelProcessState `json:"tunnels,omitempty"`
+	UpdatedAt      time.Time                     `json:"updatedAt"`
+	ConfigID       string                        `json:"configId"`
+	Port           int                           `json:"port"`
+	Workspace      string                        `json:"workspace"`
 }
 
 type startupLogFollower struct {
@@ -66,11 +72,8 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 	if err != nil {
 		return err
 	}
-	runtimeKey := strings.TrimSpace(opts.RuntimeKey)
-	if runtimeKey == "" && cfg.RuntimeKeyEnv != "" {
-		runtimeKey = os.Getenv(cfg.RuntimeKeyEnv)
-	}
-	identityInputs := config.NewIdentityInputs(executable, assets.Widget(), runtimeKey)
+	runtimeKeyOverride := strings.TrimSpace(opts.RuntimeKey)
+	identityInputs := config.NewIdentityInputs(executable, assets.Widget(), runtimeKeyIdentityMaterial(cfg, runtimeKeyOverride))
 	configID, err := daemonConfigIDWithInputs(cfg, identityInputs)
 	if err != nil {
 		return err
@@ -82,7 +85,6 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Codebridge process state; refusing to reuse or stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
 	stateServerValid := state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
-	stateOwnershipEstablished := healthOwned || stateServerValid
 	existingPID := healthPID
 	existingIdentity := healthIdentity
 	if existingPID == 0 && stateServerValid {
@@ -163,73 +165,23 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 	fmt.Fprintf(a.Stdout, "[server] Session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionEndpoint)
 	fmt.Fprintf(a.Stdout, "[server] Fast session MCP: http://127.0.0.1:%d%s\n", cfg.Port, mcpserver.SessionFastEndpoint)
 
-	var tunnelCmd *exec.Cmd
-	tunnelPID, tunnelIdentity, tunnelOwned := ownedTunnelProcess(state, stateOwnershipEstablished)
-	if state.TunnelPID > 0 && !tunnelOwned && pidAlive(state.TunnelPID) {
+	tunnelCmds, err := a.reconcileTunnels(cfg, opts, &state, configID, true)
+	if err != nil {
 		if serverCmd != nil {
+			_ = a.stopAllTunnels(&state, true)
 			_ = stopPID(serverCmd.Process.Pid)
 		}
-		return fmt.Errorf("tunnel PID %d is alive but is not owned by the current Codebridge process state; refusing to start a duplicate tunnel", state.TunnelPID)
-	}
-	if tunnelOwned {
-		state.TunnelPID, state.TunnelIdentity = tunnelPID, tunnelIdentity
-	}
-	if !cfg.NoTunnel {
-		if tunnelOwned && state.ConfigID == configID {
-			fmt.Fprintf(a.Stdout, "[tunnel] reusing PID %d\n", tunnelPID)
-		} else {
-			if tunnelOwned {
-				if err := stopPID(tunnelPID); err != nil && processStillMatches(tunnelPID, tunnelIdentity) {
-					return fmt.Errorf("stop existing tunnel PID %d: %w", tunnelPID, err)
-				}
-				if !waitForProcessExit(tunnelPID, tunnelIdentity, 5*time.Second) {
-					return fmt.Errorf("existing tunnel PID %d did not exit", tunnelPID)
-				}
-				state.TunnelPID, state.TunnelIdentity = 0, ""
-			}
-			tunnelCmd, err = a.spawnTunnel(cfg, runtimeKey, opts.Background)
-			if err != nil {
-				if serverCmd != nil {
-					_ = stopPID(serverCmd.Process.Pid)
-				}
-				return err
-			}
-			state.TunnelPID = tunnelCmd.Process.Pid
-			if opts.Background {
-				state.TunnelIdentity, err = captureChildProcessIdentity(state.TunnelPID, "tunnel", 2*time.Second)
-			} else {
-				state.TunnelIdentity, err = processIdentity(state.TunnelPID)
-			}
-			if err != nil {
-				_ = stopPID(state.TunnelPID)
-				if serverCmd != nil {
-					_ = stopPID(serverCmd.Process.Pid)
-				}
-				return fmt.Errorf("capture tunnel process identity for PID %d: %w", state.TunnelPID, err)
-			}
-		}
-	} else {
-		if tunnelOwned {
-			fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d (--no-tunnel)\n", tunnelPID)
-			if err := stopPID(tunnelPID); err != nil && processStillMatches(tunnelPID, tunnelIdentity) {
-				return fmt.Errorf("stop tunnel PID %d: %w", tunnelPID, err)
-			}
-			if !waitForProcessExit(tunnelPID, tunnelIdentity, 5*time.Second) {
-				return fmt.Errorf("tunnel PID %d did not exit", tunnelPID)
-			}
-		}
-		state.TunnelPID = 0
-		state.TunnelIdentity = ""
+		return err
 	}
 	state.UpdatedAt, state.ConfigID, state.Port, state.Workspace = time.Now().UTC(), configID, cfg.Port, cfg.Workspace
 	if err := writeState(state); err != nil {
-		// Only stop processes created by this invocation. Reused server/tunnel
-		// processes remain owned by the last successfully persisted state.
-		if tunnelCmd != nil {
-			_ = stopPID(tunnelCmd.Process.Pid)
-		}
+		// If this invocation owns a new daemon, stop every tunnel that points at
+		// it. Otherwise only stop tunnel processes created by this invocation.
 		if serverCmd != nil {
+			_ = a.stopAllTunnels(&state, true)
 			_ = stopPID(serverCmd.Process.Pid)
+		} else {
+			_ = cleanupTunnelCommands(&state, tunnelCmds)
 		}
 		return fmt.Errorf("persist process state: %w", err)
 	}
@@ -237,41 +189,38 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 		fmt.Fprintln(a.Stdout, "Running in background.")
 		return nil
 	}
-	wait := make(chan error, 2)
-	if tunnelCmd != nil {
-		go func() { wait <- tunnelCmd.Wait() }()
+	wait := make(chan error, len(tunnelCmds)+1)
+	for _, name := range tunnelNames(tunnelCmds) {
+		cmd := tunnelCmds[name]
+		go func() { wait <- cmd.Wait() }()
 	}
 	if serverCmd != nil {
 		go func() { wait <- <-serverExit }()
 	}
-	if serverCmd == nil && tunnelCmd == nil {
+	if serverCmd == nil && len(tunnelCmds) == 0 {
 		<-ctx.Done()
 		return nil
 	}
 	select {
 	case <-ctx.Done():
-		return cleanupStartedProcesses(state, serverCmd, tunnelCmd)
+		return a.cleanupStartedProcesses(state, serverCmd, tunnelCmds)
 	case err := <-wait:
 		if err == nil {
 			err = errors.New("server or tunnel process exited unexpectedly")
 		}
-		return errors.Join(err, cleanupStartedProcesses(state, serverCmd, tunnelCmd))
+		return errors.Join(err, a.cleanupStartedProcesses(state, serverCmd, tunnelCmds))
 	}
 }
 
-func cleanupStartedProcesses(state processState, serverCmd, tunnelCmd *exec.Cmd) error {
+func (a App) cleanupStartedProcesses(state processState, serverCmd *exec.Cmd, tunnelCmds map[string]*exec.Cmd) error {
+	migrateTunnelProcessState(&state)
 	var errs []error
-	if tunnelCmd != nil {
-		if processStillMatches(state.TunnelPID, state.TunnelIdentity) {
-			if err := stopPID(tunnelCmd.Process.Pid); err != nil && processStillMatches(state.TunnelPID, state.TunnelIdentity) {
-				errs = append(errs, fmt.Errorf("stop started tunnel PID %d: %w", tunnelCmd.Process.Pid, err))
-			}
+	if serverCmd != nil {
+		if err := a.stopAllTunnels(&state, true); err != nil {
+			errs = append(errs, err)
 		}
-		if waitForProcessExit(state.TunnelPID, state.TunnelIdentity, 5*time.Second) {
-			state.TunnelPID, state.TunnelIdentity = 0, ""
-		} else {
-			errs = append(errs, fmt.Errorf("started tunnel PID %d did not exit", state.TunnelPID))
-		}
+	} else if err := cleanupTunnelCommands(&state, tunnelCmds); err != nil {
+		errs = append(errs, err)
 	}
 	if serverCmd != nil {
 		if processStillMatches(state.ServerPID, state.ServerIdentity) {
@@ -286,7 +235,7 @@ func cleanupStartedProcesses(state processState, serverCmd, tunnelCmd *exec.Cmd)
 		}
 	}
 	state.UpdatedAt = time.Now().UTC()
-	if state.ServerPID == 0 && state.TunnelPID == 0 {
+	if state.ServerPID == 0 && tunnelStateEmpty(state) {
 		if err := os.Remove(config.PIDPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("remove stopped process state: %w", err))
 		}
@@ -329,32 +278,32 @@ func (a App) spawnServer(executable string, cfg config.Config, configID, runtime
 	return a.startChild("server", cmd, background)
 }
 
-func (a App) spawnTunnel(cfg config.Config, runtimeKey string, background bool) (*exec.Cmd, error) {
-	if cfg.TunnelID == "" {
-		return nil, errors.New("tunnel ID is required; run setup, pass --tunnel-id, or use --no-tunnel")
+func (a App) spawnTunnel(cfg config.Config, tunnel config.NamedTunnel, runtimeKey string, background bool) (*exec.Cmd, error) {
+	if tunnel.Config.TunnelID == "" {
+		return nil, fmt.Errorf("tunnel %q ID is required; configure tunnels.%s.tunnelId or use --no-tunnel", tunnel.Name, tunnel.Name)
 	}
 	if _, err := os.Stat(cfg.TunnelBin); err != nil {
 		return nil, fmt.Errorf("tunnel-client not found at %s", cfg.TunnelBin)
 	}
 	if runtimeKey == "" {
-		return nil, fmt.Errorf("missing Runtime API key; set %s or run codebridge key set", cfg.RuntimeKeyEnv)
+		return nil, fmt.Errorf("missing Runtime API key for tunnel %q; set %s or manage it from the Admin Secrets page", tunnel.Name, tunnel.Config.RuntimeKeyEnv)
 	}
-	profilePath, err := writeTunnelProfile(cfg)
+	profilePath, err := writeTunnelProfileFor(cfg, tunnel)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(a.Stdout, "[tunnel] Profile: %s\n", profilePath)
+	fmt.Fprintf(a.Stdout, "[tunnel:%s] Profile: %s\n", tunnel.Name, profilePath)
 	cmd := exec.Command(cfg.TunnelBin,
 		"run", "--profile", strings.TrimSuffix(filepath.Base(profilePath), filepath.Ext(profilePath)),
-		"--profile-dir", cfg.ProfileDir, "--control-plane.tunnel-id", cfg.TunnelID,
+		"--profile-dir", cfg.ProfileDir, "--control-plane.tunnel-id", tunnel.Config.TunnelID,
 		"--health.listen-addr", "127.0.0.1:0",
 	)
 	cmd.Dir = filepath.Dir(cfg.TunnelBin)
-	cmd.Env = append(os.Environ(), "CONTROL_PLANE_API_KEY="+runtimeKey, "CONTROL_PLANE_TUNNEL_ID="+cfg.TunnelID)
+	cmd.Env = append(os.Environ(), "CONTROL_PLANE_API_KEY="+runtimeKey, "CONTROL_PLANE_TUNNEL_ID="+tunnel.Config.TunnelID)
 	if cfg.AuthToken != "" {
 		cmd.Env = append(cmd.Env, "MCP_AUTH_HEADER=Bearer "+cfg.AuthToken, "MCP_EXTRA_HEADERS=Authorization: env:MCP_AUTH_HEADER")
 	}
-	return a.startChild("tunnel", cmd, background)
+	return a.startChild(tunnelLabel(tunnel.Name), cmd, background)
 }
 
 func (a App) startChild(label string, cmd *exec.Cmd, background bool) (*exec.Cmd, error) {
@@ -399,27 +348,15 @@ func (a App) stop(cfg config.Config, opts options) error {
 
 func (a App) stopUnlocked(cfg config.Config, _ options) error {
 	state := readState()
+	migrateTunnelProcessState(&state)
 	health := readHealth(cfg.Port)
 	healthPID, healthIdentity, healthOwned := ownedHealthProcess(state, health, cfg.Port)
 	serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
 	if health != nil && !healthOwned {
 		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Codebridge process state; refusing to stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
-	tunnelPID, tunnelIdentity, tunnelOwned := ownedTunnelProcess(state, healthOwned || serverStateValid)
-	if state.TunnelPID > 0 && !tunnelOwned && pidAlive(state.TunnelPID) {
-		return fmt.Errorf("tunnel PID %d is alive but is not owned by the current Codebridge process state; refusing to stop it", state.TunnelPID)
-	}
-	var errs []error
-
-	if tunnelOwned {
-		fmt.Fprintf(a.Stdout, "[tunnel] stopping PID %d\n", tunnelPID)
-		if err := stopPID(tunnelPID); err != nil && processStillMatches(tunnelPID, tunnelIdentity) {
-			errs = append(errs, fmt.Errorf("stop tunnel PID %d: %w", tunnelPID, err))
-		} else if !waitForProcessExit(tunnelPID, tunnelIdentity, 5*time.Second) {
-			errs = append(errs, fmt.Errorf("tunnel PID %d did not exit", tunnelPID))
-		}
-	} else if state.TunnelPID > 0 {
-		fmt.Fprintf(a.Stdout, "[tunnel] ignored stale PID %d because it is no longer alive\n", state.TunnelPID)
+	if err := a.stopAllTunnels(&state, healthOwned || serverStateValid); err != nil {
+		return err
 	}
 
 	serverPID := healthPID
@@ -432,13 +369,11 @@ func (a App) stopUnlocked(cfg config.Config, _ options) error {
 	if serverPID > 0 {
 		fmt.Fprintf(a.Stdout, "[server] stopping PID %d\n", serverPID)
 		if err := stopPID(serverPID); err != nil && processStillMatches(serverPID, serverIdentity) {
-			errs = append(errs, fmt.Errorf("stop server PID %d: %w", serverPID, err))
-		} else if !waitForProcessExit(serverPID, serverIdentity, 5*time.Second) {
-			errs = append(errs, fmt.Errorf("server PID %d did not exit", serverPID))
+			return fmt.Errorf("stop server PID %d: %w", serverPID, err)
 		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+		if !waitForProcessExit(serverPID, serverIdentity, 5*time.Second) {
+			return fmt.Errorf("server PID %d did not exit", serverPID)
+		}
 	}
 	if err := os.Remove(config.PIDPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove process state: %w", err)
@@ -449,20 +384,48 @@ func (a App) stopUnlocked(cfg config.Config, _ options) error {
 
 func (a App) status(cfg config.Config, opts options) error {
 	state, health := readState(), readHealth(cfg.Port)
+	migrateTunnelProcessState(&state)
 	_, _, serverOwned := ownedHealthProcess(state, health, cfg.Port)
 	serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
-	_, _, tunnelOwned := ownedTunnelProcess(state, serverOwned || serverStateValid)
+	configured := map[string]config.NamedTunnel{}
+	for _, tunnel := range cfg.EffectiveTunnels() {
+		configured[tunnel.Name] = tunnel
+	}
+	names := map[string]bool{}
+	for name := range configured {
+		names[name] = true
+	}
+	for name := range state.Tunnels {
+		names[name] = true
+	}
+	tunnels := map[string]any{}
+	logs := map[string]string{"server": config.ServerLogPath()}
+	for _, name := range sortedBoolKeys(names) {
+		process := state.Tunnels[name]
+		_, _, alive := ownedNamedTunnelProcess(name, process, serverOwned || serverStateValid)
+		item := map[string]any{"pid": process.PID, "alive": alive, "log_path": config.TunnelLogPathFor(name)}
+		logs["tunnel:"+name] = config.TunnelLogPathFor(name)
+		if tunnel, exists := configured[name]; exists {
+			item["configured"] = true
+			item["enabled"] = tunnel.Config.IsEnabled()
+			item["mode"] = tunnel.Config.Mode
+			item["profile"] = tunnel.Config.Profile
+			item["runtime_key_env"] = tunnel.Config.RuntimeKeyEnv
+		} else {
+			item["configured"] = false
+		}
+		tunnels[name] = item
+	}
 	value := map[string]any{
-		"workspace":   cfg.Workspace,
-		"config_path": config.ConfigPath(), "pid_path": config.PIDPath(), "log_path": config.ServerLogPath(),
-		"log_paths":            map[string]string{"server": config.ServerLogPath(), "tunnel": config.TunnelLogPath()},
+		"workspace": cfg.Workspace, "config_path": config.ConfigPath(), "pid_path": config.PIDPath(),
+		"log_path": config.ServerLogPath(), "log_paths": logs,
 		"mcp_url":              fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
 		"session_mcp_url":      fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint),
-		"session_fast_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionFastEndpoint), "server": health,
-		"server_owned": serverOwned,
+		"session_fast_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionFastEndpoint),
+		"server":               health, "server_owned": serverOwned, "tunnels": tunnels,
 		"pids": map[string]any{
 			"server": state.ServerPID, "server_alive": health != nil || processMatches(state.ServerPID, state.ServerIdentity),
-			"tunnel": state.TunnelPID, "tunnel_alive": tunnelOwned,
+			"tunnels": tunnelPIDMap(state.Tunnels),
 		},
 	}
 	if opts.JSON {
@@ -470,13 +433,27 @@ func (a App) status(cfg config.Config, opts options) error {
 		fmt.Fprintln(a.Stdout, string(raw))
 		return nil
 	}
-	fmt.Fprintf(a.Stdout, "Config:          %s\nMCP URL:         http://127.0.0.1:%d/mcp\nSession MCP:     http://127.0.0.1:%d%s\nFast session MCP: http://127.0.0.1:%d%s\n", config.ConfigPath(), cfg.Port, cfg.Port, mcpserver.SessionEndpoint, cfg.Port, mcpserver.SessionFastEndpoint)
+	fmt.Fprintf(a.Stdout, "Config:           %s\nMCP URL:          http://127.0.0.1:%d/mcp\nSession MCP:      http://127.0.0.1:%d%s\nFast session MCP: http://127.0.0.1:%d%s\n", config.ConfigPath(), cfg.Port, cfg.Port, mcpserver.SessionEndpoint, cfg.Port, mcpserver.SessionFastEndpoint)
 	if health == nil {
 		fmt.Fprintln(a.Stdout, "Server:  offline")
 	} else {
 		fmt.Fprintf(a.Stdout, "Server:  ONLINE %v (%v/%v) pid=%v\n", health["version"], health["mode"], health["policy"], health["pid"])
 	}
-	fmt.Fprintf(a.Stdout, "Tunnel:  %s\n", ternary(processMatches(state.TunnelPID, state.TunnelIdentity), fmt.Sprintf("running pid=%d", state.TunnelPID), "offline"))
+	if len(names) == 0 {
+		fmt.Fprintln(a.Stdout, "Tunnels: none configured")
+	}
+	for _, name := range sortedBoolKeys(names) {
+		process := state.Tunnels[name]
+		_, _, alive := ownedNamedTunnelProcess(name, process, serverOwned || serverStateValid)
+		mode := "unconfigured"
+		if tunnel, exists := configured[name]; exists {
+			mode = tunnel.Config.Mode
+			if !tunnel.Config.IsEnabled() {
+				mode += "/disabled"
+			}
+		}
+		fmt.Fprintf(a.Stdout, "Tunnel %-12s %-10s %s\n", name, mode, ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline"))
+	}
 	return nil
 }
 
@@ -518,8 +495,20 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	if !cfg.NoTunnel {
 		_, tunnelErr := os.Stat(cfg.TunnelBin)
 		checks = append(checks, check{"tunnel-client", tunnelErr == nil, cfg.TunnelBin})
-		checks = append(checks, check{"tunnel-id", cfg.TunnelID != "", ternary(cfg.TunnelID != "", "configured", "missing")})
-		checks = append(checks, check{"runtime-key", os.Getenv(cfg.RuntimeKeyEnv) != "", cfg.RuntimeKeyEnv})
+		state := readState()
+		migrateTunnelProcessState(&state)
+		for _, tunnel := range cfg.EnabledTunnels() {
+			process := state.Tunnels[tunnel.Name]
+			_, _, alive := ownedNamedTunnelProcess(tunnel.Name, process, serverHealth != nil)
+			checks = append(checks,
+				check{"tunnel-id:" + tunnel.Name, tunnel.Config.TunnelID != "", ternary(tunnel.Config.TunnelID != "", tunnel.Config.Mode+" configured", "missing")},
+				check{"runtime-key:" + tunnel.Name, os.Getenv(tunnel.Config.RuntimeKeyEnv) != "", tunnel.Config.RuntimeKeyEnv},
+				check{"tunnel-process:" + tunnel.Name, alive, ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline")},
+			)
+		}
+		if len(cfg.EnabledTunnels()) == 0 {
+			checks = append(checks, check{"tunnels", false, "no enabled tunnel configured"})
+		}
 	}
 	if cfg.Memory.Enabled {
 		memoryProvider, memoryErr := memoryfactory.New(cfg.Memory)
@@ -663,10 +652,29 @@ func fileSize(path string) int64 {
 	return info.Size()
 }
 
-func (a App) logs() error {
-	paths := []string{config.ServerLogPath(), config.TunnelLogPath(), config.LogPath()}
+func (a App) logs(cfg config.Config) error {
+	state := readState()
+	migrateTunnelProcessState(&state)
+	names := map[string]bool{}
+	for _, tunnel := range cfg.EffectiveTunnels() {
+		names[tunnel.Name] = true
+	}
+	for name := range state.Tunnels {
+		names[name] = true
+	}
+	paths := []string{config.ServerLogPath()}
+	for _, name := range sortedBoolKeys(names) {
+		paths = append(paths, config.TunnelLogPathFor(name))
+	}
+	paths = append(paths, config.LogPath())
 	printed := false
+	seen := map[string]bool{}
 	for _, path := range paths {
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
 		raw, err := readFileTail(path, 100_000)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -681,8 +689,9 @@ func (a App) logs() error {
 		printed = true
 	}
 	if !printed {
-		fmt.Fprintln(a.Stdout, config.ServerLogPath())
-		fmt.Fprintln(a.Stdout, config.TunnelLogPath())
+		for _, path := range paths {
+			fmt.Fprintln(a.Stdout, path)
+		}
 	}
 	return nil
 }
@@ -722,7 +731,9 @@ func (a App) setup(cfg config.Config, opts options) error {
 		cfg.NoTunnel = answer == "n" || answer == "no"
 	}
 	if !cfg.NoTunnel {
-		if opts.TunnelID == "" {
+		if len(cfg.Tunnels) > 0 {
+			fmt.Fprintf(a.Stdout, "Named tunnels configured: %d (edit tunnels in config.json or Admin Configuration)\n", len(cfg.EffectiveTunnels()))
+		} else if opts.TunnelID == "" {
 			cfg.TunnelID = ask("Tunnel ID", cfg.TunnelID)
 		}
 		if opts.TunnelBin == "" {
@@ -739,7 +750,11 @@ func (a App) setup(cfg config.Config, opts options) error {
 				fmt.Fprintf(a.Stdout, "Installed tunnel-client: %s\n", path)
 			}
 		}
-		fmt.Fprintf(a.Stdout, "Runtime key is stored separately. Run: codebridge key set\n")
+		if len(cfg.Tunnels) > 0 {
+			fmt.Fprintln(a.Stdout, "Runtime keys are stored separately per tunnel. Use Admin Secrets or: codebridge key set --runtime-key-env <NAME>")
+		} else {
+			fmt.Fprintln(a.Stdout, "Runtime key is stored separately. Run: codebridge key set")
+		}
 	}
 
 	memoryAnswer := strings.ToLower(ask("Enable memory? (y/n)", ternary(cfg.Memory.Enabled, "y", "n")))
@@ -947,42 +962,83 @@ func (a App) installCLI() error {
 	return nil
 }
 
+func writeTunnelProfiles(cfg config.Config) ([]string, error) {
+	tunnels := cfg.EnabledTunnels()
+	if len(tunnels) == 0 {
+		return nil, errors.New("no enabled tunnel is configured")
+	}
+	paths := make([]string, 0, len(tunnels))
+	for _, tunnel := range tunnels {
+		path, err := writeTunnelProfileFor(cfg, tunnel)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+// writeTunnelProfile preserves the historical helper for the legacy
+// single-tunnel configuration. New callers should use writeTunnelProfiles.
 func writeTunnelProfile(cfg config.Config) (string, error) {
-	if cfg.TunnelID == "" {
-		return "", errors.New("missing tunnel ID")
+	paths, err := writeTunnelProfiles(cfg)
+	if err != nil {
+		return "", err
+	}
+	return paths[0], nil
+}
+
+func writeTunnelProfileFor(cfg config.Config, tunnel config.NamedTunnel) (string, error) {
+	if tunnel.Config.TunnelID == "" {
+		return "", fmt.Errorf("missing tunnel ID for %q", tunnel.Name)
 	}
 	if err := os.MkdirAll(cfg.ProfileDir, 0o700); err != nil {
 		return "", err
 	}
-	name := cfg.Profile
+	name := strings.TrimSpace(tunnel.Config.Profile)
+	if filepath.Base(name) != name || name == "." || name == ".." {
+		return "", fmt.Errorf("tunnel %q profile must be a file name inside profileDir", tunnel.Name)
+	}
 	if filepath.Ext(name) == "" {
 		name += ".yaml"
 	}
 	path := filepath.Join(cfg.ProfileDir, name)
 	lines := []string{
 		"config_version: 1", "control_plane:", `  base_url: "https://api.openai.com"`,
-		fmt.Sprintf(`  tunnel_id: "%s"`, yamlEscape(cfg.TunnelID)),
+		fmt.Sprintf(`  tunnel_id: "%s"`, yamlEscape(tunnel.Config.TunnelID)),
 		`  api_key: "env:CONTROL_PLANE_API_KEY"`,
 	}
-	if cfg.Organization != "" {
-		lines = append(lines, "  extra_headers:", fmt.Sprintf(`    - "OpenAI-Organization: %s"`, yamlEscape(cfg.Organization)))
+	if tunnel.Config.Organization != "" {
+		lines = append(lines, "  extra_headers:", fmt.Sprintf(`    - "OpenAI-Organization: %s"`, yamlEscape(tunnel.Config.Organization)))
 	}
-	lines = append(lines, "log:", "  level: info", "  format: json", "mcp:", "  server_urls:",
-		"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint),
-		"    - channel: fast", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionFastEndpoint))
-	registry, err := workspaceregistry.Load()
-	if err != nil {
-		return "", err
-	}
-	for _, entry := range workspaceregistry.Enabled(registry) {
+	lines = append(lines, "log:", "  level: info", "  format: json", "mcp:", "  server_urls:")
+	if tunnel.Legacy {
 		lines = append(lines,
-			fmt.Sprintf("    - channel: workspace-%s", entry.ID),
-			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, workspaceEndpoint(entry.ID)),
-			fmt.Sprintf("    - channel: workspace-%s-fast", entry.ID),
-			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s/fast"`, cfg.Port, workspaceEndpoint(entry.ID)),
+			"    - channel: main", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionEndpoint),
+			"    - channel: fast", fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, mcpserver.SessionFastEndpoint))
+		registry, err := workspaceregistry.Load()
+		if err != nil {
+			return "", err
+		}
+		for _, entry := range workspaceregistry.Enabled(registry) {
+			lines = append(lines,
+				fmt.Sprintf("    - channel: workspace-%s", entry.ID),
+				fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, workspaceEndpoint(entry.ID)),
+				fmt.Sprintf("    - channel: workspace-%s-fast", entry.ID),
+				fmt.Sprintf(`      url: "http://127.0.0.1:%d%s/fast"`, cfg.Port, workspaceEndpoint(entry.ID)),
+			)
+		}
+	} else {
+		endpoint := mcpserver.SessionEndpoint
+		if tunnel.Config.Mode == "fast" {
+			endpoint = mcpserver.SessionFastEndpoint
+		}
+		lines = append(lines,
+			"    - channel: main",
+			fmt.Sprintf(`      url: "http://127.0.0.1:%d%s"`, cfg.Port, endpoint),
 		)
 	}
-	return path, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	return path, atomicWriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
 func yamlEscape(value string) string {
@@ -1072,38 +1128,12 @@ func ownedHealthProcess(state processState, health map[string]any, port int) (in
 	return pid, identity, true
 }
 
+// ownedTunnelProcess is retained for legacy process-state tests and migration.
+// Runtime lifecycle code uses the named-tunnel variant directly.
 func ownedTunnelProcess(state processState, stateOwned bool) (int, string, bool) {
-	if state.TunnelPID <= 0 {
-		return 0, "", false
-	}
-	if state.TunnelIdentity != "" {
-		if processMatches(state.TunnelPID, state.TunnelIdentity) {
-			return state.TunnelPID, state.TunnelIdentity, true
-		}
-		// A detached wrapper can be fingerprinted during the fork/exec boundary,
-		// before /proc or the platform process table exposes its final argv. Adopt
-		// a new fingerprint only when the server state from the same document was
-		// independently verified and the PID is exactly our tunnel wrapper.
-		if !stateOwned || !processLooksLikeCodebridgeChild(state.TunnelPID, "tunnel") {
-			return 0, "", false
-		}
-		identity, err := captureChildProcessIdentity(state.TunnelPID, "tunnel", 500*time.Millisecond)
-		if err != nil {
-			return 0, "", false
-		}
-		return state.TunnelPID, identity, true
-	}
-	if !stateOwned {
-		return 0, "", false
-	}
-	// One-time migration for process state written before identity fingerprints
-	// were introduced. The server state from the same document must already be
-	// independently verified through health or identity.
-	identity, err := processIdentity(state.TunnelPID)
-	if err != nil {
-		return 0, "", false
-	}
-	return state.TunnelPID, identity, true
+	return ownedNamedTunnelProcess("default", tunnelProcessState{
+		PID: state.TunnelPID, Identity: state.TunnelIdentity,
+	}, stateOwned)
 }
 
 func captureChildProcessIdentity(pid int, label string, timeout time.Duration) (string, error) {
@@ -1136,7 +1166,7 @@ func captureChildProcessIdentity(pid int, label string, timeout time.Duration) (
 }
 
 func codebridgeChildInvocation(executable string, args []string, label string) bool {
-	if label != "server" && label != "tunnel" || len(args) < 6 {
+	if !validChildLabel(label) || len(args) < 6 {
 		return false
 	}
 	if !sameProcessExecutable(executable) {
@@ -1146,7 +1176,7 @@ func codebridgeChildInvocation(executable string, args []string, label string) b
 }
 
 func codebridgeChildCommandLine(executable, commandLine, label string) bool {
-	if label != "server" && label != "tunnel" || !sameProcessExecutable(executable) {
+	if !validChildLabel(label) || !sameProcessExecutable(executable) {
 		return false
 	}
 	return strings.Contains(commandLine, "__child "+label+" ") && strings.Contains(commandLine, childLogPath(label))

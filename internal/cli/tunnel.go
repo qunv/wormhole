@@ -31,9 +31,26 @@ func (a App) tunnelCommand(ctx context.Context, cfg config.Config, opts options)
 		sub = opts.Rest[0]
 	}
 	switch sub {
-	case "status":
+	case "status", "list":
 		_, err := os.Stat(cfg.TunnelBin)
 		fmt.Fprintf(a.Stdout, "Path: %s\nInstalled: %v\nVersion: %s\n", cfg.TunnelBin, err == nil, config.DefaultTunnelVersion)
+		state := readState()
+		migrateTunnelProcessState(&state)
+		health := readHealth(cfg.Port)
+		_, _, serverOwned := ownedHealthProcess(state, health, cfg.Port)
+		serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
+		configured := cfg.EffectiveTunnels()
+		if len(configured) == 0 {
+			fmt.Fprintln(a.Stdout, "Tunnels: none configured")
+			return nil
+		}
+		for _, tunnel := range configured {
+			process := state.Tunnels[tunnel.Name]
+			_, _, alive := ownedNamedTunnelProcess(tunnel.Name, process, serverOwned || serverStateValid)
+			fmt.Fprintf(a.Stdout, "%s: mode=%s enabled=%t profile=%s key_env=%s status=%s\n",
+				tunnel.Name, tunnel.Config.Mode, tunnel.Config.IsEnabled(), tunnel.Config.Profile,
+				tunnel.Config.RuntimeKeyEnv, ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline"))
+		}
 		return nil
 	case "install":
 		path, err := downloadTunnelClient(ctx, cfg.TunnelBin)
@@ -47,7 +64,7 @@ func (a App) tunnelCommand(ctx context.Context, cfg config.Config, opts options)
 		fmt.Fprintf(a.Stdout, "Installed tunnel-client: %s\n", path)
 		return nil
 	default:
-		return errors.New("usage: codebridge tunnel status|install")
+		return errors.New("usage: codebridge tunnel status|list|install")
 	}
 }
 

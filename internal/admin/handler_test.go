@@ -571,6 +571,31 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 	}
 }
 
+func TestAdminSecretsIncludeNamedTunnelRuntimeKeys(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.NoTunnel = false
+		cfg.TunnelID = ""
+		cfg.Tunnels = map[string]config.TunnelConfig{
+			"fast": {TunnelID: "tunnel_fast", Mode: "fast", Profile: "fast", RuntimeKeyEnv: "FAST_TUNNEL_KEY"},
+			"full": {TunnelID: "tunnel_full", Mode: "full", Profile: "full", RuntimeKeyEnv: "FULL_TUNNEL_KEY"},
+		}
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/secrets", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get named tunnel secrets = %d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{"FAST_TUNNEL_KEY", "FULL_TUNNEL_KEY", "tunnels.fast.runtimeKeyEnv", "tunnels.full.runtimeKeyEnv"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("named tunnel secret reference %q missing: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"name":"CONTROL_PLANE_API_KEY"`) {
+		t.Fatalf("ignored legacy runtime key was exposed with explicit tunnels: %s", body)
+	}
+}
+
 func newAdminHandler(t *testing.T, mutate func(*config.Config)) *Handler {
 	t.Helper()
 	home := t.TempDir()

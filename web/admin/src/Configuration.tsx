@@ -29,6 +29,7 @@ const CONFIG_HELP: Record<string, string> = {
   "Profile": "Named tunnel profile used to resolve tunnel credentials and settings.",
   "Profile directory": "Directory containing tunnel profile files when they are not stored in the default location.",
   "Runtime key environment": "Environment variable name containing the runtime API key. The secret value is managed on the Secrets page.",
+  "Tunnel definitions": "Named independently managed tunnels. Each tunnel exposes either the fast or full session endpoint as its main ChatGPT channel.",
   "Audit tool calls": "Records bounded local audit events for tool calls, outcomes, and approvals without storing full results.",
   "Include redacted argument metadata": "Adds reduced and redacted argument metadata to audit records for better diagnostics.",
   "HTTP access log": "Logs Admin and MCP HTTP requests locally. Useful for troubleshooting but can add noise.",
@@ -175,6 +176,7 @@ function GeneralEditor({ value, onChange }: EditorProps) {
         <Field label="Profile directory"><TextInput value={value.profileDir ?? ""} onChange={(e) => set("profileDir", e.target.value)} /></Field>
         <Field label="Runtime key environment"><TextInput value={value.runtimeKeyEnv ?? ""} onChange={(e) => set("runtimeKeyEnv", e.target.value)} /></Field>
       </div>
+      <JSONField label="Tunnel definitions" value={value.tunnels ?? {}} onChange={(tunnels) => set("tunnels", tunnels as CodebridgeConfig["tunnels"])} hint="Example: fast/full entries with tunnelId, mode, profile and runtimeKeyEnv." />
     </Card>
     <Card title="Observability" description="Audit records are local, bounded and redacted by the runtime.">
       <div className="toggle-stack">

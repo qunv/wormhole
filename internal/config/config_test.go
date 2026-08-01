@@ -335,6 +335,105 @@ func TestLoadRejectsUnknownAndDuplicateConfigFields(t *testing.T) {
 	}
 }
 
+func TestEffectiveTunnelsSupportsLegacyAndNamedConfigurations(t *testing.T) {
+	legacy := Default()
+	legacy.TunnelID = "tunnel_legacy"
+	items := legacy.EffectiveTunnels()
+	if len(items) != 1 || items[0].Name != "default" || !items[0].Legacy || items[0].Config.Mode != "full" {
+		t.Fatalf("legacy tunnel was not preserved: %#v", items)
+	}
+
+	disabled := false
+	named := Default()
+	named.TunnelID = "ignored-legacy"
+	named.Tunnels = map[string]TunnelConfig{
+		"full": {TunnelID: "tunnel_full", Mode: "full"},
+		"fast": {TunnelID: "tunnel_fast", Mode: "fast", RuntimeKeyEnv: "FAST_KEY"},
+		"off":  {Enabled: &disabled, TunnelID: "tunnel_off", Mode: "full"},
+	}
+	normalize(&named)
+	all := named.EffectiveTunnels()
+	if len(all) != 3 || all[0].Name != "fast" || all[1].Name != "full" || all[2].Name != "off" {
+		t.Fatalf("named tunnels are not stable and sorted: %#v", all)
+	}
+	if all[0].Config.Profile != "codebridge-fast" || all[1].Config.RuntimeKeyEnv != "CONTROL_PLANE_API_KEY" {
+		t.Fatalf("named tunnel defaults were not applied: %#v", all)
+	}
+	enabled := named.EnabledTunnels()
+	if len(enabled) != 2 || enabled[0].Name != "fast" || enabled[1].Name != "full" {
+		t.Fatalf("disabled tunnel was not filtered: %#v", enabled)
+	}
+}
+
+func TestValidateRejectsDuplicateEnabledTunnelIdentityAndProfile(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"tunnel id": func(cfg *Config) {
+			cfg.Tunnels["full"] = TunnelConfig{TunnelID: "same", Mode: "full", Profile: "full", RuntimeKeyEnv: "FULL_KEY"}
+			cfg.Tunnels["fast"] = TunnelConfig{TunnelID: "same", Mode: "fast", Profile: "fast", RuntimeKeyEnv: "FAST_KEY"}
+		},
+		"profile": func(cfg *Config) {
+			cfg.Tunnels["full"] = TunnelConfig{TunnelID: "full", Mode: "full", Profile: "same", RuntimeKeyEnv: "FULL_KEY"}
+			cfg.Tunnels["fast"] = TunnelConfig{TunnelID: "fast", Mode: "fast", Profile: "same", RuntimeKeyEnv: "FAST_KEY"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Tunnels = map[string]TunnelConfig{}
+			mutate(&cfg)
+			normalize(&cfg)
+			if err := cfg.Validate(false); err == nil {
+				t.Fatalf("duplicate %s was accepted", name)
+			}
+		})
+	}
+}
+
+func TestTunnelValidationRejectsNormalizedNameCollisionsAndProfileEscapes(t *testing.T) {
+	cfg := Default()
+	cfg.Tunnels = map[string]TunnelConfig{
+		"fast":   {TunnelID: "one", Mode: "fast", Profile: "fast"},
+		" FAST ": {TunnelID: "two", Mode: "full", Profile: "full"},
+	}
+	if err := validateTunnelMapKeys(cfg.Tunnels); err == nil {
+		t.Fatal("normalized tunnel name collision was accepted")
+	}
+
+	cfg = Default()
+	cfg.Profile = "../outside"
+	if err := cfg.Validate(false); err == nil {
+		t.Fatal("legacy profile path escape was accepted")
+	}
+	cfg = Default()
+	cfg.Tunnels = map[string]TunnelConfig{
+		"fast": {TunnelID: "one", Mode: "fast", Profile: "../outside", RuntimeKeyEnv: "FAST_KEY"},
+	}
+	if err := cfg.Validate(false); err == nil {
+		t.Fatal("named profile path escape was accepted")
+	}
+}
+
+func TestValidateTreatsImplicitYamlProfileNamesAsDuplicates(t *testing.T) {
+	cfg := Default()
+	cfg.Tunnels = map[string]TunnelConfig{
+		"fast": {TunnelID: "one", Mode: "fast", Profile: "same", RuntimeKeyEnv: "FAST_KEY"},
+		"full": {TunnelID: "two", Mode: "full", Profile: "same.yaml", RuntimeKeyEnv: "FULL_KEY"},
+	}
+	if err := cfg.Validate(false); err == nil {
+		t.Fatal("equivalent profile file names were accepted")
+	}
+}
+
+func TestTunnelLogPathForConfinesInvalidStateNames(t *testing.T) {
+	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	path := TunnelLogPathFor("../../outside")
+	if filepath.Dir(path) != AppDataDir() || strings.Contains(filepath.Base(path), "..") {
+		t.Fatalf("invalid tunnel name escaped log directory: %s", path)
+	}
+	if got := TunnelLogPathFor("fast"); got != filepath.Join(AppDataDir(), "tunnel-fast.log") {
+		t.Fatalf("named tunnel log path = %s", got)
+	}
+}
+
 func TestLegacyIntegrationFieldsAreDroppedOnSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("CODEBRIDGE_CONFIG_PATH", path)

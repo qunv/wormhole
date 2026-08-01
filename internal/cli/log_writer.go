@@ -175,14 +175,24 @@ func readFileTail(path string, maxBytes int64) ([]byte, error) {
 }
 
 func childLogPath(label string) string {
-	switch label {
-	case "server":
+	switch {
+	case label == "server":
 		return config.ServerLogPath()
-	case "tunnel":
+	case label == "tunnel":
 		return config.TunnelLogPath()
+	case strings.HasPrefix(label, "tunnel-"):
+		return config.TunnelLogPathFor(strings.TrimPrefix(label, "tunnel-"))
 	default:
 		return config.LogPath()
 	}
+}
+
+func validChildLabel(label string) bool {
+	if label == "server" || label == "tunnel" {
+		return true
+	}
+	name := strings.TrimPrefix(label, "tunnel-")
+	return name != label && name != "" && !strings.ContainsAny(name, `/\\`)
 }
 
 func commandText(command string, args []string) string {
@@ -197,7 +207,7 @@ func (a App) runLoggedChild(ctx context.Context, args []string) error {
 		return errors.New("invalid internal child invocation")
 	}
 	label, logPath, cwd, command := args[0], args[1], args[2], args[3]
-	if label != "server" && label != "tunnel" {
+	if !validChildLabel(label) {
 		return fmt.Errorf("invalid internal child label %q", label)
 	}
 	if filepath.Clean(logPath) != filepath.Clean(childLogPath(label)) {

@@ -47,7 +47,7 @@ var workspaceOwnedFields = map[string]bool{
 	"workspace": true, "port": true, "host": true, "authToken": true,
 	"approvalToken": true, "allowedOrigins": true, "noTunnel": true,
 	"tunnelBin": true, "tunnelId": true, "organizationId": true,
-	"profile": true, "profileDir": true, "runtimeKeyEnv": true,
+	"profile": true, "profileDir": true, "runtimeKeyEnv": true, "tunnels": true,
 }
 
 // Handler serves a local-only administration application and versioned API.
@@ -590,6 +590,7 @@ func effectiveWorkspaceConfig(base config.Config, entry workspaceregistry.Regist
 	effective.AllowedOrigins = append([]string(nil), base.AllowedOrigins...)
 	effective.NoTunnel = true
 	effective.TunnelID = ""
+	effective.Tunnels = nil
 	if err := effective.Validate(true); err != nil {
 		return effective, err
 	}
@@ -728,7 +729,12 @@ func (h *Handler) secretReferences() (map[string][]string, error) {
 		}
 		refs[name] = append(refs[name], owner)
 	}
-	add(cfg.RuntimeKeyEnv, "tunnel.runtimeKeyEnv")
+	if len(cfg.Tunnels) == 0 {
+		add(cfg.RuntimeKeyEnv, "tunnel.runtimeKeyEnv")
+	}
+	for _, tunnel := range cfg.EffectiveTunnels() {
+		add(tunnel.Config.RuntimeKeyEnv, "tunnels."+tunnel.Name+".runtimeKeyEnv")
+	}
 	add(cfg.Memory.SecretEnv, "memory.secretEnv")
 	for serverName, server := range cfg.MCPServers {
 		for target, source := range server.EnvRefs {

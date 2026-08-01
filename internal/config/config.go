@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -52,8 +53,30 @@ type ToolExposureConfig struct {
 	DeniedTools   []string `json:"deniedTools,omitempty"`
 }
 
+// TunnelConfig describes one independently managed Secure MCP Tunnel. Each
+// tunnel-client process exposes its selected local session endpoint as channel
+// "main", because ChatGPT's current tunnel UI selects a tunnel ID but does not
+// expose logical channel selection.
+type TunnelConfig struct {
+	Enabled       *bool  `json:"enabled,omitempty"`
+	TunnelID      string `json:"tunnelId,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	RuntimeKeyEnv string `json:"runtimeKeyEnv,omitempty"`
+	Organization  string `json:"organizationId,omitempty"`
+}
+
+func (c TunnelConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+type NamedTunnel struct {
+	Name   string
+	Config TunnelConfig
+	Legacy bool
+}
+
 var (
 	toolModulePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	tunnelNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	envNamePattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
@@ -92,13 +115,14 @@ type Config struct {
 	ApprovalToken  string   `json:"approvalToken,omitempty"`
 	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
 
-	NoTunnel      bool   `json:"noTunnel,omitempty"`
-	TunnelBin     string `json:"tunnelBin,omitempty"`
-	TunnelID      string `json:"tunnelId,omitempty"`
-	Organization  string `json:"organizationId,omitempty"`
-	Profile       string `json:"profile,omitempty"`
-	ProfileDir    string `json:"profileDir,omitempty"`
-	RuntimeKeyEnv string `json:"runtimeKeyEnv,omitempty"`
+	NoTunnel      bool                    `json:"noTunnel,omitempty"`
+	TunnelBin     string                  `json:"tunnelBin,omitempty"`
+	TunnelID      string                  `json:"tunnelId,omitempty"`
+	Organization  string                  `json:"organizationId,omitempty"`
+	Profile       string                  `json:"profile,omitempty"`
+	ProfileDir    string                  `json:"profileDir,omitempty"`
+	RuntimeKeyEnv string                  `json:"runtimeKeyEnv,omitempty"`
+	Tunnels       map[string]TunnelConfig `json:"tunnels,omitempty"`
 
 	Memory     MemoryConfig               `json:"memory,omitempty"`
 	MCPServers map[string]MCPServerConfig `json:"mcpServers,omitempty"`
@@ -225,7 +249,18 @@ func DotEnvPath() string    { return filepath.Join(AppConfigDir(), ".env") }
 func AdminAuthPath() string { return filepath.Join(AppConfigDir(), "admin-auth.json") }
 func PIDPath() string       { return filepath.Join(AppDataDir(), "processes.json") }
 func ServerLogPath() string { return filepath.Join(AppDataDir(), "server.log") }
-func TunnelLogPath() string { return filepath.Join(AppDataDir(), "tunnel.log") }
+func TunnelLogPath() string { return TunnelLogPathFor("default") }
+func TunnelLogPathFor(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || name == "default" {
+		return filepath.Join(AppDataDir(), "tunnel.log")
+	}
+	if !tunnelNamePattern.MatchString(name) {
+		sum := sha256.Sum256([]byte(name))
+		name = "invalid-" + hex.EncodeToString(sum[:4])
+	}
+	return filepath.Join(AppDataDir(), "tunnel-"+name+".log")
+}
 
 // LogPath is the legacy combined launcher log retained for migration and
 // compatibility with older installations. New child processes write to the
@@ -447,6 +482,9 @@ func loadFile(path string, useEnvironment bool) (Config, error) {
 	if useEnvironment {
 		applyEnvironment(&cfg)
 	}
+	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
+		return cfg, err
+	}
 	normalize(&cfg)
 	return cfg, cfg.Validate(false)
 }
@@ -467,6 +505,9 @@ func Save(cfg Config) error {
 }
 
 func SaveFile(path string, cfg Config) error {
+	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
+		return err
+	}
 	normalize(&cfg)
 	if err := cfg.Validate(false); err != nil {
 		return err
@@ -539,6 +580,39 @@ func (c Config) Validate(requireWorkspace bool) error {
 	if err := validateMCPServers(c); err != nil {
 		return err
 	}
+	if err := validateTunnelMapKeys(c.Tunnels); err != nil {
+		return err
+	}
+	if err := validateTunnelProfileName("profile", c.Profile); err != nil {
+		return err
+	}
+	seenTunnelIDs := map[string]string{}
+	seenTunnelProfiles := map[string]string{}
+	for rawName, tunnel := range c.Tunnels {
+		name := strings.ToLower(strings.TrimSpace(rawName))
+		if tunnel.Mode != "fast" && tunnel.Mode != "full" {
+			return fmt.Errorf("tunnels.%s.mode must be fast or full", name)
+		}
+		if tunnel.RuntimeKeyEnv != "" && !envNamePattern.MatchString(tunnel.RuntimeKeyEnv) {
+			return fmt.Errorf("tunnels.%s.runtimeKeyEnv is not a valid environment variable name", name)
+		}
+		if err := validateTunnelProfileName("tunnels."+name+".profile", tunnel.Profile); err != nil {
+			return err
+		}
+		if tunnel.IsEnabled() && tunnel.TunnelID != "" {
+			if previous := seenTunnelIDs[tunnel.TunnelID]; previous != "" {
+				return fmt.Errorf("tunnels.%s.tunnelId duplicates tunnels.%s.tunnelId", name, previous)
+			}
+			seenTunnelIDs[tunnel.TunnelID] = name
+		}
+		profile := canonicalTunnelProfileName(tunnel.Profile)
+		if tunnel.IsEnabled() && profile != "" {
+			if previous := seenTunnelProfiles[profile]; previous != "" {
+				return fmt.Errorf("tunnels.%s.profile duplicates tunnels.%s.profile", name, previous)
+			}
+			seenTunnelProfiles[profile] = name
+		}
+	}
 	for _, group := range c.Tools.AllowedGroups {
 		if !toolModulePattern.MatchString(group) {
 			return fmt.Errorf("tools.allowedGroups value %q must be a valid module name", group)
@@ -559,6 +633,44 @@ func (c Config) Validate(requireWorkspace bool) error {
 		if err != nil || !info.IsDir() {
 			return fmt.Errorf("workspace does not exist: %s", c.Workspace)
 		}
+	}
+	return nil
+}
+
+func validateTunnelMapKeys(tunnels map[string]TunnelConfig) error {
+	seen := map[string]string{}
+	for rawName := range tunnels {
+		name := strings.ToLower(strings.TrimSpace(rawName))
+		if !tunnelNamePattern.MatchString(name) {
+			return fmt.Errorf("tunnels name %q must match %s", rawName, tunnelNamePattern.String())
+		}
+		if previous := seen[name]; previous != "" {
+			return fmt.Errorf("tunnel names %q and %q normalize to the same value %q", previous, rawName, name)
+		}
+		seen[name] = rawName
+	}
+	return nil
+}
+
+func canonicalTunnelProfileName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value != "" && filepath.Ext(value) == "" {
+		value += ".yaml"
+	}
+	return filepath.Clean(value)
+}
+
+func validateTunnelProfileName(field, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if filepath.Base(value) != value || value == "." || value == ".." {
+		return fmt.Errorf("%s must be a file name inside profileDir", field)
+	}
+	ext := strings.ToLower(filepath.Ext(value))
+	if ext != "" && ext != ".yaml" && ext != ".yml" {
+		return fmt.Errorf("%s extension must be .yaml or .yml", field)
 	}
 	return nil
 }
@@ -745,6 +857,78 @@ func LoadDotEnv(path string, override bool) error {
 	return nil
 }
 
+// EffectiveTunnels returns enabled and disabled named tunnel definitions in a
+// stable order. The legacy single-tunnel fields remain a compatibility fallback
+// until an explicit tunnels map is configured.
+func (c Config) EffectiveTunnels() []NamedTunnel {
+	if len(c.Tunnels) == 0 {
+		if strings.TrimSpace(c.TunnelID) == "" {
+			return nil
+		}
+		return []NamedTunnel{{
+			Name: "default", Legacy: true,
+			Config: TunnelConfig{
+				TunnelID: strings.TrimSpace(c.TunnelID), Mode: "full", Profile: c.Profile,
+				RuntimeKeyEnv: c.RuntimeKeyEnv, Organization: c.Organization,
+			},
+		}}
+	}
+	names := make([]string, 0, len(c.Tunnels))
+	for name := range c.Tunnels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]NamedTunnel, 0, len(names))
+	for _, name := range names {
+		out = append(out, NamedTunnel{Name: name, Config: c.Tunnels[name]})
+	}
+	return out
+}
+
+func (c Config) EnabledTunnels() []NamedTunnel {
+	all := c.EffectiveTunnels()
+	out := make([]NamedTunnel, 0, len(all))
+	for _, tunnel := range all {
+		if tunnel.Config.IsEnabled() {
+			out = append(out, tunnel)
+		}
+	}
+	return out
+}
+
+func normalizeTunnels(c *Config) {
+	if len(c.Tunnels) == 0 {
+		return
+	}
+	normalized := make(map[string]TunnelConfig, len(c.Tunnels))
+	for rawName, tunnel := range c.Tunnels {
+		name := strings.ToLower(strings.TrimSpace(rawName))
+		tunnel.TunnelID = strings.TrimSpace(tunnel.TunnelID)
+		tunnel.Mode = strings.ToLower(strings.TrimSpace(tunnel.Mode))
+		if tunnel.Mode == "" {
+			tunnel.Mode = "full"
+		}
+		tunnel.Profile = strings.TrimSpace(tunnel.Profile)
+		if tunnel.Profile == "" {
+			base := strings.TrimSuffix(strings.TrimSpace(c.Profile), filepath.Ext(c.Profile))
+			if base == "" {
+				base = "codebridge"
+			}
+			tunnel.Profile = base + "-" + name
+		}
+		tunnel.RuntimeKeyEnv = strings.TrimSpace(tunnel.RuntimeKeyEnv)
+		if tunnel.RuntimeKeyEnv == "" {
+			tunnel.RuntimeKeyEnv = c.RuntimeKeyEnv
+		}
+		tunnel.Organization = strings.TrimSpace(tunnel.Organization)
+		if tunnel.Organization == "" {
+			tunnel.Organization = c.Organization
+		}
+		normalized[name] = tunnel
+	}
+	c.Tunnels = normalized
+}
+
 func normalize(c *Config) {
 	if c.Mode == "" {
 		c.Mode = "safe"
@@ -770,6 +954,7 @@ func normalize(c *Config) {
 	if c.TunnelBin == "" {
 		c.TunnelBin = filepath.Join(AppDataDir(), tunnelExecutable())
 	}
+	normalizeTunnels(c)
 	if c.Memory.Provider == "" {
 		c.Memory.Provider = "none"
 	}

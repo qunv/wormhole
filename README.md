@@ -102,22 +102,22 @@ Role and group configuration is available on these pages:
 
 Prefer assigning roles through groups when multiple operators need access.
 
-### 2. Create the Secure MCP Tunnel
+### 2. Create the Secure MCP Tunnels
 
-Open [Platform → Organization → Tunnels](https://platform.openai.com/settings/organization/tunnels) and create a tunnel.
+Open [Platform → Organization → Tunnels](https://platform.openai.com/settings/organization/tunnels). For the recommended setup, create two tunnels:
 
-When creating it:
+| Tunnel | Local mode | Purpose |
+|---|---|---|
+| `codebridge-fast` | `fast` | Default coding app with the compact tool contract |
+| `codebridge-full` | `full` | Optional app for memory, processes, approvals, diagnostics, and upstream MCP tools |
 
-1. Give it a recognizable name such as `codebridge-local`.
-2. Scope it to the correct Platform organization.
-3. Include the target ChatGPT workspace ID. A tunnel without the correct workspace scope may exist in Platform but not appear in ChatGPT's tunnel picker.
-4. Copy the returned ID, which looks like:
+For each tunnel:
 
-```text
-tunnel_0123456789abcdef0123456789abcdef
-```
+1. Scope it to the correct Platform organization.
+2. Include the target ChatGPT workspace ID. A tunnel without the correct workspace scope may exist in Platform but not appear in ChatGPT's tunnel picker.
+3. Copy the returned ID, which looks like `tunnel_0123456789abcdef0123456789abcdef`.
 
-Codebridge only needs the Tunnel ID. An Admin API key is not required when you create and manage the tunnel in the Platform UI.
+Codebridge also retains the legacy one-tunnel configuration for existing installations, but two named tunnels are recommended because the current ChatGPT tunnel picker selects a Tunnel ID and does not expose the tunnel-client's logical channel field.
 
 ### 3. Create the Runtime API key
 
@@ -146,52 +146,52 @@ Install OpenAI's tunnel client:
 codebridge tunnel install
 ```
 
-Run the setup wizard:
+Open the Admin UI and add the named tunnel definitions under **Configuration → Tunnel definitions**:
+
+```json
+{
+  "noTunnel": false,
+  "tunnels": {
+    "fast": {
+      "enabled": true,
+      "tunnelId": "tunnel_FAST_ID",
+      "mode": "fast",
+      "profile": "codebridge-fast",
+      "runtimeKeyEnv": "CONTROL_PLANE_API_KEY_FAST"
+    },
+    "full": {
+      "enabled": true,
+      "tunnelId": "tunnel_FULL_ID",
+      "mode": "full",
+      "profile": "codebridge-full",
+      "runtimeKeyEnv": "CONTROL_PLANE_API_KEY_FULL"
+    }
+  }
+}
+```
+
+Store each Runtime API key separately from `config.json`:
 
 ```bash
-codebridge setup
+codebridge key set --runtime-key-env CONTROL_PLANE_API_KEY_FAST
+codebridge key set --runtime-key-env CONTROL_PLANE_API_KEY_FULL
 ```
 
-Recommended answers:
+The values are written to the owner-only `~/.codebridge/.env` file. The Admin **Secrets** page provides the same write-only workflow.
 
-```text
-Mode:                         safe
-Policy:                       balanced
-Use ChatGPT Web tunnel?:      y
-Tunnel ID:                    tunnel_...
-tunnel-client path:           keep the default
-Download tunnel-client now?:  y, if it is not installed
-Enable memory?:               n, unless already configured
-```
-
-Store the Runtime API key separately:
-
-```bash
-codebridge key set
-```
-
-The key is written to `~/.codebridge/.env` as `CONTROL_PLANE_API_KEY`; it is not stored in `config.json` or passed on the command line.
-
-Generate the tunnel profile, start Codebridge, and verify it:
+Generate both profiles, start Codebridge, and verify every managed process:
 
 ```bash
 codebridge profile
 codebridge restart
 codebridge doctor
 codebridge status
+codebridge tunnel list
 ```
 
-A successful status should show both the server and tunnel online.
+Codebridge runs one local MCP daemon and one tunnel-client process per enabled tunnel. The generated Fast profile maps its `main` channel to `/mcp/session/fast`; the Full profile maps `main` to `/mcp/session`.
 
-Manual configuration is also possible:
-
-```bash
-codebridge config set noTunnel false
-codebridge config set tunnelId tunnel_0123456789abcdef0123456789abcdef
-codebridge tunnel install
-codebridge key set
-codebridge restart
-```
+Existing single-tunnel configurations using `tunnelId`, `profile`, and `runtimeKeyEnv` continue to work and keep the historical logical channels for backward compatibility.
 
 ### 5. Create the MCP app in ChatGPT
 
@@ -204,16 +204,15 @@ Workspace Settings
   → Developer mode / Create custom MCP connectors
 ```
 
-Then create the app:
+Create two apps:
 
 1. Open **Settings → Apps → Create**, or **Workspace Settings → Apps → Create** as an admin/owner.
-2. Name the app, for example `Codebridge`.
-3. Select **Tunnel** or **Secure MCP Tunnel** as the connection type.
-4. Select the tunnel created above.
-5. Select channel **`fast`** for normal coding.
-6. Choose **No auth** for the MCP app. Tunnel control-plane authentication is handled by the Runtime API key stored on the machine.
-7. Click **Scan Tools** and wait for discovery to finish.
-8. Click **Create**.
+2. Create `Codebridge Fast`, select **Tunnel** or **Secure MCP Tunnel**, and choose `tunnel_FAST_ID`.
+3. Choose **No auth** for the MCP app. Tunnel control-plane authentication is handled by the Runtime API key stored on the machine.
+4. Click **Scan Tools**, verify the compact tool set, and create the app.
+5. Repeat for `Codebridge Full` with `tunnel_FULL_ID` and verify the expanded tool set.
+
+The ChatGPT UI does not need a channel selector: each Tunnel ID has its own generated profile whose `main` channel points to the intended local endpoint.
 
 The app should appear under enabled apps with a `Dev` label until it is published by a workspace admin.
 
@@ -235,18 +234,16 @@ workspace loyalty-api
 
 ChatGPT receives an opaque workspace binding automatically. You do not need to copy or manage that token. Bindings expire after inactivity and are reset when Codebridge restarts; say `workspace <id>` again when needed.
 
-## Which tunnel channel should I use?
+## Which managed tunnel mode should I use?
 
-| Channel | Local endpoint | Use case |
+| Mode | Local endpoint published as `main` | Use case |
 |---|---|---|
-| `fast` | `/mcp/session/fast` | Recommended. Compact coding profile with 11 high-value tools |
-| `main` | `/mcp/session` | Full workspace, memory, workflow, process, policy, and upstream MCP surface |
-| `workspace-<id>-fast` | `/mcp/workspaces/<id>/fast` | Fixed workspace with compact tools |
-| `workspace-<id>` | `/mcp/workspaces/<id>` | Fixed workspace with the complete tool surface |
+| `fast` | `/mcp/session/fast` | Recommended default. Compact coding profile with high-value read, edit, command, Git, CodeGraph, and quality tools |
+| `full` | `/mcp/session` | Memory, workflow, managed processes, approvals, diagnostics, security, and upstream MCP tools |
 
-Start with one ChatGPT app on channel `fast`. Add a separate `main` app only when the larger tool surface is genuinely needed.
+Enable only the Fast app for normal coding. Enable the Full app when the task genuinely requires its larger tool surface. Both use the same workspace-selection workflow and the same local daemon.
 
-Codebridge regenerates the tunnel profile with all enabled workspace channels when it starts. After adding or removing workspaces, restart Codebridge and rescan tools in ChatGPT.
+After changing tunnel definitions, IDs, modes, profiles, runtime keys, or enabled state, run `codebridge restart` and rescan the corresponding app's tools in ChatGPT.
 
 ## Workspaces
 
@@ -273,7 +270,7 @@ codebridge workspace compact loyalty-api
 codebridge workspace remove admin-web
 ```
 
-Each workspace has isolated roots, policy, state, backups, approvals, tasks, memory scope, and process registry. All enabled workspaces share one daemon, one port, and one tunnel process.
+Each workspace has isolated roots, policy, state, backups, approvals, tasks, memory scope, and process registry. All enabled workspaces share one daemon and one port; every enabled named tunnel has its own managed tunnel-client process.
 
 ## Local use without ChatGPT
 

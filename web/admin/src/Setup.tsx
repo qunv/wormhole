@@ -53,6 +53,14 @@ export function Setup() {
         tunnelId: draft!.tunnelId?.trim(),
         tunnelBin: draft!.tunnelBin?.trim(),
         runtimeKeyEnv: draft!.runtimeKeyEnv?.trim(),
+        tunnels: Object.fromEntries(Object.entries(draft!.tunnels ?? {}).map(([name, tunnel]) => [name.trim(), {
+          ...tunnel,
+          tunnelId: tunnel.tunnelId?.trim(),
+          mode: tunnel.mode?.trim(),
+          profile: tunnel.profile?.trim(),
+          runtimeKeyEnv: tunnel.runtimeKeyEnv?.trim(),
+          organizationId: tunnel.organizationId?.trim(),
+        }])),
         memory: {
           ...draft!.memory,
           provider: draft!.memory.provider.trim(),
@@ -66,7 +74,7 @@ export function Setup() {
       let runtimeKeyStored = false;
       let memorySecretStored = false;
 
-      if (!saved.config.noTunnel && apiKey && saved.config.runtimeKeyEnv) {
+      if (!saved.config.noTunnel && !Object.keys(saved.config.tunnels ?? {}).length && apiKey && saved.config.runtimeKeyEnv) {
         try {
           await api.setSecret(saved.config.runtimeKeyEnv, apiKey.trim());
           runtimeKeyStored = true;
@@ -103,11 +111,22 @@ export function Setup() {
   if (snapshot.isLoading || !snapshot.data || !draft) return <LoadingPage />;
 
   const activeIndex = steps.findIndex((item) => item.id === step);
+  const hasNamedTunnelDefinitions = Object.keys(draft.tunnels ?? {}).length > 0;
+  const namedTunnels = Object.entries(draft.tunnels ?? {}).filter(([, tunnel]) => tunnel.enabled !== false);
   const runtimeSecret = secrets.data?.secrets.find((item) => item.name === draft.runtimeKeyEnv);
+  const namedTunnelSecrets = namedTunnels.map(([name, tunnel]) => ({
+    name,
+    tunnel,
+    secret: secrets.data?.secrets.find((item) => item.name === tunnel.runtimeKeyEnv),
+  }));
   const memorySecretState = secrets.data?.secrets.find((item) => item.name === draft.memory.secretEnv);
   const runtimeReady = !!draft.workspace.trim() && draft.port > 0 && draft.port <= 65535;
-  const tunnelReady = !!draft.noTunnel || !!draft.tunnelId?.trim();
-  const apiKeyReady = !!draft.noTunnel || (!!draft.runtimeKeyEnv?.trim() && (!!runtimeSecret?.configured || !!apiKey.trim()));
+  const tunnelReady = !!draft.noTunnel || (hasNamedTunnelDefinitions
+    ? namedTunnels.length > 0 && namedTunnels.every(([, tunnel]) => !!tunnel.tunnelId?.trim() && (tunnel.mode === "fast" || tunnel.mode === "full"))
+    : !!draft.tunnelId?.trim());
+  const apiKeyReady = !!draft.noTunnel || (hasNamedTunnelDefinitions
+    ? namedTunnelSecrets.every(({ tunnel, secret }) => !!tunnel.runtimeKeyEnv?.trim() && !!secret?.configured)
+    : (!!draft.runtimeKeyEnv?.trim() && (!!runtimeSecret?.configured || !!apiKey.trim())));
   const overallReady = runtimeReady && tunnelReady && apiKeyReady;
   const stepReady = step === "runtime" ? runtimeReady : step === "tunnel" ? tunnelReady : step === "api-key" ? apiKeyReady : true;
 
@@ -177,14 +196,24 @@ export function Setup() {
               button="Open tunnel settings"
               onOpen={() => openExternal(OPENAI_TUNNELS_URL, tunnelInput.current)}
             />
-            <div className="form-grid top-gap">
-              <Field label="Tunnel ID" hint="Paste the tunnel_… identifier from OpenAI Platform." wide>
+            {hasNamedTunnelDefinitions ? <>
+              <Notice tone="info"><strong>{namedTunnels.length} named tunnels configured.</strong> Their IDs, modes, profiles, and key environments are managed on the Configuration page.</Notice>
+              <div className="setup-review-grid top-gap">
+                {namedTunnels.map(([name, tunnel]) => <ReviewItem key={name} label={name} value={`${tunnel.mode ?? "mode missing"} · ${tunnel.tunnelId || "Tunnel ID missing"}`} />)}
+              </div>
+              <div className="form-grid top-gap">
+                <Field label="Tunnel client path" hint="All managed tunnel processes share this tunnel-client binary." wide>
+                  <TextInput value={draft.tunnelBin ?? ""} onChange={(event) => update("tunnelBin", event.target.value)} />
+                </Field>
+              </div>
+            </> : <div className="form-grid top-gap">
+              <Field label="Tunnel ID" hint="Legacy single-tunnel mode. Paste the tunnel_… identifier from OpenAI Platform." wide>
                 <input ref={tunnelInput} className="control" value={draft.tunnelId ?? ""} onChange={(event) => update("tunnelId", event.target.value)} placeholder="tunnel_…" />
               </Field>
               <Field label="Tunnel client path" hint="Keep the detected/default path unless tunnel-client is installed elsewhere." wide>
                 <TextInput value={draft.tunnelBin ?? ""} onChange={(event) => update("tunnelBin", event.target.value)} />
               </Field>
-            </div>
+            </div>}
           </> : <Notice tone="info">Tunnel setup is skipped. The MCP endpoint will remain local to this machine.</Notice>}
         </Card>}
 
@@ -197,15 +226,25 @@ export function Setup() {
               button="Open API key settings"
               onOpen={() => openExternal(OPENAI_API_KEYS_URL, apiKeyInput.current)}
             />
-            <div className="form-grid top-gap">
-              <Field label="Runtime key environment" hint="The variable name stored in config.json; the value stays in .env." wide>
-                <TextInput value={draft.runtimeKeyEnv ?? ""} onChange={(event) => update("runtimeKeyEnv", event.target.value)} placeholder="CONTROL_PLANE_API_KEY" />
-              </Field>
-              <Field label="New API key" hint={runtimeSecret?.configured ? "A value is already configured. Leave this empty to keep it." : "Required because no value is currently configured."} wide>
-                <input ref={apiKeyInput} className="control" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={runtimeSecret?.configured ? "Leave empty to keep existing value" : "Paste the generated API key"} />
-              </Field>
-            </div>
-            <div className="setup-secret-state"><ShieldCheck size={18} /><span><strong>{runtimeSecret?.configured ? "Runtime key already configured" : "Runtime key still required"}</strong><small>{runtimeSecret?.configured ? `Source: ${runtimeSecret.source}` : "The value will be stored only after the final save."}</small></span><Badge tone={runtimeSecret?.configured ? "success" : "warning"}>{runtimeSecret?.configured ? "Protected" : "Missing"}</Badge></div>
+            {hasNamedTunnelDefinitions ? <>
+              <Notice tone="info">Named tunnels use separate runtime-key environment variables. Store missing values on the Secrets page; this wizard never reads them back.</Notice>
+              <div className="setup-review-grid top-gap">
+                {namedTunnelSecrets.map(({ name, tunnel, secret }) => <div key={name}>
+                  <span>{name} · {tunnel.runtimeKeyEnv || "environment missing"}</span>
+                  <strong>{secret?.configured ? `Configured via ${secret.source}` : "Missing"}</strong>
+                </div>)}
+              </div>
+            </> : <>
+              <div className="form-grid top-gap">
+                <Field label="Runtime key environment" hint="The variable name stored in config.json; the value stays in .env." wide>
+                  <TextInput value={draft.runtimeKeyEnv ?? ""} onChange={(event) => update("runtimeKeyEnv", event.target.value)} placeholder="CONTROL_PLANE_API_KEY" />
+                </Field>
+                <Field label="New API key" hint={runtimeSecret?.configured ? "A value is already configured. Leave this empty to keep it." : "Required because no value is currently configured."} wide>
+                  <input ref={apiKeyInput} className="control" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} placeholder={runtimeSecret?.configured ? "Leave empty to keep existing value" : "Paste the generated API key"} />
+                </Field>
+              </div>
+              <div className="setup-secret-state"><ShieldCheck size={18} /><span><strong>{runtimeSecret?.configured ? "Runtime key already configured" : "Runtime key still required"}</strong><small>{runtimeSecret?.configured ? `Source: ${runtimeSecret.source}` : "The value will be stored only after the final save."}</small></span><Badge tone={runtimeSecret?.configured ? "success" : "warning"}>{runtimeSecret?.configured ? "Protected" : "Missing"}</Badge></div>
+            </>}
           </>}
         </Card>}
 
@@ -228,8 +267,8 @@ export function Setup() {
             <ReviewItem label="Workspace" value={draft.workspace} />
             <ReviewItem label="Mode / policy" value={`${draft.mode} / ${draft.policy}`} />
             <ReviewItem label="MCP listener" value={`${draft.host}:${draft.port}`} />
-            <ReviewItem label="Tunnel" value={draft.noTunnel ? "Disabled (local only)" : draft.tunnelId || "Tunnel ID missing"} />
-            <ReviewItem label="Runtime key" value={draft.noTunnel ? "Not required" : apiKey ? "New write-only value ready" : runtimeSecret?.configured ? "Existing value retained" : "Missing"} />
+            <ReviewItem label="Tunnel" value={draft.noTunnel ? "Disabled (local only)" : hasNamedTunnelDefinitions ? `${namedTunnels.length} enabled named tunnels` : draft.tunnelId || "Tunnel ID missing"} />
+            <ReviewItem label="Runtime key" value={draft.noTunnel ? "Not required" : hasNamedTunnelDefinitions ? namedTunnelSecrets.every(({ secret }) => secret?.configured) ? "All named keys configured" : "One or more named keys missing" : apiKey ? "New write-only value ready" : runtimeSecret?.configured ? "Existing value retained" : "Missing"} />
             <ReviewItem label="Memory" value={draft.memory.enabled ? `${draft.memory.provider}${draft.memory.endpoint ? ` · ${draft.memory.endpoint}` : ""}` : "Disabled"} />
           </div>
           {!overallReady && <Notice tone="danger">Complete the required runtime, tunnel, and API-key fields before saving.</Notice>}
@@ -238,7 +277,7 @@ export function Setup() {
 
         <div className="setup-actions">
           <Button variant="secondary" onClick={previous} disabled={activeIndex === 0 || save.isPending}><ArrowLeft size={15} /> Previous</Button>
-          <span>{!stepReady && step === "tunnel" ? "Enter a tunnel ID or disable the tunnel." : !stepReady && step === "api-key" ? "Provide a runtime key or keep an existing configured value." : ""}</span>
+          <span>{!stepReady && step === "tunnel" ? hasNamedTunnelDefinitions ? "Enable and complete at least one named tunnel on Configuration." : "Enter a tunnel ID or disable the tunnel." : !stepReady && step === "api-key" ? hasNamedTunnelDefinitions ? "Store every enabled named runtime key on Secrets." : "Provide a runtime key or keep an existing configured value." : ""}</span>
           {step !== "review"
             ? <Button onClick={next} disabled={!stepReady || save.isPending}>Next <ArrowRight size={15} /></Button>
             : <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!overallReady}><Save size={15} /> Save setup</Button>}

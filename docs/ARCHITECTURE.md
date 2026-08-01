@@ -23,7 +23,8 @@ CLI command
    │      └── .env (runtime secrets)
    │
    ├── start/stop/restart/status/doctor
-   │      ├── process state
+   │      ├── one daemon process state
+   │      ├── N named tunnel-client process states
    │      ├── config ID
    │      └── health checks
    │
@@ -219,7 +220,7 @@ browser on this machine
 
 The SPA assets and authentication-status/login endpoints remain readable from the loopback-only Admin origin so the sign-in screen can render. A create-only first-account endpoint is also available while `admin-auth.json` does not exist; it uses same-origin CSRF protection and exclusive file creation, then creates the initial bounded browser session. Every other Admin API route requires a valid in-memory session. Session tokens are random, stored only as digests in a bounded process-local map, and delivered in an HttpOnly SameSite cookie. Validation re-reads the persisted credential version, so `codebridge admin set-password` or `reset-password` immediately invalidates all sessions. Failed login attempts use a bounded throttle. There is no browser password change, reset, or recovery endpoint.
 
-Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by `runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
+Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by the legacy `runtimeKeyEnv`, named `tunnels.*.runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
 
 Named-workspace override writes use the existing schema-versioned format and reject daemon- or registry-owned fields. The Admin API can register and remove named workspaces using optimistic registry revisions and rollback-safe config/registry ordering. Directory browsing is bounded to directories under the current user's home and does not return file contents; users may still enter another existing absolute directory explicitly. Removing a registration preserves its instance state and, by default, its override file for later re-registration. Enable/disable, restart, and tunnel lifecycle remain CLI-owned operations so the browser cannot terminate or replace its own serving daemon.
 
@@ -238,6 +239,7 @@ All persistent Codebridge files use one canonical root on every operating system
     processes.json
     server.log
     tunnel.log
+    tunnel-<name>.log
     profiles/
     instances/<id>/...
     workspaces/<workspace-path-hash>/...

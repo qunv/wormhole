@@ -156,11 +156,13 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		fmt.Fprintf(a.Stdout, "http://127.0.0.1:%d/mcp\n", cfg.Port)
 		return nil
 	case "logs":
-		return a.logs()
+		return a.logs(cfg)
 	case "profile":
-		path, err := writeTunnelProfile(cfg)
+		paths, err := writeTunnelProfiles(cfg)
 		if err == nil {
-			fmt.Fprintln(a.Stdout, path)
+			for _, path := range paths {
+				fmt.Fprintln(a.Stdout, path)
+			}
 		}
 		return err
 	case "tunnel":
@@ -198,7 +200,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 	}
 	executable, _ := os.Executable()
 	widget := assets.Widget()
-	identityInputs := config.NewIdentityInputs(executable, widget, os.Getenv(cfg.RuntimeKeyEnv))
+	identityInputs := config.NewIdentityInputs(executable, widget, runtimeKeyIdentityMaterial(cfg, ""))
 	if fingerprint := strings.TrimSpace(os.Getenv("CODEBRIDGE_RUNTIME_KEY_FINGERPRINT")); fingerprint != "" {
 		identityInputs.RuntimeKeyFingerprint = fingerprint
 	}
@@ -331,12 +333,12 @@ Usage:
   codebridge workspace start|stop|status <id>
   codebridge workspace compact <id> [--dry-run] [--json]
   codebridge workspace remove <id> [--force]
-  codebridge tunnel [status|install]
+  codebridge tunnel [status|list|install]
   codebridge admin               Print the local Admin UI URL
   codebridge admin set-password [username]
   codebridge admin status        Show local Admin account status
   codebridge keys                Print Tunnel/API-key setup URLs
-  codebridge profile            Write the tunnel-client YAML profile
+  codebridge profile            Write all enabled tunnel-client YAML profiles
   codebridge logs               Print bounded server and tunnel logs
   codebridge config get|set|path
   codebridge key set|delete     Manage the runtime key in the local env file
@@ -373,7 +375,7 @@ func runsInBackgroundByDefault(command string) bool {
 }
 
 func parse(argv []string) (options, error) {
-	opts := options{RuntimeEnv: "CONTROL_PLANE_API_KEY"}
+	opts := options{}
 	index := 0
 	if len(argv) > 0 && !strings.HasPrefix(argv[0], "-") {
 		opts.Command = argv[0]
@@ -692,6 +694,10 @@ func (a App) keyCommand(opts options) error {
 		sub = opts.Rest[0]
 	}
 	path := config.DotEnvPath()
+	target := strings.TrimSpace(opts.RuntimeEnv)
+	if target == "" {
+		target = "CONTROL_PLANE_API_KEY"
+	}
 	switch sub {
 	case "set":
 		value := opts.RuntimeKey
@@ -699,7 +705,7 @@ func (a App) keyCommand(opts options) error {
 			value = opts.Rest[1]
 		}
 		if value == "" {
-			fmt.Fprint(a.Stdout, "Runtime API key: ")
+			fmt.Fprintf(a.Stdout, "%s: ", target)
 			line, _ := bufio.NewReader(a.Stdin).ReadString('\n')
 			value = strings.TrimSpace(line)
 		}
@@ -710,21 +716,27 @@ func (a App) keyCommand(opts options) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, []byte(config.MergeDotEnv(string(existing), map[string]string{"CONTROL_PLANE_API_KEY": value})), 0o600); err != nil {
+		if err := atomicWriteFile(path, []byte(config.MergeDotEnv(string(existing), map[string]string{target: value})), 0o600); err != nil {
 			return err
 		}
-		fmt.Fprintf(a.Stdout, "Saved %s\n", path)
+		_ = os.Setenv(target, value)
+		fmt.Fprintf(a.Stdout, "Saved %s in %s\n", target, path)
 	case "delete":
-		existing, _ := os.ReadFile(path)
-		values := config.ParseDotEnv(string(existing))
-		delete(values, "CONTROL_PLANE_API_KEY")
-		var lines []string
-		for key, value := range values {
-			lines = append(lines, key+"="+value)
+		existing, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
 		}
-		return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+		if err != nil {
+			return err
+		}
+		cleaned := config.RemoveDotEnvKeys(string(existing), target)
+		_ = os.Unsetenv(target)
+		if cleaned == "" {
+			return os.Remove(path)
+		}
+		return atomicWriteFile(path, []byte(cleaned), 0o600)
 	default:
-		return errors.New("usage: codebridge key set [value]|delete")
+		return errors.New("usage: codebridge key set [value]|delete [--runtime-key-env NAME]")
 	}
 	return nil
 }

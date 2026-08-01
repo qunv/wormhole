@@ -54,6 +54,15 @@ export interface MCPServerConfig {
   policy?: MCPServerPolicyConfig;
 }
 
+export interface TunnelConfig {
+  enabled?: boolean;
+  tunnelId?: string;
+  mode?: "fast" | "full" | string;
+  profile?: string;
+  runtimeKeyEnv?: string;
+  organizationId?: string;
+}
+
 export interface ToolExposureConfig {
   allowedGroups?: string[];
   allowedTools?: string[];
@@ -75,6 +84,7 @@ export interface CodebridgeConfig {
   profile?: string;
   profileDir?: string;
   runtimeKeyEnv?: string;
+  tunnels?: Record<string, TunnelConfig>;
   memory: MemoryConfig;
   mcpServers?: Record<string, MCPServerConfig>;
   tools?: ToolExposureConfig;
