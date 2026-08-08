@@ -90,7 +90,7 @@ func TestCommandTransportDiscoversCallsAndIsolatesEnvironment(t *testing.T) {
 		Args:      []string{"-test.run=TestStdioMCPHelper"},
 		Env: map[string]string{
 			"WORMHOLE_MCP_HELPER": "1",
-			"EXPLICIT_VALUE":        "visible",
+			"EXPLICIT_VALUE":      "visible",
 		},
 		StartupTimeoutMS: 5_000,
 		CallTimeoutMS:    5_000,
@@ -152,12 +152,119 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	if client.httpTransport == nil || client.httpTransport.MaxIdleConnsPerHost < client.cfg.MaxConcurrency {
+		t.Fatalf("HTTP connection pool was not sized for maxConcurrency=%d: %#v", client.cfg.MaxConcurrency, client.httpTransport)
+	}
 	result, err := client.Call(context.Background(), "echo.read", map[string]any{"message": "http"}, true)
 	if err != nil || result.IsError {
 		t.Fatalf("HTTP call failed: err=%v result=%#v", err, result)
 	}
 	if seenHeader != "tenant-a" {
 		t.Fatalf("forwarded header = %q, want tenant-a", seenHeader)
+	}
+}
+
+func TestStreamableHTTPUsesOperationSpecificTimeouts(t *testing.T) {
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return testMCPServer() },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		time.Sleep(40 * time.Millisecond)
+		mcpHandler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 500, CallTimeoutMS: 20, HealthTimeoutMS: 200,
+		HealthCacheMS: 100, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
+	}
+	client, err := New(context.Background(), "timeout-http", cfg, "test", t.TempDir())
+	if err != nil {
+		t.Fatalf("startup should use startupTimeoutMs instead of callTimeoutMs: %v", err)
+	}
+	defer client.Close()
+
+	health := client.Health(context.Background())
+	if health["available"] != true {
+		t.Fatalf("health should use healthTimeoutMs instead of callTimeoutMs: %#v", health)
+	}
+	_, err = client.Call(context.Background(), "echo.read", map[string]any{"message": "slow"}, true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("tool call error = %v, want callTimeoutMs deadline", err)
+	}
+}
+
+func TestConcurrentReconnectFailureIsCoalesced(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		startedOnce.Do(func() { close(started) })
+		<-release
+		http.Error(writer, "upstream unavailable", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	cfg := config.MCPServerConfig{
+		Transport: "streamable-http", URL: server.URL,
+		StartupTimeoutMS: 2_000, CallTimeoutMS: 500, HealthTimeoutMS: 200,
+		HealthCacheMS: 100, FailureCooldownMS: 500, MaxConcurrency: 16, MaxTools: 10,
+	}
+	cachedTools := []*mcp.Tool{{
+		Name: "echo.read", Title: "Echo read",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}}
+	client, err := NewDeferred("coalesced-reconnect", cfg, "test", t.TempDir(), cachedTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	const callers = 8
+	errs := make(chan error, callers)
+	go func() { errs <- client.EnsureConnected(context.Background(), true) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("leader reconnect did not reach upstream")
+	}
+	var followers sync.WaitGroup
+	for index := 1; index < callers; index++ {
+		followers.Add(1)
+		go func() {
+			defer followers.Done()
+			errs <- client.EnsureConnected(context.Background(), true)
+		}()
+	}
+	deadline := time.Now().Add(time.Second)
+	for client.reconnectCoalesced.Load() < callers-1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	followers.Wait()
+	for index := 0; index < callers; index++ {
+		if reconnectErr := <-errs; reconnectErr == nil {
+			t.Fatal("failed reconnect unexpectedly succeeded")
+		}
+	}
+	waveRequests := requests.Load()
+	if waveRequests == 0 {
+		t.Fatal("reconnect wave did not reach the upstream")
+	}
+	if got := client.reconnectCoalesced.Load(); got != callers-1 {
+		t.Fatalf("coalesced reconnects = %d, want %d", got, callers-1)
+	}
+
+	if err := client.EnsureConnected(context.Background(), true); err == nil {
+		t.Fatal("later reconnect unexpectedly succeeded")
+	}
+	if got := requests.Load(); got <= waveRequests {
+		t.Fatalf("later reconnect did not get a fresh attempt: before=%d after=%d", waveRequests, got)
 	}
 }
 

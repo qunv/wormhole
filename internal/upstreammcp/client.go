@@ -44,6 +44,11 @@ type healthCacheEntry struct {
 	session   *clientSessionState
 }
 
+type clientConnectAttempt struct {
+	done chan struct{}
+	err  error
+}
+
 type Client struct {
 	name    string
 	cfg     config.MCPServerConfig
@@ -69,18 +74,21 @@ type Client struct {
 	stderr           *boundedCounter
 	callSlots        chan struct{}
 	healthCache      healthCacheEntry
+	connectPending   *clientConnectAttempt
+	httpTransport    *http.Transport
 	consecutiveFails int
 	circuitOpenUntil time.Time
 	breakerTrips     uint64
 
-	queuedCalls       atomic.Int64
-	inFlightCalls     atomic.Int64
-	maxInFlightCalls  atomic.Int64
-	completedCalls    atomic.Uint64
-	rejectedCalls     atomic.Uint64
-	circuitRejected   atomic.Uint64
-	healthCacheHits   atomic.Uint64
-	healthCacheMisses atomic.Uint64
+	queuedCalls        atomic.Int64
+	inFlightCalls      atomic.Int64
+	maxInFlightCalls   atomic.Int64
+	completedCalls     atomic.Uint64
+	rejectedCalls      atomic.Uint64
+	circuitRejected    atomic.Uint64
+	healthCacheHits    atomic.Uint64
+	healthCacheMisses  atomic.Uint64
+	reconnectCoalesced atomic.Uint64
 }
 
 type transportBuild struct {
@@ -304,13 +312,16 @@ func (c *Client) Close() error {
 		}
 	}
 	c.mu.Unlock()
-	if closeSession == nil {
-		return nil
+	var closeErr error
+	if closeSession != nil {
+		if err := closeSession.Close(); err != nil {
+			closeErr = c.sanitizedError(err)
+		}
 	}
-	if err := closeSession.Close(); err != nil {
-		return c.sanitizedError(err)
+	if c.httpTransport != nil {
+		c.httpTransport.CloseIdleConnections()
 	}
-	return nil
+	return closeErr
 }
 
 func (c *Client) connectLocked(ctx context.Context, discover bool) error {
@@ -428,10 +439,48 @@ func (c *Client) EnsureConnected(ctx context.Context, discover bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if state, err := c.borrowCurrentSession(); err == nil {
-		c.releaseSession(state)
-		return nil
+	for {
+		if state, err := c.borrowCurrentSession(); err == nil {
+			c.releaseSession(state)
+			return nil
+		}
+
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return errors.New("upstream MCP client is closed")
+		}
+		if pending := c.connectPending; pending != nil {
+			done := pending.done
+			c.mu.Unlock()
+			c.reconnectCoalesced.Add(1)
+			select {
+			case <-done:
+				if (errors.Is(pending.err, context.Canceled) || errors.Is(pending.err, context.DeadlineExceeded)) && ctx.Err() == nil {
+					continue
+				}
+				return pending.err
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		pending := &clientConnectAttempt{done: make(chan struct{})}
+		c.connectPending = pending
+		c.mu.Unlock()
+
+		err := c.ensureConnectedAttempt(ctx, discover)
+		c.mu.Lock()
+		pending.err = err
+		if c.connectPending == pending {
+			c.connectPending = nil
+			close(pending.done)
+		}
+		c.mu.Unlock()
+		return err
 	}
+}
+
+func (c *Client) ensureConnectedAttempt(ctx context.Context, discover bool) error {
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
 	if state, err := c.borrowCurrentSession(); err == nil {
@@ -576,10 +625,29 @@ func (c *Client) buildTransport() (transportBuild, error) {
 		if err != nil {
 			return transportBuild{}, err
 		}
-		httpClient := &http.Client{
-			Timeout:   time.Duration(c.cfg.CallTimeoutMS) * time.Millisecond,
-			Transport: &headerTransport{base: http.DefaultTransport, headers: headers},
+		if c.httpTransport == nil {
+			if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
+				transport := defaultTransport.Clone()
+				if transport.MaxIdleConnsPerHost < c.cfg.MaxConcurrency {
+					transport.MaxIdleConnsPerHost = c.cfg.MaxConcurrency
+				}
+				if wanted := c.cfg.MaxConcurrency * 2; transport.MaxIdleConns < wanted {
+					transport.MaxIdleConns = wanted
+				}
+				c.httpTransport = transport
+			}
 		}
+		base := http.RoundTripper(http.DefaultTransport)
+		if c.httpTransport != nil {
+			base = c.httpTransport
+		}
+		// Operation-specific contexts own the effective timeout budget:
+		// startup/tools-list use StartupTimeoutMS, calls use CallTimeoutMS, and
+		// health uses HealthTimeoutMS. Keep a broad client-level ceiling so the
+		// SDK's session-close DELETE cannot hang indefinitely, but never let that
+		// ceiling be shorter than an operation-specific timeout.
+		httpTimeout := time.Duration(max(c.cfg.StartupTimeoutMS, c.cfg.CallTimeoutMS, c.cfg.HealthTimeoutMS)) * time.Millisecond
+		httpClient := &http.Client{Timeout: httpTimeout, Transport: &headerTransport{base: base, headers: headers}}
 		return transportBuild{
 			transport: &mcp.StreamableClientTransport{
 				Endpoint: c.cfg.URL, HTTPClient: httpClient,
@@ -642,6 +710,7 @@ func (c *Client) status(available bool, errorText string) map[string]any {
 		"circuit_rejected": c.circuitRejected.Load(), "breaker_trips": breakerTrips,
 		"consecutive_failures": consecutiveFailures,
 		"health_cache_hits":    c.healthCacheHits.Load(), "health_cache_misses": c.healthCacheMisses.Load(),
+		"reconnect_coalesced": c.reconnectCoalesced.Load(),
 		"health_cache_ttl_ms": c.cfg.HealthCacheMS,
 		"stderr_bytes":        stderrBytes, "stderr_truncated": stderrTruncated,
 	}
