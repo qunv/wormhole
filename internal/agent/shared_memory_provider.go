@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"codebridge/internal/memory"
+	"wormhole/internal/memory"
 )
 
 // synchronizedMemoryProvider serializes calls into a pooled provider. Built-in

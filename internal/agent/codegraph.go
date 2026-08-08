@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/processx"
+	"wormhole/internal/processx"
 )
 
 var (
@@ -97,7 +97,7 @@ func (r *Runtime) codegraphExplore(ctx context.Context, args map[string]any) (an
 	}
 	output, truncated := capText(stdout, maxOutput)
 	if truncated {
-		output += fmt.Sprintf("\n\n[CodeGraph output truncated by Codebridge at %d characters.]", maxOutput)
+		output += fmt.Sprintf("\n\n[CodeGraph output truncated by Wormhole at %d characters.]", maxOutput)
 	}
 	return output, nil
 }

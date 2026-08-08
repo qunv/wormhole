@@ -1,8 +1,8 @@
-# Codebridge architecture
+# Wormhole architecture
 
 ## 1. Design goals
 
-Codebridge uses one binary for both the CLI supervisor and the MCP server. The CLI is responsible only for loading configuration and managing processes and tunnels. Tool business logic is organized into `agent.ToolModule` implementations coordinated by `agent.Runtime`, so foreground servers, background servers, and tests share the same policy, identity, audit, and state pipeline.
+Wormhole uses one binary for both the CLI supervisor and the MCP server. The CLI is responsible only for loading configuration and managing processes and tunnels. Tool business logic is organized into `agent.ToolModule` implementations coordinated by `agent.Runtime`, so foreground servers, background servers, and tests share the same policy, identity, audit, and state pipeline.
 
 Primary goals:
 
@@ -65,7 +65,7 @@ selected agent.Runtime.HandleSession
 
 | Package | Responsibility |
 |---|---|
-| `cmd/codebridge` | Process entrypoint and exit codes |
+| `cmd/wormhole` | Process entrypoint and exit codes |
 | `internal/app` | Version/tier metadata and composition root |
 | `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
 | `internal/workspaceregistry` | Named workspace registry, schema migration, atomic persistence, and daemon fingerprint input |
@@ -128,7 +128,7 @@ memory
 execution
 ```
 
-Database and Figma are intentionally not built-in modules. They use the same configured `mcpServers` path as every other community integration, so Codebridge does not embed SQL drivers, database credentials, or a Figma-specific MCP client.
+Database and Figma are intentionally not built-in modules. They use the same configured `mcpServers` path as every other community integration, so Wormhole does not embed SQL drivers, database credentials, or a Figma-specific MCP client.
 
 Each runtime keeps workspace-local module handlers, health views, policy, audit, and memory-scope behavior. Cross-cutting concerns remain in `Runtime.HandleSession`: exact approvals, audit redaction, and memory observation capture. `CallIdentity` carries both the logical MCP session ID and fixed workspace ID without coupling modules to the MCP SDK. Strict policy derives mutation status from `ToolSpec.ReadOnly`, so newly registered write tools cannot bypass it. Modules can optionally implement `ToolPolicyProvider`; otherwise every external tool with `ReadOnly=false` receives a hashed exact-argument approval action under balanced policy.
 
@@ -218,13 +218,13 @@ browser on this machine
   → owner-only atomic persistence
 ```
 
-The SPA assets and authentication-status/login endpoints remain readable from the loopback-only Admin origin so the sign-in screen can render. A create-only first-account endpoint is also available while `admin-auth.json` does not exist; it uses same-origin CSRF protection and exclusive file creation, then creates the initial bounded browser session. Every other Admin API route requires a valid in-memory session. Session tokens are random, stored only as digests in a bounded process-local map, and delivered in an HttpOnly SameSite cookie. Validation re-reads the persisted credential version, so `codebridge admin set-password` or `reset-password` immediately invalidates all sessions. Failed login attempts use a bounded throttle. There is no browser password change, reset, or recovery endpoint.
+The SPA assets and authentication-status/login endpoints remain readable from the loopback-only Admin origin so the sign-in screen can render. A create-only first-account endpoint is also available while `admin-auth.json` does not exist; it uses same-origin CSRF protection and exclusive file creation, then creates the initial bounded browser session. Every other Admin API route requires a valid in-memory session. Session tokens are random, stored only as digests in a bounded process-local map, and delivered in an HttpOnly SameSite cookie. Validation re-reads the persisted credential version, so `wormhole admin set-password` or `reset-password` immediately invalidates all sessions. Failed login attempts use a bounded throttle. There is no browser password change, reset, or recovery endpoint.
 
 Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by the legacy `runtimeKeyEnv`, named `tunnels.*.runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
 
 The authenticated Admin Operations surface reads bounded runtime/module metrics, router and pooled-resource summaries, exact approval records, and at most a 2 MiB tail of each active workspace's current redacted audit file. Approval decisions call a tokenless `DecideLocal` entrypoint only after the Admin handler has enforced loopback, login, same-origin, and CSRF checks; the MCP operator token is never returned to or accepted from the browser. Audit queries return at most 200 newest matching JSONL records and never read rotated history implicitly.
 
-Configuration Save & Restart launches the current Codebridge executable as a detached hidden lifecycle helper, returns `202 Accepted`, waits briefly for the Admin response to flush, then uses the same owner-identified lifecycle lock and stop/start reconciliation as the CLI. The old listener port is passed separately so changing the configured port cannot orphan the running daemon. Browser sessions are process-local and intentionally require sign-in after replacement.
+Configuration Save & Restart launches the current Wormhole executable as a detached hidden lifecycle helper, returns `202 Accepted`, waits briefly for the Admin response to flush, then uses the same owner-identified lifecycle lock and stop/start reconciliation as the CLI. The old listener port is passed separately so changing the configured port cannot orphan the running daemon. Browser sessions are process-local and intentionally require sign-in after replacement.
 
 Workspace config reads include a bounded provenance view derived from the effective global base, raw override, and merged effective result. It identifies explicit and removed paths, inherited top-level fields, values that exceed the display budget, and a `CompactOverride` preview. Applying the preview changes only the browser editor until the normal revision-safe save occurs.
 
@@ -234,10 +234,10 @@ Named-workspace override writes use the existing schema-versioned format and rej
 
 ### Configuration locations
 
-All persistent Codebridge files use one canonical root on every operating system:
+All persistent Wormhole files use one canonical root on every operating system:
 
 ```text
-~/.codebridge/
+~/.wormhole/
   admin-auth.json
   config.json
   .env
@@ -253,11 +253,11 @@ All persistent Codebridge files use one canonical root on every operating system
     workspaces/<workspace-path-hash>/...
 ```
 
-`CODEBRIDGE_HOME` relocates the entire tree. The older granular overrides remain available: `CODEBRIDGE_CONFIG_PATH` changes the primary config file, `CODEBRIDGE_DATA_DIR` changes the state root, and `CODEBRIDGE_WORKSPACE_REGISTRY_PATH` changes the registry file.
+`WORMHOLE_HOME` relocates the entire tree. The older granular overrides remain available: `WORMHOLE_CONFIG_PATH` changes the primary config file, `WORMHOLE_DATA_DIR` changes the state root, and `WORMHOLE_WORKSPACE_REGISTRY_PATH` changes the registry file.
 
 With the default layout, startup performs a one-time copy migration from the former XDG, Application Support, or AppData locations. Existing canonical files are never overwritten, legacy files are retained, and a completion marker prevents those retained backups from resurrecting canonical files removed after migration. Registry schema version 3 also rewrites default absolute paths from the previous layout while preserving explicitly customized paths.
 
-Workspace-specific command conventions, ignored directories, and profile metadata live in `<workspace>/.codebridge/profile.json`. `<workspace>/.agent/profile.json` remains a compatibility fallback when the canonical profile does not exist.
+Workspace-specific command conventions, ignored directories, and profile metadata live in `<workspace>/.wormhole/profile.json`. `<workspace>/.agent/profile.json` remains a compatibility fallback when the canonical profile does not exist.
 
 ### Secret ownership
 
@@ -322,7 +322,7 @@ The MCP adapter prefixes workspace session IDs with `workspace:<id>:` and places
 
 `SessionRouter` adds conversation-level routing without mutating any runtime. When routed workspaces expose the same tool name with different schemas, the published union contract is conservative, but after binding resolution the router validates arguments again against the exact selected runtime `ToolSpec` before policy and dispatch. `workspace_select` creates a cryptographically random in-memory binding for one enabled runtime. Every routed coding-tool schema requires the returned `workspace_binding`; the router removes it before policy, audit, and handler dispatch, then supplies a runtime session identity derived from a SHA-256 prefix of the token. The raw token is never written to audit, memory, health, or local state. A new selection on the same MCP session invalidates its old binding. Bindings expire after 24 hours of inactivity, are invalidated by `workspace_clear`, and disappear on daemon restart. Resolution checks only the selected token on the hot path; full expiry cleanup runs at most once per minute. Active bindings are capped at 4,096 with least-recently-used eviction at capacity, and a reverse session index makes clear/expiry removal proportional only to sessions attached to that token. Because the binding is explicit on every coding call, two ChatGPT tabs remain isolated even when the client reconnects or reuses one MCP transport.
 
-`workspace start` and `workspace stop` toggle a named registry entry and reconcile the shared daemon. The primary runtime ID is a lowercase ASCII slug derived from the Git root folder, or from the current folder outside Git. A bare `codebridge`, `run`, or `here` invocation registers the Git root only when it differs from the configured primary workspace; `restart` performs the same check before stopping the daemon. Named-workspace IDs receive a stable canonical-path hash suffix on collision. Existing registrations are matched by canonical path and re-enabled instead of duplicated.
+`workspace start` and `workspace stop` toggle a named registry entry and reconcile the shared daemon. The primary runtime ID is a lowercase ASCII slug derived from the Git root folder, or from the current folder outside Git. A bare `wormhole`, `run`, or `here` invocation registers the Git root only when it differs from the configured primary workspace; `restart` performs the same check before stopping the daemon. Named-workspace IDs receive a stable canonical-path hash suffix on collision. Existing registrations are matched by canonical path and re-enabled instead of duplicated.
 
 The supervisor ConfigID includes the registry, every enabled named config, and the secret fingerprints referenced by each runtime, so endpoint, tool, provider, or credential changes cannot silently reuse a stale process. Startup readiness time includes required memory and upstream MCP timeouts from all enabled runtimes.
 
@@ -330,7 +330,7 @@ A named tunnel publishes channel `main` for the session endpoint selected by its
 
 ## 5. HTTP and MCP layers
 
-Codebridge exposes:
+Wormhole exposes:
 
 ```text
 /mcp/session                 per-chat workspace-routing MCP endpoint
@@ -365,11 +365,11 @@ ChatGPT Skill
 ChatGPT orchestration
         │ calls MCP tools
         ▼
-Codebridge
+Wormhole
   capability execution, policy, approvals, confinement, audit, and memory
 ```
 
-Codebridge deliberately does not implement a skill registry. Skills are owned by the client using the MCP server, while Codebridge publishes executable capabilities through `tools/list`. The server therefore does not store skill documents under the workspace, embed skill assets, or expose skill CRUD operations.
+Wormhole deliberately does not implement a skill registry. Skills are owned by the client using the MCP server, while Wormhole publishes executable capabilities through `tools/list`. The server therefore does not store skill documents under the workspace, embed skill assets, or expose skill CRUD operations.
 
 The removed compatibility surface is:
 
@@ -378,12 +378,12 @@ list_skills
 read_skill
 create_skill
 delete_skill
-codebridge skills [list|read]
+wormhole skills [list|read]
 ```
 
-This boundary avoids two competing sources of reusable instructions and keeps the MCP contract focused on capabilities. A ChatGPT Skill may select and sequence Codebridge tools, but it cannot bypass `ToolSpec` policy classification, exact approvals, root confinement, command guards, audit redaction, or memory capture rules.
+This boundary avoids two competing sources of reusable instructions and keeps the MCP contract focused on capabilities. A ChatGPT Skill may select and sequence Wormhole tools, but it cannot bypass `ToolSpec` policy classification, exact approvals, root confinement, command guards, audit redaction, or memory capture rules.
 
-The built-in full contract contains 75 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Codebridge upgrade or profile change that changes `tools/list`.
+The built-in full contract contains 75 tools. Because MCP clients commonly cache tool discovery for the lifetime of a connection, a client must reconnect or refresh after a Wormhole upgrade or profile change that changes `tools/list`.
 
 Downstream tool profiles are built through one immutable contract builder. `full` exposes every globally enabled runtime tool, `fast` preserves its fixed compact allowlist and per-tool output behavior, and persisted custom profiles filter by the union of allowed module groups and exact tools before applying an overriding deny list. Profiles may force `both`, `structured`, or `text` result adaptation and optionally apply Fast-like compact defaults. Global `tools` exposure remains the outer boundary, so a profile cannot restore a denied tool. Custom IDs become stable endpoints under `/mcp/session/profiles/<id>`, `/mcp/profiles/<id>`, and `/mcp/workspaces/<workspace>/profiles/<id>` after restart. Admin previews include deterministic contract hashes and distinguish persisted contracts from the currently active runtime.
 
@@ -563,7 +563,7 @@ The MCP layer derives identity from `ServerSession`:
 mcp:<protocol-session-id>
 ```
 
-Some transports do not assign a protocol ID. In that case, Codebridge hashes the process-local identity of the stable session object:
+Some transports do not assign a protocol ID. In that case, Wormhole hashes the process-local identity of the stable session object:
 
 ```text
 mcp-local:<hash>
@@ -722,7 +722,7 @@ Trade-offs:
 Per-workspace state is stored under:
 
 ```text
-~/.codebridge/state/
+~/.wormhole/state/
   audit.log
   processes.json
   server.log
@@ -749,11 +749,11 @@ Per-workspace state is stored under:
 
 The inner workspace path hash is derived from the canonical primary workspace path. The outer named instance directory prevents state overlap across endpoint identities and supports replacing a registration without mixing the old repository's state with the new root. Memory-provider data is not stored in the local state directory, except for audit records and counters associated with tool calls.
 
-`state.NewAt` computes these paths without creating them. The first owning write materializes only the required parent directory, preventing read-only runtimes and tests from accumulating empty workspace hashes. Agent, MCP-server, and HTTP-server package tests set an isolated `CODEBRIDGE_HOME` through package `TestMain` entry points.
+`state.NewAt` computes these paths without creating them. The first owning write materializes only the required parent directory, preventing read-only runtimes and tests from accumulating empty workspace hashes. Agent, MCP-server, and HTTP-server package tests set an isolated `WORMHOLE_HOME` through package `TestMain` entry points.
 
 State garbage collection distinguishes durable state from regenerable or bounded state. Durable notes, checkpoints, current tasks, decisions, and unknown files are never expired automatically. Repository `index.json` is removed after seven days or immediately when its recorded root no longer exists. Terminal approvals retain their existing 30-day window. Patch backups retain the newest eligible data subject to all three limits: 50 batches, 30 days, and 256 MiB per workspace; one batch may not exceed 128 MiB. Directories not referenced by `patch-history.json` are orphaned and removed.
 
-The daemon performs a startup sweep capped at 100 workspace directories and skips it when another daemon is active. `codebridge state gc --dry-run` scans the primary state root, registered named-workspace data directories, and existing instance roots left by removed registrations without changing files; destructive manual GC requires an offline daemon unless `--force` is explicit. Filesystem-entry scans and reported action lists are bounded, and malformed or unknown state is preserved rather than guessed about.
+The daemon performs a startup sweep capped at 100 workspace directories and skips it when another daemon is active. `wormhole state gc --dry-run` scans the primary state root, registered named-workspace data directories, and existing instance roots left by removed registrations without changing files; destructive manual GC requires an offline daemon unless `--force` is explicit. Filesystem-entry scans and reported action lists are bounded, and malformed or unknown state is preserved rather than guessed about.
 
 ## 10. Security invariants
 
@@ -762,7 +762,7 @@ The daemon performs a startup sweep capped at 100 workspace directories and skip
 3. A configured root cannot be deleted or renamed through dedicated tools or patch operations.
 4. Command `cwd`, including upstream stdio `cwd`, is root-confined, but command execution and community MCP servers are not operating-system sandboxes.
 5. Native upstream commands are executed directly as executable plus argv. On Windows only, `.cmd`/`.bat` launchers use a restricted `cmd.exe` adapter that rejects quote, control, `%`, and `!` expansion characters.
-6. Stdio children do not inherit the complete Codebridge environment. Sensitive values require explicit `envRefs`; sensitive HTTP headers require `headerRefs`.
+6. Stdio children do not inherit the complete Wormhole environment. Sensitive values require explicit `envRefs`; sensitive HTTP headers require `headerRefs`.
 7. Remote upstream HTTP endpoints are blocked unless `allowRemote=true`.
 8. Upstream tool names, counts, metadata, and schemas are bounded; normalization collisions and duplicate tools fail startup.
 9. Raw Git blocks flags that can write arbitrary output, change the worktree, or execute an external program.
@@ -831,7 +831,7 @@ GOOS=darwin GOARCH=arm64 go build ./...
 The version is injected through:
 
 ```text
--X codebridge/internal/app.Version=<version>
+-X wormhole/internal/app.Version=<version>
 ```
 
 The MCP tool contract is a public compatibility surface. Replacing a provider adapter should not change tool names or canonical result fields; breaking contract changes require explicit versioning and migration.

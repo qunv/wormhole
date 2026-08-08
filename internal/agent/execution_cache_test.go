@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestCommandMayMutateWorkspace(t *testing.T) {

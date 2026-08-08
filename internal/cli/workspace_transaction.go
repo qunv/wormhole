@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"os"
 
-	"codebridge/internal/config"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/workspaceregistry"
 )
 
 var (

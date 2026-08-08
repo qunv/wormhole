@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 const maxOverrideProvenanceEntries = 500

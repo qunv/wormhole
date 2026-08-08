@@ -1,6 +1,6 @@
-BINARY := codebridge
+BINARY := wormhole
 VERSION ?= 1.0.0-dev
-LDFLAGS := -s -w -X codebridge/internal/app.Version=$(VERSION)
+LDFLAGS := -s -w -X wormhole/internal/app.Version=$(VERSION)
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 DESTDIR ?=
@@ -14,7 +14,7 @@ all: check build
 
 build:
 	mkdir -p dist
-	go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY) ./cmd/codebridge
+	go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$(BINARY) ./cmd/wormhole
 
 install: build
 	$(INSTALL) -Dm755 dist/$(BINARY) $(DESTDIR)$(BINDIR)/$(BINARY)
@@ -36,7 +36,7 @@ admin-ui-check:
 	cd $(ADMIN_UI_DIR) && $(NPM) ci && $(NPM) run check
 
 run:
-	go run ./cmd/codebridge serve --no-tunnel --port 8132
+	go run ./cmd/wormhole serve --no-tunnel --port 8132
 
 clean:
 	go clean

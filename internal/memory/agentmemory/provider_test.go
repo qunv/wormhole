@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agentmemory
@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/memory"
+	"wormhole/internal/memory"
 )
 
 func TestProviderRESTMapping(t *testing.T) {
@@ -50,13 +50,13 @@ func TestProviderRESTMapping(t *testing.T) {
 		t.Fatalf("health = %#v", health)
 	}
 	if _, err := provider.Search(ctx, memory.SearchRequest{
-		Query: "why streamable HTTP", Project: "git:github.com/acme/codebridge",
+		Query: "why streamable HTTP", Project: "git:github.com/acme/wormhole",
 		CWD: "/repo", AgentID: "chatgpt", Limit: 7, Format: "compact", TokenBudget: 900,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	search := <-requests
-	if search["_path"] != "/agentmemory/search" || search["project"] != "git:github.com/acme/codebridge" || search["agentId"] != "chatgpt" {
+	if search["_path"] != "/agentmemory/search" || search["project"] != "git:github.com/acme/wormhole" || search["agentId"] != "chatgpt" {
 		t.Fatalf("search request = %#v", search)
 	}
 	if _, err := provider.Remember(ctx, memory.RememberRequest{

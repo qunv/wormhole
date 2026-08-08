@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -49,7 +49,7 @@ func testMCPServer() *mcp.Server {
 		value := map[string]any{
 			"message":               args["message"],
 			"explicit_env":          os.Getenv("EXPLICIT_VALUE"),
-			"parent_secret_visible": os.Getenv("CODEBRIDGE_SHOULD_NOT_LEAK") != "",
+			"parent_secret_visible": os.Getenv("WORMHOLE_SHOULD_NOT_LEAK") != "",
 		}
 		raw, _ := json.Marshal(value)
 		return &mcp.CallToolResult{
@@ -67,7 +67,7 @@ func testMCPServer() *mcp.Server {
 }
 
 func TestStdioMCPHelper(t *testing.T) {
-	if os.Getenv("CODEBRIDGE_MCP_HELPER") != "1" {
+	if os.Getenv("WORMHOLE_MCP_HELPER") != "1" {
 		return
 	}
 	session, err := testMCPServer().Connect(context.Background(), &mcp.StdioTransport{}, nil)
@@ -83,13 +83,13 @@ func TestStdioMCPHelper(t *testing.T) {
 }
 
 func TestCommandTransportDiscoversCallsAndIsolatesEnvironment(t *testing.T) {
-	t.Setenv("CODEBRIDGE_SHOULD_NOT_LEAK", "parent-secret")
+	t.Setenv("WORMHOLE_SHOULD_NOT_LEAK", "parent-secret")
 	cfg := config.MCPServerConfig{
 		Transport: "stdio",
 		Command:   os.Args[0],
 		Args:      []string{"-test.run=TestStdioMCPHelper"},
 		Env: map[string]string{
-			"CODEBRIDGE_MCP_HELPER": "1",
+			"WORMHOLE_MCP_HELPER": "1",
 			"EXPLICIT_VALUE":        "visible",
 		},
 		StartupTimeoutMS: 5_000,
@@ -132,7 +132,7 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
 	)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenHeader = r.Header.Get("X-Codebridge-Test")
+		seenHeader = r.Header.Get("X-Wormhole-Test")
 		mcpHandler.ServeHTTP(w, r)
 	})
 	server := httptest.NewServer(handler)
@@ -141,7 +141,7 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 	cfg := config.MCPServerConfig{
 		Transport:        "streamable-http",
 		URL:              server.URL,
-		Headers:          map[string]string{"X-Codebridge-Test": "tenant-a"},
+		Headers:          map[string]string{"X-Wormhole-Test": "tenant-a"},
 		StartupTimeoutMS: 5_000,
 		CallTimeoutMS:    5_000,
 		HealthTimeoutMS:  2_000,
@@ -162,7 +162,7 @@ func TestStreamableHTTPTransportForwardsConfiguredHeaders(t *testing.T) {
 }
 
 func TestRefreshCatalogSwapsSessionAndPersistsLiveContract(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	var exposeExtra atomic.Bool
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server {
@@ -216,7 +216,7 @@ func TestRefreshCatalogSwapsSessionAndPersistsLiveContract(t *testing.T) {
 }
 
 func TestDeferredClientConnectsOnFirstCall(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	var requests atomic.Int64
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return testMCPServer() },
@@ -272,7 +272,7 @@ func TestDeferredClientConnectsOnFirstCall(t *testing.T) {
 
 func TestHealthDiagnosticsDoNotExposeConfiguredSecrets(t *testing.T) {
 	sensitiveValue := "fixture-" + strings.Repeat("x", 24)
-	t.Setenv("CODEBRIDGE_UPSTREAM_TEST_SECRET", sensitiveValue)
+	t.Setenv("WORMHOLE_UPSTREAM_TEST_SECRET", sensitiveValue)
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return testMCPServer() },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
@@ -281,7 +281,7 @@ func TestHealthDiagnosticsDoNotExposeConfiguredSecrets(t *testing.T) {
 	defer server.Close()
 	cfg := config.MCPServerConfig{
 		Transport: "streamable-http", URL: server.URL,
-		HeaderRefs:       map[string]string{"Authorization": "CODEBRIDGE_UPSTREAM_TEST_SECRET"},
+		HeaderRefs:       map[string]string{"Authorization": "WORMHOLE_UPSTREAM_TEST_SECRET"},
 		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000,
 		HealthCacheMS: 5_000, FailureCooldownMS: 100, MaxConcurrency: 2, MaxTools: 10,
 	}
@@ -313,7 +313,7 @@ func TestRemoteHTTPRequiresExplicitOptIn(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	cfg := config.MCPServerConfig{
 		Transport: "stdio", Command: os.Args[0], Args: []string{"-test.run=TestStdioMCPHelper"},
-		Env:              map[string]string{"CODEBRIDGE_MCP_HELPER": "1"},
+		Env:              map[string]string{"WORMHOLE_MCP_HELPER": "1"},
 		StartupTimeoutMS: 5_000, CallTimeoutMS: 5_000, HealthTimeoutMS: 2_000, MaxTools: 10,
 	}
 	client, err := New(context.Background(), "close-test", cfg, "test", t.TempDir())

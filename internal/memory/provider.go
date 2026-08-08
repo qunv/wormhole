@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package memory
@@ -74,7 +74,7 @@ type ObservationRequest struct {
 	Data      any
 }
 
-// Item is Codebridge's provider-neutral representation of a retrieved memory.
+// Item is Wormhole's provider-neutral representation of a retrieved memory.
 // ProviderID preserves the backend identifier without making MCP clients depend
 // on a provider-specific response schema.
 type Item struct {

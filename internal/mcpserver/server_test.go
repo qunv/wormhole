@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestMCPContractAndFilesystemRoundTrip(t *testing.T) {
 	workspace := t.TempDir()
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = workspace, true, "full"
 	runtime, err := agent.New(cfg, "test", "pro", "test-config")
@@ -102,7 +102,7 @@ func TestMCPPropagatesSessionIDToMemoryObservation(t *testing.T) {
 	}))
 	defer memoryServer.Close()
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	cfg.Memory.Enabled = true

@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package workspaceregistry
@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 const CurrentVersion = 3
@@ -56,7 +56,7 @@ func NormalizeID(id string) string {
 }
 
 func Path() string {
-	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("WORMHOLE_WORKSPACE_REGISTRY_PATH")); value != "" {
 		return value
 	}
 	return filepath.Join(config.AppConfigDir(), "workspaces.json")

@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/memory"
-	memoryfactory "codebridge/internal/memory/factory"
-	"codebridge/internal/state"
-	"codebridge/internal/upstreammcp"
+	"wormhole/internal/config"
+	"wormhole/internal/memory"
+	memoryfactory "wormhole/internal/memory/factory"
+	"wormhole/internal/state"
+	"wormhole/internal/upstreammcp"
 )
 
 // SharedServices owns daemon-wide resources that are safe to reuse across

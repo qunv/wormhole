@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 type testToolModule struct {

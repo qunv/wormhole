@@ -1,4 +1,4 @@
-module codebridge
+module wormhole
 
 go 1.25.0
 

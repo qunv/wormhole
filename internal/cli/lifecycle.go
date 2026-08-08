@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -20,12 +20,12 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/assets"
-	"codebridge/internal/config"
-	"codebridge/internal/mcpserver"
-	memoryfactory "codebridge/internal/memory/factory"
-	"codebridge/internal/upstreammcp"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/assets"
+	"wormhole/internal/config"
+	"wormhole/internal/mcpserver"
+	memoryfactory "wormhole/internal/memory/factory"
+	"wormhole/internal/upstreammcp"
+	"wormhole/internal/workspaceregistry"
 
 	"golang.org/x/term"
 )
@@ -82,7 +82,7 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 	health := readHealth(cfg.Port)
 	healthPID, healthIdentity, healthOwned := ownedHealthProcess(state, health, cfg.Port)
 	if health != nil && !healthOwned {
-		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Codebridge process state; refusing to reuse or stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
+		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Wormhole process state; refusing to reuse or stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
 	stateServerValid := state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
 	existingPID := healthPID
@@ -129,7 +129,7 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 		if logOffset >= childLogMaxBytes {
 			logOffset = 0
 		}
-		fmt.Fprintf(a.Stdout, "[server] starting Codebridge for %s\n", cfg.Workspace)
+		fmt.Fprintf(a.Stdout, "[server] starting Wormhole for %s\n", cfg.Workspace)
 		serverCmd, err = a.spawnServer(executable, cfg, configID, identityInputs.RuntimeKeyFingerprint, opts.Background)
 		if err != nil {
 			return err
@@ -257,24 +257,24 @@ func (a App) spawnServer(executable string, cfg config.Config, configID, runtime
 		"MCP_AUTH_TOKEN="+cfg.AuthToken,
 		"AGENT_APPROVAL_TOKEN="+cfg.ApprovalToken,
 		"MCP_ALLOWED_ORIGINS="+strings.Join(cfg.AllowedOrigins, ","),
-		"CODEBRIDGE_MEMORY_ENABLED="+strconv.FormatBool(cfg.Memory.Enabled),
-		"CODEBRIDGE_MEMORY_PROVIDER="+cfg.Memory.Provider,
-		"CODEBRIDGE_MEMORY_ENDPOINT="+cfg.Memory.Endpoint,
-		"CODEBRIDGE_MEMORY_SECRET_ENV="+cfg.Memory.SecretEnv,
-		"CODEBRIDGE_MEMORY_TIMEOUT_MS="+strconv.Itoa(cfg.Memory.TimeoutMS),
-		"CODEBRIDGE_MEMORY_CAPTURE="+cfg.Memory.CaptureMode,
-		"CODEBRIDGE_MEMORY_TOKEN_BUDGET="+strconv.Itoa(cfg.Memory.TokenBudget),
-		"CODEBRIDGE_MEMORY_AGENT_ID="+cfg.Memory.AgentID,
-		"CODEBRIDGE_MEMORY_REQUIRED="+strconv.FormatBool(cfg.Memory.Required),
-		"CODEBRIDGE_MEMORY_PROJECT_STRATEGY="+cfg.Memory.ProjectStrategy,
-		"CODEBRIDGE_MEMORY_QUEUE_SIZE="+strconv.Itoa(cfg.Memory.QueueSize),
-		"CODEBRIDGE_MEMORY_DELIVERY_TIMEOUT_MS="+strconv.Itoa(cfg.Memory.DeliveryTimeoutMS),
-		"CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
-		"CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
-		"CODEBRIDGE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
-		"CODEBRIDGE_MAX_CONCURRENT_TOOL_CALLS="+strconv.Itoa(cfg.MaxConcurrentToolCalls),
-		"CODEBRIDGE_DAEMON_CONFIG_ID="+configID,
-		"CODEBRIDGE_RUNTIME_KEY_FINGERPRINT="+runtimeKeyFingerprint,
+		"WORMHOLE_MEMORY_ENABLED="+strconv.FormatBool(cfg.Memory.Enabled),
+		"WORMHOLE_MEMORY_PROVIDER="+cfg.Memory.Provider,
+		"WORMHOLE_MEMORY_ENDPOINT="+cfg.Memory.Endpoint,
+		"WORMHOLE_MEMORY_SECRET_ENV="+cfg.Memory.SecretEnv,
+		"WORMHOLE_MEMORY_TIMEOUT_MS="+strconv.Itoa(cfg.Memory.TimeoutMS),
+		"WORMHOLE_MEMORY_CAPTURE="+cfg.Memory.CaptureMode,
+		"WORMHOLE_MEMORY_TOKEN_BUDGET="+strconv.Itoa(cfg.Memory.TokenBudget),
+		"WORMHOLE_MEMORY_AGENT_ID="+cfg.Memory.AgentID,
+		"WORMHOLE_MEMORY_REQUIRED="+strconv.FormatBool(cfg.Memory.Required),
+		"WORMHOLE_MEMORY_PROJECT_STRATEGY="+cfg.Memory.ProjectStrategy,
+		"WORMHOLE_MEMORY_QUEUE_SIZE="+strconv.Itoa(cfg.Memory.QueueSize),
+		"WORMHOLE_MEMORY_DELIVERY_TIMEOUT_MS="+strconv.Itoa(cfg.Memory.DeliveryTimeoutMS),
+		"WORMHOLE_MEMORY_RETRY_MAX_ATTEMPTS="+strconv.Itoa(cfg.Memory.RetryMaxAttempts),
+		"WORMHOLE_MEMORY_RETRY_BACKOFF_MS="+strconv.Itoa(cfg.Memory.RetryBackoffMS),
+		"WORMHOLE_MEMORY_HEALTH_CACHE_MS="+strconv.Itoa(cfg.Memory.HealthCacheMS),
+		"WORMHOLE_MAX_CONCURRENT_TOOL_CALLS="+strconv.Itoa(cfg.MaxConcurrentToolCalls),
+		"WORMHOLE_DAEMON_CONFIG_ID="+configID,
+		"WORMHOLE_RUNTIME_KEY_FINGERPRINT="+runtimeKeyFingerprint,
 	)
 	return a.startChild("server", cmd, background)
 }
@@ -354,7 +354,7 @@ func (a App) stopUnlocked(cfg config.Config, _ options) error {
 	healthPID, healthIdentity, healthOwned := ownedHealthProcess(state, health, cfg.Port)
 	serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
 	if health != nil && !healthOwned {
-		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Codebridge process state; refusing to stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
+		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Wormhole process state; refusing to stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
 	if err := a.stopAllTunnels(&state, healthOwned || serverStateValid); err != nil {
 		return err
@@ -483,7 +483,7 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 			}
 			status, _ := modules["mcp_"+name].(map[string]any)
 			available, _ := status["available"].(bool)
-			detail := "not registered; inspect startup warnings and codebridge logs"
+			detail := "not registered; inspect startup warnings and wormhole logs"
 			if status != nil {
 				detail = fmt.Sprintf("transport=%v tools=%v reconnects=%v", status["transport"], status["tool_count"], status["reconnect_count"])
 				if errorText := strings.TrimSpace(fmt.Sprint(status["error"])); errorText != "" && errorText != "<nil>" {
@@ -752,9 +752,9 @@ func (a App) setup(cfg config.Config, opts options) error {
 			}
 		}
 		if len(cfg.Tunnels) > 0 {
-			fmt.Fprintln(a.Stdout, "Runtime keys are stored separately per tunnel. Use Admin Secrets or: codebridge key set --runtime-key-env <NAME>")
+			fmt.Fprintln(a.Stdout, "Runtime keys are stored separately per tunnel. Use Admin Secrets or: wormhole key set --runtime-key-env <NAME>")
 		} else {
-			fmt.Fprintln(a.Stdout, "Runtime key is stored separately. Run: codebridge key set")
+			fmt.Fprintln(a.Stdout, "Runtime key is stored separately. Run: wormhole key set")
 		}
 	}
 
@@ -868,7 +868,7 @@ func (a App) setup(cfg config.Config, opts options) error {
 	if memorySecret != "" || clearMemorySecret {
 		fmt.Fprintf(a.Stdout, "Updated memory secret: %s\n", config.DotEnvPath())
 	}
-	fmt.Fprintln(a.Stdout, "Run: codebridge restart")
+	fmt.Fprintln(a.Stdout, "Run: wormhole restart")
 	return nil
 }
 
@@ -893,16 +893,16 @@ func saveMemorySecret(cfg config.Config, previousSecretEnv, secret string, clear
 	}
 
 	cleaned := config.RemoveDotEnvKeys(string(existing),
-		"CODEBRIDGE_MEMORY_ENABLED",
-		"CODEBRIDGE_MEMORY_PROVIDER",
-		"CODEBRIDGE_MEMORY_ENDPOINT",
-		"CODEBRIDGE_MEMORY_SECRET_ENV",
-		"CODEBRIDGE_MEMORY_TIMEOUT_MS",
-		"CODEBRIDGE_MEMORY_CAPTURE",
-		"CODEBRIDGE_MEMORY_TOKEN_BUDGET",
-		"CODEBRIDGE_MEMORY_AGENT_ID",
-		"CODEBRIDGE_MEMORY_REQUIRED",
-		"CODEBRIDGE_MEMORY_PROJECT_STRATEGY",
+		"WORMHOLE_MEMORY_ENABLED",
+		"WORMHOLE_MEMORY_PROVIDER",
+		"WORMHOLE_MEMORY_ENDPOINT",
+		"WORMHOLE_MEMORY_SECRET_ENV",
+		"WORMHOLE_MEMORY_TIMEOUT_MS",
+		"WORMHOLE_MEMORY_CAPTURE",
+		"WORMHOLE_MEMORY_TOKEN_BUDGET",
+		"WORMHOLE_MEMORY_AGENT_ID",
+		"WORMHOLE_MEMORY_REQUIRED",
+		"WORMHOLE_MEMORY_PROJECT_STRATEGY",
 	)
 	if previousSecretEnv != "" && previousSecretEnv != cfg.Memory.SecretEnv {
 		cleaned = config.RemoveDotEnvKeys(cleaned, previousSecretEnv)
@@ -932,10 +932,10 @@ func (a App) installCLI() error {
 	}
 	home, _ := os.UserHomeDir()
 	binDir := filepath.Join(home, ".local", "bin")
-	name := "codebridge"
+	name := "wormhole"
 	if runtime.GOOS == "windows" {
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			binDir = filepath.Join(local, "Codebridge", "bin")
+			binDir = filepath.Join(local, "Wormhole", "bin")
 		}
 		name += ".exe"
 	}
@@ -1139,7 +1139,7 @@ func captureChildProcessIdentity(pid int, label string, timeout time.Duration) (
 	var previous string
 	var lastErr error
 	for {
-		if processLooksLikeCodebridgeChild(pid, label) {
+		if processLooksLikeWormholeChild(pid, label) {
 			identity, err := processIdentity(pid)
 			if err == nil {
 				if identity == previous && identity != "" {
@@ -1150,7 +1150,7 @@ func captureChildProcessIdentity(pid int, label string, timeout time.Duration) (
 				lastErr = err
 			}
 		} else {
-			lastErr = fmt.Errorf("process %d is not a Codebridge %s child", pid, label)
+			lastErr = fmt.Errorf("process %d is not a Wormhole %s child", pid, label)
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -1163,7 +1163,7 @@ func captureChildProcessIdentity(pid int, label string, timeout time.Duration) (
 	return "", lastErr
 }
 
-func codebridgeChildInvocation(executable string, args []string, label string) bool {
+func wormholeChildInvocation(executable string, args []string, label string) bool {
 	if !validChildLabel(label) || len(args) < 6 {
 		return false
 	}
@@ -1173,7 +1173,7 @@ func codebridgeChildInvocation(executable string, args []string, label string) b
 	return args[1] == "__child" && args[2] == label && filepath.Clean(args[3]) == filepath.Clean(childLogPath(label))
 }
 
-func codebridgeChildCommandLine(executable, commandLine, label string) bool {
+func wormholeChildCommandLine(executable, commandLine, label string) bool {
 	if !validChildLabel(label) || !sameProcessExecutable(executable) {
 		return false
 	}

@@ -1,18 +1,18 @@
 #!/bin/sh
-# Codebridge
+# Wormhole
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 set -eu
 
-REPOSITORY="qunv/codebridge"
+REPOSITORY="qunv/wormhole"
 DEFAULT_VERSION="v1.0.1"
-VERSION="${CODEBRIDGE_VERSION:-$DEFAULT_VERSION}"
-INSTALL_DIR="${CODEBRIDGE_INSTALL_DIR:-$HOME/.local/bin}"
-DOWNLOAD_BASE_URL="${CODEBRIDGE_DOWNLOAD_BASE_URL:-}"
+VERSION="${WORMHOLE_VERSION:-$DEFAULT_VERSION}"
+INSTALL_DIR="${WORMHOLE_INSTALL_DIR:-$HOME/.local/bin}"
+DOWNLOAD_BASE_URL="${WORMHOLE_DOWNLOAD_BASE_URL:-}"
 
 usage() {
     cat <<'EOF'
-Install Codebridge from a GitHub release.
+Install Wormhole from a GitHub release.
 
 Usage:
   install.sh [--version VERSION] [--install-dir DIRECTORY]
@@ -23,9 +23,9 @@ Options:
   -h, --help              Show this help message
 
 Environment variables:
-  CODEBRIDGE_VERSION            Release tag to install
-  CODEBRIDGE_INSTALL_DIR        Installation directory
-  CODEBRIDGE_DOWNLOAD_BASE_URL  Override the release asset base URL
+  WORMHOLE_VERSION            Release tag to install
+  WORMHOLE_INSTALL_DIR        Installation directory
+  WORMHOLE_DOWNLOAD_BASE_URL  Override the release asset base URL
 
 Download behavior:
   Uses an authenticated GitHub CLI session when available, which is required
@@ -34,7 +34,7 @@ EOF
 }
 
 fail() {
-    printf 'codebridge installer: %s\n' "$1" >&2
+    printf 'wormhole installer: %s\n' "$1" >&2
     exit 1
 }
 
@@ -71,7 +71,7 @@ download_asset() {
         return
     fi
     curl -fsSL "${DOWNLOAD_BASE_URL}/${asset}" -o "$TMP_DIR/$asset" ||
-        fail "download failed; authenticate GitHub CLI for a private repository or set CODEBRIDGE_DOWNLOAD_BASE_URL"
+        fail "download failed; authenticate GitHub CLI for a private repository or set WORMHOLE_DOWNLOAD_BASE_URL"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -119,7 +119,7 @@ case "$(uname -m)" in
 esac
 
 RELEASE_VERSION="${VERSION#v}"
-ARCHIVE="codebridge_${RELEASE_VERSION}_${OS}_${ARCH}.tar.gz"
+ARCHIVE="wormhole_${RELEASE_VERSION}_${OS}_${ARCH}.tar.gz"
 
 USE_GH="false"
 if [ -z "$DOWNLOAD_BASE_URL" ] && github_cli_authenticated; then
@@ -134,7 +134,7 @@ fi
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
-printf 'Downloading Codebridge %s for %s/%s...\n' "$VERSION" "$OS" "$ARCH"
+printf 'Downloading Wormhole %s for %s/%s...\n' "$VERSION" "$OS" "$ARCH"
 download_asset "$ARCHIVE"
 download_asset "checksums.txt"
 
@@ -146,19 +146,19 @@ ACTUAL_CHECKSUM="$(sha256_file "$TMP_DIR/$ARCHIVE")"
 
 printf 'Checksum verified.\n'
 tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
-[ -f "$TMP_DIR/codebridge" ] || fail "release archive does not contain codebridge"
+[ -f "$TMP_DIR/wormhole" ] || fail "release archive does not contain wormhole"
 
 mkdir -p "$INSTALL_DIR"
-cp "$TMP_DIR/codebridge" "$INSTALL_DIR/codebridge"
-chmod 755 "$INSTALL_DIR/codebridge"
+cp "$TMP_DIR/wormhole" "$INSTALL_DIR/wormhole"
+chmod 755 "$INSTALL_DIR/wormhole"
 
-printf 'Installed Codebridge to %s/codebridge\n' "$INSTALL_DIR"
-"$INSTALL_DIR/codebridge" --version
+printf 'Installed Wormhole to %s/wormhole\n' "$INSTALL_DIR"
+"$INSTALL_DIR/wormhole" --version
 
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        printf '\nAdd Codebridge to PATH by placing this line in your shell profile:\n'
+        printf '\nAdd Wormhole to PATH by placing this line in your shell profile:\n'
         printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
         ;;
 esac

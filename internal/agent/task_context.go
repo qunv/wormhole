@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -78,7 +78,7 @@ func (r *Runtime) taskContext(ctx context.Context, args map[string]any) (any, er
 			warnings = append(warnings, "codegraph: "+graphErr.Error())
 		} else {
 			result["codegraph"] = value
-			if text, ok := value.(string); ok && strings.Contains(text, "truncated by Codebridge") {
+			if text, ok := value.(string); ok && strings.Contains(text, "truncated by Wormhole") {
 				truncated = true
 			}
 		}

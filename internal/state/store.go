@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package state
@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 type Store struct {

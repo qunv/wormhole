@@ -262,5 +262,5 @@ export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?:
 }
 
 export function LoadingPage() {
-  return <div className="loading-page"><LoaderCircle size={30} className="spin" /><span>Loading Codebridge configuration…</span></div>;
+  return <div className="loading-page"><LoaderCircle size={30} className="spin" /><span>Loading Wormhole configuration…</span></div>;
 }

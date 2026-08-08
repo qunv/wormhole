@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -26,19 +26,19 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/adminauth"
-	"codebridge/internal/adminui"
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
-	"codebridge/internal/mcpserver"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/adminauth"
+	"wormhole/internal/adminui"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
+	"wormhole/internal/mcpserver"
+	"wormhole/internal/workspaceregistry"
 )
 
 const (
 	basePath          = "/admin"
 	apiPrefix         = "/admin/api/v1"
-	csrfCookieName    = "codebridge_admin_csrf"
-	sessionCookieName = "codebridge_admin_session"
+	csrfCookieName    = "wormhole_admin_csrf"
+	sessionCookieName = "wormhole_admin_session"
 	maxJSONBody       = 2 << 20
 	maxSecretBody     = 128 << 10
 	maxAuthBody       = 8 << 10
@@ -107,7 +107,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				h.sendError(writer, http.StatusForbidden, "origin_rejected", "A same-origin request is required.")
 				return
 			}
-			provided := strings.TrimSpace(request.Header.Get("X-Codebridge-CSRF"))
+			provided := strings.TrimSpace(request.Header.Get("X-Wormhole-CSRF"))
 			if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(csrf)) != 1 {
 				h.sendError(writer, http.StatusForbidden, "csrf_rejected", "The CSRF token is missing or invalid.")
 				return
@@ -146,7 +146,7 @@ func (h *Handler) authStatus(writer http.ResponseWriter, request *http.Request) 
 	token := h.sessionToken(request)
 	configured, authenticated, username, err := h.auth.Status(token)
 	if err != nil {
-		h.sendError(writer, http.StatusInternalServerError, "admin_auth_read_failed", "Unable to read the local admin credential file. Reset it with the Codebridge CLI.")
+		h.sendError(writer, http.StatusInternalServerError, "admin_auth_read_failed", "Unable to read the local admin credential file. Reset it with the Wormhole CLI.")
 		return
 	}
 	h.sendJSON(writer, http.StatusOK, map[string]any{
@@ -260,7 +260,7 @@ func (h *Handler) requireAuthentication(writer http.ResponseWriter, request *htt
 	}
 	configured, authenticated, _, err := h.auth.Status(h.sessionToken(request))
 	if err != nil {
-		h.sendError(writer, http.StatusInternalServerError, "admin_auth_read_failed", "Unable to read the local admin credential file. Reset it with the Codebridge CLI.")
+		h.sendError(writer, http.StatusInternalServerError, "admin_auth_read_failed", "Unable to read the local admin credential file. Reset it with the Wormhole CLI.")
 		return false
 	}
 	if !configured {
@@ -348,7 +348,7 @@ func (h *Handler) getBootstrap(writer http.ResponseWriter) {
 	}
 	sort.Strings(ids)
 	h.sendJSON(writer, http.StatusOK, map[string]any{
-		"name": "Codebridge", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
+		"name": "Wormhole", "version": h.Runtime.Version, "tier": h.Runtime.Tier,
 		"activeConfigId": h.Runtime.ConfigID, "workspaceId": h.Runtime.WorkspaceID,
 		"activeWorkspaceIds": ids, "configPath": config.ConfigPath(),
 		"homePath": config.AppHomeDir(), "restartRequiredAfterSave": true,
@@ -920,7 +920,7 @@ func (h *Handler) secret(writer http.ResponseWriter, request *http.Request, rawN
 		}
 		if !managed {
 			h.mu.Unlock()
-			h.sendError(writer, http.StatusConflict, "secret_not_managed", "This value comes from the process environment and cannot be deleted from Codebridge .env.")
+			h.sendError(writer, http.StatusConflict, "secret_not_managed", "This value comes from the process environment and cannot be deleted from Wormhole .env.")
 			return
 		}
 		err = config.UpdateDotEnv(config.DotEnvPath(), map[string]*string{name: nil})
@@ -1099,7 +1099,7 @@ func sameOrigin(request *http.Request) bool {
 func fileRevision(filename string) (string, error) {
 	raw, err := os.ReadFile(filename)
 	if errors.Is(err, os.ErrNotExist) {
-		raw = []byte("codebridge:missing-file")
+		raw = []byte("wormhole:missing-file")
 	} else if err != nil {
 		return "", err
 	}

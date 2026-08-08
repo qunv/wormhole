@@ -10,12 +10,12 @@ import (
 )
 
 func TestExternalStreamableHTTP(t *testing.T) {
-	endpoint := os.Getenv("CODEBRIDGE_TEST_ENDPOINT")
+	endpoint := os.Getenv("WORMHOLE_TEST_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("set CODEBRIDGE_TEST_ENDPOINT to run the external transport smoke test")
+		t.Skip("set WORMHOLE_TEST_ENDPOINT to run the external transport smoke test")
 	}
 	ctx := context.Background()
-	client := mcp.NewClient(&mcp.Implementation{Name: "codebridge-smoke", Version: "1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-smoke", Version: "1"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint: endpoint, DisableStandaloneSSE: true, MaxRetries: -1,
 	}, nil)

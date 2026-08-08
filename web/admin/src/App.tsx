@@ -58,7 +58,7 @@ export default function App() {
   });
   const [page, setPage] = useState<Page>(pageFromHash);
   const [collapsed, setCollapsed] = useState(false);
-  const [dark, setDark] = useState(() => localStorage.getItem("codebridge-theme") !== "light");
+  const [dark, setDark] = useState(() => localStorage.getItem("wormhole-theme") !== "light");
 
   const logout = useMutation({
     mutationFn: api.logout,
@@ -70,7 +70,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
-    localStorage.setItem("codebridge-theme", dark ? "dark" : "light");
+    localStorage.setItem("wormhole-theme", dark ? "dark" : "light");
   }, [dark]);
   useEffect(() => {
     const syncPage = () => setPage(pageFromHash());
@@ -97,7 +97,7 @@ export default function App() {
       <div className="auth-state-icon danger"><LockKeyhole size={25} /></div>
       <span className="auth-eyebrow">Admin authentication</span>
       <h1>Unable to check login status</h1>
-      <p>{errorMessage(auth.error) || "The local Codebridge daemon did not return an authentication status."}</p>
+      <p>{errorMessage(auth.error) || "The local Wormhole daemon did not return an authentication status."}</p>
       <Button onClick={() => void auth.refetch()}>Retry</Button>
     </AuthFrame>;
   }
@@ -123,7 +123,7 @@ export default function App() {
 
   return <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
     <aside className="sidebar">
-      <div className="brand"><span className="brand-mark"><Code2 size={22} /></span><span className="brand-copy"><strong>Codebridge</strong><small>Admin Console</small></span></div>
+      <div className="brand"><span className="brand-mark"><Code2 size={22} /></span><span className="brand-copy"><strong>Wormhole</strong><small>Admin Console</small></span></div>
       <nav className="main-nav">{nav.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => navigatePage(item.id)} title={collapsed ? item.label : undefined}>{item.icon}<span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}</nav>
       <div className="sidebar-footer">
         <div className="daemon-chip"><span className="status-dot" /><Boxes size={16} /><span><strong>Local daemon</strong><small>{bootstrap.data ? `v${bootstrap.data.version}` : "Connecting…"}</small></span></div>
@@ -132,7 +132,7 @@ export default function App() {
     </aside>
     <main className="main-area">
       <div className="topbar">
-        <div className="crumb"><span>Codebridge</span><i>/</i><strong>{nav.find((item) => item.id === page)?.label}</strong></div>
+        <div className="crumb"><span>Wormhole</span><i>/</i><strong>{nav.find((item) => item.id === page)?.label}</strong></div>
         <div className="topbar-actions">
           <span className="admin-session"><UserRound size={15} /><span>{auth.data.username}</span></span>
           <button className="theme-button" onClick={() => setDark(!dark)} aria-label="Toggle color theme">{dark ? <Sun size={17} /> : <Moon size={17} />}</button>
@@ -188,7 +188,7 @@ function LoginScreen({ status, dark, onToggleTheme, onLoggedIn }: {
   return <AuthFrame dark={dark} onToggleTheme={onToggleTheme}>
     <div className="auth-state-icon"><LockKeyhole size={25} /></div>
     <span className="auth-eyebrow">Local admin account</span>
-    <h1>Sign in to Codebridge</h1>
+    <h1>Sign in to Wormhole</h1>
     <p>The Admin API is protected by a local account and an HttpOnly browser session.</p>
     {login.error && <Notice tone="danger">{errorMessage(login.error)}</Notice>}
     <form className="auth-form" onSubmit={submit}>
@@ -202,7 +202,7 @@ function LoginScreen({ status, dark, onToggleTheme, onLoggedIn }: {
       </label>
       <Button type="submit" loading={login.isPending} disabled={!username.trim() || !password}><LogIn size={15} /> Sign in</Button>
     </form>
-    <div className="auth-cli-note"><Terminal size={17} /><div><strong>Forgot the password?</strong><span>Reset it only from the local terminal:</span><code>codebridge admin reset-password {status.username || "admin"}</code></div></div>
+    <div className="auth-cli-note"><Terminal size={17} /><div><strong>Forgot the password?</strong><span>Reset it only from the local terminal:</span><code>wormhole admin reset-password {status.username || "admin"}</code></div></div>
   </AuthFrame>;
 }
 
@@ -254,7 +254,7 @@ function SetupRequired({ status, dark, onToggleTheme, onConfigured }: {
       <Button type="submit" loading={setup.isPending} disabled={!valid}><ShieldCheck size={15} /> Create account and continue</Button>
     </form>
     <p className="auth-path">Credential file: <code>{status.credentialPath}</code></p>
-    <div className="auth-cli-note"><Terminal size={17} /><div><strong>Prefer the terminal?</strong><span>You can still create the first account locally:</span><code>codebridge admin set-password {username.trim() || "admin"}</code></div></div>
+    <div className="auth-cli-note"><Terminal size={17} /><div><strong>Prefer the terminal?</strong><span>You can still create the first account locally:</span><code>wormhole admin set-password {username.trim() || "admin"}</code></div></div>
   </AuthFrame>;
 }
 
@@ -262,7 +262,7 @@ function AuthFrame({ children, dark, onToggleTheme }: { children: ReactNode; dar
   return <main className="auth-page">
     <button className="auth-theme-button" onClick={onToggleTheme} aria-label="Toggle color theme">{dark ? <Sun size={17} /> : <Moon size={17} />}</button>
     <section className="auth-card">
-      <div className="auth-brand"><span className="brand-mark"><Code2 size={22} /></span><span><strong>Codebridge</strong><small>Admin Console</small></span></div>
+      <div className="auth-brand"><span className="brand-mark"><Code2 size={22} /></span><span><strong>Wormhole</strong><small>Admin Console</small></span></div>
       <div className="auth-content">{children}</div>
     </section>
   </main>;

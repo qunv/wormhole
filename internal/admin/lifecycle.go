@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -16,7 +16,7 @@ const adminRestartCooldown = 30 * time.Second
 
 func (h *Handler) restartLifecycle(writer http.ResponseWriter) {
 	if h.Runtime == nil {
-		h.sendError(writer, http.StatusServiceUnavailable, "restart_unavailable", "The active Codebridge runtime is unavailable.")
+		h.sendError(writer, http.StatusServiceUnavailable, "restart_unavailable", "The active Wormhole runtime is unavailable.")
 		return
 	}
 	h.lifecycleMu.Lock()
@@ -41,7 +41,7 @@ func (h *Handler) restartLifecycle(writer http.ResponseWriter) {
 	h.sendJSON(writer, http.StatusAccepted, map[string]any{
 		"accepted": true, "alreadyPending": false,
 		"retryAfterMs": 1_000, "activeConfigId": h.Runtime.ConfigID,
-		"message": "Restart scheduled. This Admin session will end when the daemon stops; reconnect after Codebridge becomes healthy again.",
+		"message": "Restart scheduled. This Admin session will end when the daemon stops; reconnect after Wormhole becomes healthy again.",
 	})
 }
 
@@ -51,7 +51,7 @@ func scheduleAdminRestart(oldPort int) error {
 		return err
 	}
 	cmd := exec.Command(executable, "__admin-restart-helper")
-	cmd.Env = append(os.Environ(), "CODEBRIDGE_ADMIN_OLD_PORT="+strconv.Itoa(oldPort))
+	cmd.Env = append(os.Environ(), "WORMHOLE_ADMIN_OLD_PORT="+strconv.Itoa(oldPort))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	prepareAdminRestart(cmd)
 	if err := cmd.Start(); err != nil {

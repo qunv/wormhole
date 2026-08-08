@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/workspaceregistry"
 )
 
 func TestWorkspaceAddCreatesSharedDaemonEndpoint(t *testing.T) {
@@ -180,7 +180,7 @@ func TestNamedWorkspaceInheritsLaterGlobalChanges(t *testing.T) {
 
 func TestDaemonConfigIDChangesWithWorkspaceRegistry(t *testing.T) {
 	configureWorkspaceTestPaths(t)
-	binary := filepath.Join(t.TempDir(), "codebridge")
+	binary := filepath.Join(t.TempDir(), "wormhole")
 	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestDaemonConfigIDChangesWithWorkspaceRegistry(t *testing.T) {
 
 func TestDaemonConfigIDChangesWithNamedWorkspaceSecret(t *testing.T) {
 	configureWorkspaceTestPaths(t)
-	binary := filepath.Join(t.TempDir(), "codebridge")
+	binary := filepath.Join(t.TempDir(), "wormhole")
 	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestDaemonConfigIDChangesWithNamedWorkspaceSecret(t *testing.T) {
 
 func TestServeConfigIDUsesSupervisorValueWithoutRecomputing(t *testing.T) {
 	configureWorkspaceTestPaths(t)
-	t.Setenv("CODEBRIDGE_DAEMON_CONFIG_ID", "supervisor-config-id")
+	t.Setenv("WORMHOLE_DAEMON_CONFIG_ID", "supervisor-config-id")
 	if err := os.MkdirAll(filepath.Dir(workspaceregistry.Path()), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestServeConfigIDUsesSupervisorValueWithoutRecomputing(t *testing.T) {
 
 func TestDaemonConfigIDChangesWithRuntimeKeyFingerprint(t *testing.T) {
 	configureWorkspaceTestPaths(t)
-	binary := filepath.Join(t.TempDir(), "codebridge")
+	binary := filepath.Join(t.TempDir(), "wormhole")
 	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +565,7 @@ func TestWorkspaceHealthMap(t *testing.T) {
 func configureWorkspaceTestPaths(t *testing.T) {
 	t.Helper()
 	base := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", base)
+	t.Setenv("WORMHOLE_HOME", base)
 	switch runtime.GOOS {
 	case "windows":
 		t.Setenv("APPDATA", filepath.Join(base, "config"))
@@ -574,9 +574,9 @@ func configureWorkspaceTestPaths(t *testing.T) {
 	default:
 		t.Setenv("XDG_CONFIG_HOME", filepath.Join(base, "config"))
 	}
-	t.Setenv("CODEBRIDGE_DATA_DIR", filepath.Join(base, "data"))
-	t.Setenv("CODEBRIDGE_CONFIG_PATH", filepath.Join(base, "default", "config.json"))
-	t.Setenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry", "workspaces.json"))
+	t.Setenv("WORMHOLE_DATA_DIR", filepath.Join(base, "data"))
+	t.Setenv("WORMHOLE_CONFIG_PATH", filepath.Join(base, "default", "config.json"))
+	t.Setenv("WORMHOLE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry", "workspaces.json"))
 }
 
 func reserveAvailablePort(t *testing.T) int {

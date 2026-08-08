@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-func TestCodebridgeHomeOverrideUnifiesPaths(t *testing.T) {
-	base := filepath.Join(t.TempDir(), "custom-codebridge")
-	t.Setenv("CODEBRIDGE_HOME", base)
+func TestWormholeHomeOverrideUnifiesPaths(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "custom-wormhole")
+	t.Setenv("WORMHOLE_HOME", base)
 	if got := AppHomeDir(); got != base {
 		t.Fatalf("AppHomeDir() = %q, want %q", got, base)
 	}
@@ -96,8 +96,8 @@ func TestLoadFileMigratesLegacyDefaultAssetPaths(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
 	configureLegacyLayoutTestEnvironment(t, home, base)
-	newHome := filepath.Join(base, "new-codebridge")
-	t.Setenv("CODEBRIDGE_HOME", newHome)
+	newHome := filepath.Join(base, "new-wormhole")
+	t.Setenv("WORMHOLE_HOME", newHome)
 
 	path := filepath.Join(base, "config.json")
 	legacyProfileDir := filepath.Join(LegacyDataDir(), "profiles")
@@ -120,7 +120,7 @@ func TestLoadFileMigratesLegacyDefaultAssetPaths(t *testing.T) {
 
 func configureLegacyLayoutTestEnvironment(t *testing.T, home, base string) {
 	t.Helper()
-	for _, name := range []string{"CODEBRIDGE_HOME", "CODEBRIDGE_CONFIG_PATH", "CODEBRIDGE_DATA_DIR", "CODEBRIDGE_WORKSPACE_REGISTRY_PATH"} {
+	for _, name := range []string{"WORMHOLE_HOME", "WORMHOLE_CONFIG_PATH", "WORMHOLE_DATA_DIR", "WORMHOLE_WORKSPACE_REGISTRY_PATH"} {
 		t.Setenv(name, "")
 	}
 	switch runtime.GOOS {
@@ -182,7 +182,7 @@ func TestValidateRequiresAuthForNonLoopbackHost(t *testing.T) {
 
 func TestSaveDoesNotPersistSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("CODEBRIDGE_CONFIG_PATH", path)
+	t.Setenv("WORMHOLE_CONFIG_PATH", path)
 	cfg := Default()
 	cfg.Workspace = t.TempDir()
 	cfg.AuthToken = strings.Repeat("a", 16)
@@ -208,13 +208,13 @@ func TestDotEnvMergePreservesUnrelatedLines(t *testing.T) {
 
 func TestRemoveDotEnvKeysPreservesCommentsAndOtherValues(t *testing.T) {
 	value := RemoveDotEnvKeys(
-		"A=1\n# keep\nCODEBRIDGE_MEMORY_ENABLED=true\nCODEBRIDGE_MEMORY_PROVIDER=agentmemory\nCODEBRIDGE_MEMORY_SECRET=secret\n",
-		"CODEBRIDGE_MEMORY_ENABLED", "CODEBRIDGE_MEMORY_PROVIDER",
+		"A=1\n# keep\nWORMHOLE_MEMORY_ENABLED=true\nWORMHOLE_MEMORY_PROVIDER=agentmemory\nWORMHOLE_MEMORY_SECRET=secret\n",
+		"WORMHOLE_MEMORY_ENABLED", "WORMHOLE_MEMORY_PROVIDER",
 	)
-	if strings.Contains(value, "CODEBRIDGE_MEMORY_ENABLED") || strings.Contains(value, "CODEBRIDGE_MEMORY_PROVIDER") {
+	if strings.Contains(value, "WORMHOLE_MEMORY_ENABLED") || strings.Contains(value, "WORMHOLE_MEMORY_PROVIDER") {
 		t.Fatalf("memory config keys were not removed: %q", value)
 	}
-	for _, want := range []string{"A=1", "# keep", "CODEBRIDGE_MEMORY_SECRET=secret"} {
+	for _, want := range []string{"A=1", "# keep", "WORMHOLE_MEMORY_SECRET=secret"} {
 		if !strings.Contains(value, want) {
 			t.Fatalf("removed unrelated value %q from %q", want, value)
 		}
@@ -222,7 +222,7 @@ func TestRemoveDotEnvKeysPreservesCommentsAndOtherValues(t *testing.T) {
 }
 
 func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "codebridge")
+	binary := filepath.Join(t.TempDir(), "wormhole")
 	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
 	if got := cfg.ConfigID(binary, []byte("widget")); got == base {
 		t.Fatal("ConfigID did not change when memory agent ID changed")
 	}
-	cfg.Memory.AgentID = "chatgpt-codebridge"
+	cfg.Memory.AgentID = "chatgpt-wormhole"
 
 	t.Setenv(cfg.Memory.SecretEnv, "first-secret")
 	first := cfg.ConfigID(binary, []byte("widget"))
@@ -247,7 +247,7 @@ func TestConfigIDIncludesMemorySettingsAndSecretFingerprint(t *testing.T) {
 }
 
 func TestConfigIDIncludesEffectiveSecurityLimitsAndTunnelIdentity(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "codebridge")
+	binary := filepath.Join(t.TempDir(), "wormhole")
 	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestEffectiveTunnelsSupportsLegacyAndNamedConfigurations(t *testing.T) {
 	if len(all) != 3 || all[0].Name != "fast" || all[1].Name != "full" || all[2].Name != "off" {
 		t.Fatalf("named tunnels are not stable and sorted: %#v", all)
 	}
-	if all[0].Config.Profile != "codebridge-fast" || all[1].Config.RuntimeKeyEnv != "CONTROL_PLANE_API_KEY" {
+	if all[0].Config.Profile != "wormhole-fast" || all[1].Config.RuntimeKeyEnv != "CONTROL_PLANE_API_KEY" {
 		t.Fatalf("named tunnel defaults were not applied: %#v", all)
 	}
 	enabled := named.EnabledTunnels()
@@ -437,7 +437,7 @@ func TestValidateTreatsImplicitYamlProfileNamesAsDuplicates(t *testing.T) {
 }
 
 func TestTunnelLogPathForConfinesInvalidStateNames(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	path := TunnelLogPathFor("../../outside")
 	if filepath.Dir(path) != AppDataDir() || strings.Contains(filepath.Base(path), "..") {
 		t.Fatalf("invalid tunnel name escaped log directory: %s", path)
@@ -449,7 +449,7 @@ func TestTunnelLogPathForConfinesInvalidStateNames(t *testing.T) {
 
 func TestLegacyIntegrationFieldsAreDroppedOnSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("CODEBRIDGE_CONFIG_PATH", path)
+	t.Setenv("WORMHOLE_CONFIG_PATH", path)
 	legacy := `{
   "workspace": ".",
   "database": {"enabled": true, "connections": {"db.legacy": {}}},

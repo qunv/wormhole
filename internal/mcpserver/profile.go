@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package mcpserver
@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 )
 
 type ProfileDefinition struct {

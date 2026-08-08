@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestWorkspaceRuntimesIsolateStateAndAuditIdentity(t *testing.T) {

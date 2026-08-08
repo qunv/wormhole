@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/memory"
+	"wormhole/internal/config"
+	"wormhole/internal/memory"
 )
 
 func TestMemoryForgetRequiresApproval(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "balanced"
 	runtime, err := New(cfg, "test", "pro", "test-config")
@@ -50,7 +50,7 @@ func TestSelectedMemoryCaptureRedactsWriteContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	cfg.Memory.Enabled = true
@@ -86,7 +86,7 @@ func TestSelectedMemoryCaptureRedactsWriteContent(t *testing.T) {
 }
 
 func TestPathHashMemoryScopeUsesConfiguredOwningRoot(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "internal", "memory"), 0o755); err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestMemoryCommitBuildsSessionHandoffFromLocalState(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	cfg.Memory.Enabled = true
@@ -249,7 +249,7 @@ func TestMemoryProviderAvailabilityHonorsRequiredFlag(t *testing.T) {
 	}
 
 	t.Run("optional", func(t *testing.T) {
-		t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+		t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 		runtime, err := New(newConfig(false), "test", "pro", "optional")
 		if err != nil {
 			t.Fatalf("optional unavailable memory blocked startup: %v", err)
@@ -258,7 +258,7 @@ func TestMemoryProviderAvailabilityHonorsRequiredFlag(t *testing.T) {
 	})
 
 	t.Run("required", func(t *testing.T) {
-		t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+		t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 		runtime, err := New(newConfig(true), "test", "pro", "required")
 		if runtime != nil {
 			runtime.Close()

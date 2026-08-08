@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package factory
@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/memory"
-	"codebridge/internal/memory/agentmemory"
-	"codebridge/internal/memory/noop"
+	"wormhole/internal/config"
+	"wormhole/internal/memory"
+	"wormhole/internal/memory/agentmemory"
+	"wormhole/internal/memory/noop"
 )
 
 type Constructor func(config.MemoryConfig) (memory.Provider, error)

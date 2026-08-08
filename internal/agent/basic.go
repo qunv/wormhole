@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/security"
+	"wormhole/internal/config"
+	"wormhole/internal/security"
 )
 
 type note struct {
@@ -28,7 +28,7 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 	switch name {
 	case "ping":
 		message := stringArg(args, "message", "")
-		text := fmt.Sprintf("Codebridge online (mode=%s).", r.Config.Mode)
+		text := fmt.Sprintf("Wormhole online (mode=%s).", r.Config.Mode)
 		if message != "" {
 			text += " Echo: " + message
 		}
@@ -156,7 +156,7 @@ func (r *Runtime) handleBasic(ctx context.Context, name string, args map[string]
 
 func (r *Runtime) workspaceInfo() map[string]any {
 	return map[string]any{
-		"name": "Codebridge", "version": r.Version, "tier": r.Tier,
+		"name": "Wormhole", "version": r.Version, "tier": r.Tier,
 		"workspace_id": r.WorkspaceID, "primary_root": r.Workspace.Primary, "roots": r.Workspace.Roots,
 		"mode": r.Config.Mode, "policy": r.Config.Policy, "host": r.Config.Host,
 		"port": r.Config.Port, "auth": ternary(r.Config.AuthToken != "", "bearer", "none"),

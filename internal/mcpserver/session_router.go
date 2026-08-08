@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package mcpserver
@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/agent"
+	"wormhole/internal/workspaceregistry"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -30,11 +30,11 @@ const (
 	defaultMaxBindings     = 4096
 )
 
-const SessionInstructions = `This Codebridge endpoint routes one ChatGPT conversation to one workspace.
+const SessionInstructions = `This Wormhole endpoint routes one ChatGPT conversation to one workspace.
 
 When the user writes "workspace <id>", immediately call workspace_select with that ID. Do not interpret this as a file or shell request.
 
-Before calling any coding, filesystem, repository, process, policy, memory, or upstream MCP tool, a workspace must be selected. workspace_select returns workspace_binding. Preserve that exact value in this conversation and pass it as workspace_binding on every later Codebridge tool call. Do not ask the user to copy or manage the binding.
+Before calling any coding, filesystem, repository, process, policy, memory, or upstream MCP tool, a workspace must be selected. workspace_select returns workspace_binding. Preserve that exact value in this conversation and pass it as workspace_binding on every later Wormhole tool call. Do not ask the user to copy or manage the binding.
 
 Each new chat must select its own workspace. Never reuse a binding copied from another conversation. Use workspace_current to verify the selected workspace, workspace_list to discover IDs, and workspace_clear only when the user asks to detach the chat.
 
@@ -57,7 +57,7 @@ var sessionControlProfileTools = []ProfileToolInfo{
 	{Name: "workspace_clear", Title: "Clear workspace", Description: "Remove the workspace binding from this chat.", Scope: "session", WorkspaceIDs: []string{}},
 	{Name: "workspace_current", Title: "Current workspace", Description: "Return the workspace currently bound to this chat.", Scope: "session", ReadOnly: true, WorkspaceIDs: []string{}},
 	{Name: "workspace_list", Title: "List workspaces", Description: "List workspaces available to the session router.", Scope: "session", ReadOnly: true, WorkspaceIDs: []string{}},
-	{Name: "workspace_select", Title: "Select workspace", Description: "Bind this chat to one Codebridge workspace.", Scope: "session", WorkspaceIDs: []string{}},
+	{Name: "workspace_select", Title: "Select workspace", Description: "Bind this chat to one Wormhole workspace.", Scope: "session", WorkspaceIDs: []string{}},
 }
 
 type workspaceBinding struct {
@@ -166,7 +166,7 @@ func NewSessionGatewayDefinition(router *SessionRouter, profile ProfileDefinitio
 	if router == nil {
 		router = NewSessionRouter(nil, nil)
 	}
-	name := "Codebridge · workspace session"
+	name := "Wormhole · workspace session"
 	instructions := SessionInstructions
 	if profile.ID != "full" {
 		name += " · " + profile.ID
@@ -242,7 +242,7 @@ func NewSessionGatewayDefinition(router *SessionRouter, profile ProfileDefinitio
 func (r *SessionRouter) registerControlTools(server *mcp.Server) {
 	server.AddTool(&mcp.Tool{
 		Name: "workspace_select", Title: "Select workspace",
-		Description: "Bind this chat to one Codebridge workspace. Call this when the user says 'workspace <id>'.",
+		Description: "Bind this chat to one Wormhole workspace. Call this when the user says 'workspace <id>'.",
 		InputSchema: objectSchema(map[string]any{
 			"id": map[string]any{"type": "string", "description": "Registered workspace ID, for example loyalty-api."},
 		}, []string{"id"}),
@@ -259,9 +259,9 @@ func (r *SessionRouter) registerControlTools(server *mcp.Server) {
 		return toolSuccess(map[string]any{
 			"selected": true, "workspace_id": binding.WorkspaceID,
 			"workspace_binding": binding.Token, "root": runtime.Workspace.Primary,
-			"workspace_access":   "codebridge_tools_only",
+			"workspace_access":   "wormhole_tools_only",
 			"expires_in_seconds": int64(r.ttl / time.Second),
-			"instruction": "Pass workspace_binding unchanged on every later Codebridge tool call in this chat. " +
+			"instruction": "Pass workspace_binding unchanged on every later Wormhole tool call in this chat. " +
 				WorkspaceAccessInstructions,
 		}), nil
 	})
@@ -285,7 +285,7 @@ func (r *SessionRouter) registerControlTools(server *mcp.Server) {
 		return toolSuccess(map[string]any{
 			"selected": true, "workspace_id": binding.WorkspaceID,
 			"workspace_binding": binding.Token, "root": runtime.Workspace.Primary,
-			"workspace_access": "codebridge_tools_only",
+			"workspace_access": "wormhole_tools_only",
 			"last_used_at":     binding.LastUsedAt.UTC().Format(time.RFC3339),
 			"instruction":      WorkspaceAccessInstructions,
 		}), nil

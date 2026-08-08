@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -14,7 +14,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(directory, ".codebridge-write-*")
+	temp, err := os.CreateTemp(directory, ".wormhole-write-*")
 	if err != nil {
 		return err
 	}

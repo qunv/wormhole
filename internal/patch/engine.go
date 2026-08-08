@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package patch
@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/state"
-	"codebridge/internal/workspace"
+	"wormhole/internal/state"
+	"wormhole/internal/workspace"
 )
 
 type Edit struct {
@@ -1039,7 +1039,7 @@ func atomicWriteFile(path string, data []byte, mode fs.FileMode) error {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(directory, ".codebridge-write-*")
+	temp, err := os.CreateTemp(directory, ".wormhole-write-*")
 	if err != nil {
 		return err
 	}

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/memory"
-	"codebridge/internal/upstreammcp"
+	"wormhole/internal/config"
+	"wormhole/internal/memory"
+	"wormhole/internal/upstreammcp"
 )
 
 type sharedTestMemoryProvider struct {
@@ -411,7 +411,7 @@ func TestSharedServicesCacheUpstreamCreationFailureDuringCooldown(t *testing.T) 
 }
 
 func TestLazyUpstreamBootstrapsCatalogThenDefersLaterStartup(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
 
 	base := config.Default()
@@ -464,7 +464,7 @@ func TestLazyUpstreamBootstrapsCatalogThenDefersLaterStartup(t *testing.T) {
 }
 
 func TestBackgroundUpstreamUsesCatalogAndConnectsAsynchronously(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
 
 	seedConfig := config.Default()

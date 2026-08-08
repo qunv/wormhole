@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/processx"
+	"wormhole/internal/processx"
 )
 
 const markerScanKind = "to" + "do"
@@ -499,7 +499,7 @@ func (r *Runtime) runQualityCommand(ctx context.Context, tool string, args map[s
 		trustedCommand = true
 	}
 	if command == "" {
-		return nil, fmt.Errorf("no %s command detected; provide command explicitly or configure .codebridge/profile.json", kind)
+		return nil, fmt.Errorf("no %s command detected; provide command explicitly or configure .wormhole/profile.json", kind)
 	}
 	if !trustedCommand && r.Config.Mode != "full" {
 		return nil, errors.New("explicit quality commands are disabled in safe mode; omit command to use the detected/profile command or switch to mode=full")

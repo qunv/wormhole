@@ -83,7 +83,7 @@ func normalizeLinuxExecutable(path string) string {
 	return strings.TrimSuffix(path, " (deleted)")
 }
 
-func processLooksLikeCodebridgeChild(pid int, label string) bool {
+func processLooksLikeWormholeChild(pid int, label string) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -104,7 +104,7 @@ func processLooksLikeCodebridgeChild(pid int, label string) bool {
 				args = append(args, string(part))
 			}
 		}
-		return codebridgeChildInvocation(normalizeLinuxExecutable(executable), args, label)
+		return wormholeChildInvocation(normalizeLinuxExecutable(executable), args, label)
 	}
 	current, err := os.Executable()
 	if err != nil {
@@ -116,7 +116,7 @@ func processLooksLikeCodebridgeChild(pid int, label string) bool {
 	if err != nil {
 		return false
 	}
-	return codebridgeChildCommandLine(current, strings.TrimSpace(string(raw)), label)
+	return wormholeChildCommandLine(current, strings.TrimSpace(string(raw)), label)
 }
 
 func processIdentityDigest(parts ...string) string {

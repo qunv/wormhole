@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/adminauth"
-	"codebridge/internal/agent"
-	"codebridge/internal/assets"
-	"codebridge/internal/config"
-	"codebridge/internal/server"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/adminauth"
+	"wormhole/internal/agent"
+	"wormhole/internal/assets"
+	"wormhole/internal/config"
+	"wormhole/internal/server"
+	"wormhole/internal/workspaceregistry"
 
 	"golang.org/x/term"
 )
@@ -75,7 +75,7 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return a.runLoggedChild(ctx, argv[1:])
 	}
 	if err := config.MigrateLegacyLayout(); err != nil {
-		return fmt.Errorf("migrate legacy Codebridge layout: %w", err)
+		return fmt.Errorf("migrate legacy Wormhole layout: %w", err)
 	}
 	_ = config.LoadDotEnv(config.DotEnvPath(), false)
 	opts, err := parse(argv)
@@ -131,7 +131,7 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		case <-time.After(900 * time.Millisecond):
 		}
 		stopConfig := cfg
-		if oldPort, parseErr := strconv.Atoi(strings.TrimSpace(os.Getenv("CODEBRIDGE_ADMIN_OLD_PORT"))); parseErr == nil && oldPort > 0 && oldPort <= 65535 {
+		if oldPort, parseErr := strconv.Atoi(strings.TrimSpace(os.Getenv("WORMHOLE_ADMIN_OLD_PORT"))); parseErr == nil && oldPort > 0 && oldPort <= 65535 {
 			stopConfig.Port = oldPort
 		}
 		opts.Background = true
@@ -210,7 +210,7 @@ func (a App) Run(ctx context.Context, argv []string) error {
 }
 
 func serveConfigID(cfg config.Config, inputs config.IdentityInputs) (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("CODEBRIDGE_DAEMON_CONFIG_ID")); configured != "" {
+	if configured := strings.TrimSpace(os.Getenv("WORMHOLE_DAEMON_CONFIG_ID")); configured != "" {
 		return configured, nil
 	}
 	return daemonConfigIDWithInputs(cfg, inputs)
@@ -223,7 +223,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 	executable, _ := os.Executable()
 	widget := assets.Widget()
 	identityInputs := config.NewIdentityInputs(executable, widget, runtimeKeyIdentityMaterial(cfg, ""))
-	if fingerprint := strings.TrimSpace(os.Getenv("CODEBRIDGE_RUNTIME_KEY_FINGERPRINT")); fingerprint != "" {
+	if fingerprint := strings.TrimSpace(os.Getenv("WORMHOLE_RUNTIME_KEY_FINGERPRINT")); fingerprint != "" {
 		identityInputs.RuntimeKeyFingerprint = fingerprint
 	}
 	configID, err := serveConfigID(cfg, identityInputs)
@@ -236,7 +236,7 @@ func (a App) serve(ctx context.Context, cfg config.Config) error {
 		defer reporterMu.Unlock()
 		fmt.Fprintf(a.Stdout, "[startup] %-9s %s\n", stage, message)
 	}
-	reporter("boot", fmt.Sprintf("Codebridge %s pid=%d", a.Version, os.Getpid()))
+	reporter("boot", fmt.Sprintf("Wormhole %s pid=%d", a.Version, os.Getpid()))
 	if readHealth(cfg.Port) == nil {
 		a.startupStateGC(reporter)
 	} else {
@@ -342,30 +342,30 @@ func (a App) usage() {
 	fmt.Fprintf(a.Stdout, `%s — native Go CLI and local MCP coding agent
 
 Usage:
-  codebridge                    Start and auto-register the current Git repo
-  codebridge setup              Configure local defaults
-  codebridge start [options]    Start server and optional tunnel
-  codebridge stop|restart       Manage background processes
-  codebridge status [--json]    Show health and PID state
-  codebridge doctor [--json]    Check local readiness
-  codebridge state gc [--dry-run] [--json]
-  codebridge workspace [path]   Show or set the primary workspace
-  codebridge workspace add <id> <path> [--extra-root <path>] [--force]
-  codebridge workspace list [--json]
-  codebridge workspace start|stop|status <id>
-  codebridge workspace compact <id> [--dry-run] [--json]
-  codebridge workspace remove <id> [--force]
-  codebridge tunnel [status|list|install]
-  codebridge admin               Print the local Admin UI URL
-  codebridge admin set-password [username]
-  codebridge admin status        Show local Admin account status
-  codebridge keys                Print Tunnel/API-key setup URLs
-  codebridge profile            Write all enabled tunnel-client YAML profiles
-  codebridge logs               Print bounded server and tunnel logs
-  codebridge config get|set|path
-  codebridge key set|delete     Manage the runtime key in the local env file
-  codebridge install-cli        Install this binary in the user bin directory
-  codebridge serve              Run the MCP server in the foreground
+  wormhole                    Start and auto-register the current Git repo
+  wormhole setup              Configure local defaults
+  wormhole start [options]    Start server and optional tunnel
+  wormhole stop|restart       Manage background processes
+  wormhole status [--json]    Show health and PID state
+  wormhole doctor [--json]    Check local readiness
+  wormhole state gc [--dry-run] [--json]
+  wormhole workspace [path]   Show or set the primary workspace
+  wormhole workspace add <id> <path> [--extra-root <path>] [--force]
+  wormhole workspace list [--json]
+  wormhole workspace start|stop|status <id>
+  wormhole workspace compact <id> [--dry-run] [--json]
+  wormhole workspace remove <id> [--force]
+  wormhole tunnel [status|list|install]
+  wormhole admin               Print the local Admin UI URL
+  wormhole admin set-password [username]
+  wormhole admin status        Show local Admin account status
+  wormhole keys                Print Tunnel/API-key setup URLs
+  wormhole profile            Write all enabled tunnel-client YAML profiles
+  wormhole logs               Print bounded server and tunnel logs
+  wormhole config get|set|path
+  wormhole key set|delete     Manage the runtime key in the local env file
+  wormhole install-cli        Install this binary in the user bin directory
+  wormhole serve              Run the MCP server in the foreground
 
 Options:
   --workspace <path>      Workspace root
@@ -604,7 +604,7 @@ func (a App) configCommand(cfg config.Config, opts options) error {
 		fmt.Fprintln(a.Stdout, string(raw))
 	case "set":
 		if len(opts.Rest) < 3 {
-			return errors.New("usage: codebridge config set <key> <value>")
+			return errors.New("usage: wormhole config set <key> <value>")
 		}
 		key, value := opts.Rest[1], opts.Rest[2]
 		switch key {
@@ -634,7 +634,7 @@ func (a App) configCommand(cfg config.Config, opts options) error {
 		}
 		fmt.Fprintf(a.Stdout, "Updated %s\n", key)
 	default:
-		return errors.New("usage: codebridge config get|set|path")
+		return errors.New("usage: wormhole config get|set|path")
 	}
 	return nil
 }
@@ -688,7 +688,7 @@ func (a App) adminCommand(cfg config.Config, opts options) error {
 		fmt.Fprintf(a.Stdout, "Admin account %s updated. Existing browser sessions are invalidated.\nSaved %s\n", credential.Username, config.AdminAuthPath())
 		return nil
 	default:
-		return errors.New("usage: codebridge admin [url|status|set-password [username]|reset-password [username]]")
+		return errors.New("usage: wormhole admin [url|status|set-password [username]|reset-password [username]]")
 	}
 }
 
@@ -758,7 +758,7 @@ func (a App) keyCommand(opts options) error {
 		}
 		return atomicWriteFile(path, []byte(cleaned), 0o600)
 	default:
-		return errors.New("usage: codebridge key set [value]|delete [--runtime-key-env NAME]")
+		return errors.New("usage: wormhole key set [value]|delete [--runtime-key-env NAME]")
 	}
 	return nil
 }

@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="./assets/codebridge-terminal-banner.svg" alt="Codebridge terminal banner" width="100%" />
+  <img src="./assets/wormhole-terminal-banner.svg" alt="Wormhole terminal banner" width="100%" />
 </p>
 
-# Codebridge
+# Wormhole
 
-Codebridge is a local-first MCP coding agent written in Go. It runs beside your repositories, gives ChatGPT controlled access to local files and development tools, and can connect private workspaces through OpenAI Secure MCP Tunnel without exposing a public server.
+Wormhole is a local-first MCP coding agent written in Go. It runs beside your repositories, gives ChatGPT controlled access to local files and development tools, and can connect private workspaces through OpenAI Secure MCP Tunnel without exposing a public server.
 
 ## What it provides
 
@@ -46,26 +46,26 @@ Official references:
 ### Linux and macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qunv/codebridge/main/install.sh | sh
-codebridge --version
+curl -fsSL https://raw.githubusercontent.com/qunv/wormhole/main/install.sh | sh
+wormhole --version
 ```
 
 The installer downloads the matching release, verifies its checksum, and installs to `~/.local/bin` by default.
 
 ### Windows
 
-Download the matching archive and `checksums.txt` from the [latest Codebridge release](https://github.com/qunv/codebridge/releases/latest), verify the SHA-256 checksum, extract `codebridge.exe`, and add its directory to your user `PATH`.
+Download the matching archive and `checksums.txt` from the [latest Wormhole release](https://github.com/qunv/wormhole/releases/latest), verify the SHA-256 checksum, extract `wormhole.exe`, and add its directory to your user `PATH`.
 
 ### Build from source
 
 ```bash
-git clone https://github.com/qunv/codebridge.git
-cd codebridge
+git clone https://github.com/qunv/wormhole.git
+cd wormhole
 go test ./...
 make install
 ```
 
-## Connect Codebridge to ChatGPT
+## Connect Wormhole to ChatGPT
 
 The complete flow is:
 
@@ -73,7 +73,7 @@ The complete flow is:
 ChatGPT MCP app
   → OpenAI Secure MCP Tunnel
   → tunnel-client running on your machine
-  → Codebridge at http://127.0.0.1:8132
+  → Wormhole at http://127.0.0.1:8132
   → selected local workspace
 ```
 
@@ -83,14 +83,14 @@ In OpenAI Platform, create or assign roles before creating keys:
 
 | Operator | Required tunnel permissions |
 |---|---|
-| Runs Codebridge/tunnel-client | Tunnels Read + Use |
+| Runs Wormhole/tunnel-client | Tunnels Read + Use |
 | Creates or edits tunnels | Tunnels Read + Manage |
 | Does both | Tunnels Read + Manage + Use |
 
 Print the Tunnels and Runtime API-key URLs with:
 
 ```bash
-codebridge keys
+wormhole keys
 ```
 
 Role and group configuration is available on these pages:
@@ -108,8 +108,8 @@ Open [Platform → Organization → Tunnels](https://platform.openai.com/setting
 
 | Tunnel | Local mode | Purpose |
 |---|---|---|
-| `codebridge-fast` | `fast` | Default coding app with the compact tool contract |
-| `codebridge-full` | `full` | Optional app for memory, processes, approvals, diagnostics, and upstream MCP tools |
+| `wormhole-fast` | `fast` | Default coding app with the compact tool contract |
+| `wormhole-full` | `full` | Optional app for memory, processes, approvals, diagnostics, and upstream MCP tools |
 
 For each tunnel:
 
@@ -117,7 +117,7 @@ For each tunnel:
 2. Include the target ChatGPT workspace ID. A tunnel without the correct workspace scope may exist in Platform but not appear in ChatGPT's tunnel picker.
 3. Copy the returned ID, which looks like `tunnel_0123456789abcdef0123456789abcdef`.
 
-Codebridge also retains the legacy one-tunnel configuration for existing installations, but two named tunnels are recommended because the current ChatGPT tunnel picker selects a Tunnel ID and does not expose the tunnel-client's logical channel field.
+Wormhole also retains the legacy one-tunnel configuration for existing installations, but two named tunnels are recommended because the current ChatGPT tunnel picker selects a Tunnel ID and does not expose the tunnel-client's logical channel field.
 
 ### 3. Create the Runtime API key
 
@@ -138,12 +138,12 @@ Keep these values separate:
 | Runtime API key | Authenticates the long-running tunnel-client process |
 | Admin API key | Optional tunnel-management CLI operations only |
 
-### 4. Configure and start Codebridge
+### 4. Configure and start Wormhole
 
 Install OpenAI's tunnel client:
 
 ```bash
-codebridge tunnel install
+wormhole tunnel install
 ```
 
 Open the Admin UI and add the named tunnel definitions under **Configuration → Tunnel definitions**:
@@ -156,14 +156,14 @@ Open the Admin UI and add the named tunnel definitions under **Configuration →
       "enabled": true,
       "tunnelId": "tunnel_FAST_ID",
       "mode": "fast",
-      "profile": "codebridge-fast",
+      "profile": "wormhole-fast",
       "runtimeKeyEnv": "CONTROL_PLANE_API_KEY_FAST"
     },
     "full": {
       "enabled": true,
       "tunnelId": "tunnel_FULL_ID",
       "mode": "full",
-      "profile": "codebridge-full",
+      "profile": "wormhole-full",
       "runtimeKeyEnv": "CONTROL_PLANE_API_KEY_FULL"
     }
   }
@@ -173,23 +173,23 @@ Open the Admin UI and add the named tunnel definitions under **Configuration →
 Store each Runtime API key separately from `config.json`:
 
 ```bash
-codebridge key set --runtime-key-env CONTROL_PLANE_API_KEY_FAST
-codebridge key set --runtime-key-env CONTROL_PLANE_API_KEY_FULL
+wormhole key set --runtime-key-env CONTROL_PLANE_API_KEY_FAST
+wormhole key set --runtime-key-env CONTROL_PLANE_API_KEY_FULL
 ```
 
-The values are written to the owner-only `~/.codebridge/.env` file. The Admin **Secrets** page provides the same write-only workflow.
+The values are written to the owner-only `~/.wormhole/.env` file. The Admin **Secrets** page provides the same write-only workflow.
 
-Generate both profiles, start Codebridge, and verify every managed process:
+Generate both profiles, start Wormhole, and verify every managed process:
 
 ```bash
-codebridge profile
-codebridge restart
-codebridge doctor
-codebridge status
-codebridge tunnel list
+wormhole profile
+wormhole restart
+wormhole doctor
+wormhole status
+wormhole tunnel list
 ```
 
-Codebridge runs one local MCP daemon and one tunnel-client process per enabled tunnel. The generated Fast profile maps its `main` channel to `/mcp/session/fast`; the Full profile maps `main` to `/mcp/session`.
+Wormhole runs one local MCP daemon and one tunnel-client process per enabled tunnel. The generated Fast profile maps its `main` channel to `/mcp/session/fast`; the Full profile maps `main` to `/mcp/session`.
 
 Existing single-tunnel configurations using `tunnelId`, `profile`, and `runtimeKeyEnv` continue to work and keep the historical logical channels for backward compatibility.
 
@@ -207,10 +207,10 @@ Workspace Settings
 Create two apps:
 
 1. Open **Settings → Apps → Create**, or **Workspace Settings → Apps → Create** as an admin/owner.
-2. Create `Codebridge Fast`, select **Tunnel** or **Secure MCP Tunnel**, and choose `tunnel_FAST_ID`.
+2. Create `Wormhole Fast`, select **Tunnel** or **Secure MCP Tunnel**, and choose `tunnel_FAST_ID`.
 3. Choose **No auth** for the MCP app. Tunnel control-plane authentication is handled by the Runtime API key stored on the machine.
 4. Click **Scan Tools**, verify the compact tool set, and create the app.
-5. Repeat for `Codebridge Full` with `tunnel_FULL_ID` and verify the expanded tool set.
+5. Repeat for `Wormhole Full` with `tunnel_FULL_ID` and verify the expanded tool set.
 
 The ChatGPT UI does not need a channel selector: each Tunnel ID has its own generated profile whose `main` channel points to the intended local endpoint.
 
@@ -220,10 +220,10 @@ OpenAI may change labels while MCP apps remain in beta. The current official flo
 
 ### 6. Use it in a chat
 
-Open a new ChatGPT conversation and enable the Codebridge app from the tools menu. Then select a repository:
+Open a new ChatGPT conversation and enable the Wormhole app from the tools menu. Then select a repository:
 
 ```text
-workspace codebridge
+workspace wormhole
 ```
 
 Use a different workspace in another chat:
@@ -232,7 +232,7 @@ Use a different workspace in another chat:
 workspace loyalty-api
 ```
 
-ChatGPT receives an opaque workspace binding automatically. You do not need to copy or manage that token. Bindings expire after inactivity and are reset when Codebridge restarts; say `workspace <id>` again when needed.
+ChatGPT receives an opaque workspace binding automatically. You do not need to copy or manage that token. Bindings expire after inactivity and are reset when Wormhole restarts; say `workspace <id>` again when needed.
 
 ## Which managed tunnel mode should I use?
 
@@ -243,31 +243,31 @@ ChatGPT receives an opaque workspace binding automatically. You do not need to c
 
 Enable only the Fast app for normal coding. Enable the Full app when the task genuinely requires its larger tool surface. Both use the same workspace-selection workflow and the same local daemon.
 
-After changing tunnel definitions, IDs, modes, profiles, runtime keys, or enabled state, run `codebridge restart` and rescan the corresponding app's tools in ChatGPT.
+After changing tunnel definitions, IDs, modes, profiles, runtime keys, or enabled state, run `wormhole restart` and rescan the corresponding app's tools in ChatGPT.
 
 ## Workspaces
 
-Running `codebridge` inside a Git repository starts the daemon and automatically registers that repository when necessary:
+Running `wormhole` inside a Git repository starts the daemon and automatically registers that repository when necessary:
 
 ```bash
 cd /path/to/repository
-codebridge
+wormhole
 ```
 
 Manage workspaces explicitly:
 
 ```bash
-codebridge workspace add loyalty-api /path/to/loyalty-api
-codebridge workspace add admin-web /path/to/admin-web \
+wormhole workspace add loyalty-api /path/to/loyalty-api
+wormhole workspace add admin-web /path/to/admin-web \
   --extra-root /path/to/shared-contracts
 
-codebridge workspace list
-codebridge workspace status loyalty-api
-codebridge workspace stop loyalty-api
-codebridge workspace start loyalty-api
-codebridge workspace compact loyalty-api --dry-run
-codebridge workspace compact loyalty-api
-codebridge workspace remove admin-web
+wormhole workspace list
+wormhole workspace status loyalty-api
+wormhole workspace stop loyalty-api
+wormhole workspace start loyalty-api
+wormhole workspace compact loyalty-api --dry-run
+wormhole workspace compact loyalty-api
+wormhole workspace remove admin-web
 ```
 
 Each workspace has isolated roots, policy, state, backups, approvals, tasks, memory scope, and process registry. All enabled workspaces share one daemon and one port; every enabled named tunnel has its own managed tunnel-client process.
@@ -277,7 +277,7 @@ Each workspace has isolated roots, policy, state, backups, approvals, tasks, mem
 Run only the local MCP server:
 
 ```bash
-codebridge start \
+wormhole start \
   --workspace /path/to/repository \
   --no-tunnel \
   --background \
@@ -287,7 +287,7 @@ codebridge start \
 For foreground debugging:
 
 ```bash
-codebridge serve --workspace /path/to/repository --no-tunnel
+wormhole serve --workspace /path/to/repository --no-tunnel
 ```
 
 Local endpoints:
@@ -306,27 +306,27 @@ http://127.0.0.1:8132/admin/
 
 ## Admin UI
 
-Codebridge includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, referenced secrets, live operations, exact approvals, and bounded audit exploration.
+Wormhole includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, referenced secrets, live operations, exact approvals, and bounded audit exploration.
 
 Open `http://127.0.0.1:8132/admin/`. When no local admin credential exists, the loopback-only first-run screen asks for a username and password, creates the account once, signs in, and opens the guided setup wizard. The wizard covers workspace, mode, policy, port, OpenAI tunnel ID, write-only Runtime API key, and optional memory settings.
 
 The CLI remains available for account creation and administration:
 
 ```bash
-codebridge admin set-password admin
-codebridge restart
-codebridge admin
+wormhole admin set-password admin
+wormhole restart
+wormhole admin
 ```
 
-The username and a salted one-way password hash are stored in the owner-only file `~/.codebridge/admin-auth.json`; the plaintext password is never persisted. The browser bootstrap endpoint uses exclusive create semantics and stops accepting setup after that file exists. The default URL is `http://127.0.0.1:8132/admin/`. The UI is embedded in the Codebridge binary and does not require a separate web server in production.
+The username and a salted one-way password hash are stored in the owner-only file `~/.wormhole/admin-auth.json`; the plaintext password is never persisted. The browser bootstrap endpoint uses exclusive create semantics and stops accepting setup after that file exists. The default URL is `http://127.0.0.1:8132/admin/`. The UI is embedded in the Wormhole binary and does not require a separate web server in production.
 
 There is no browser password-recovery flow. If the password is forgotten, reset it from the local machine:
 
 ```bash
-codebridge admin reset-password admin
+wormhole admin reset-password admin
 ```
 
-Changing the username or password immediately invalidates existing Admin UI browser sessions. Check the configured account without revealing credential material with `codebridge admin status`.
+Changing the username or password immediately invalidates existing Admin UI browser sessions. Check the configured account without revealing credential material with `wormhole admin status`.
 
 Security boundaries are enforced by the Go server:
 
@@ -340,7 +340,7 @@ Security boundaries are enforced by the Go server:
 - Referenced `.env` secrets are write-only; the UI can see only whether each value exists.
 - Changes are persisted atomically. The Configuration page can schedule a detached lifecycle-helper restart after the HTTP response is delivered; the browser waits for the replacement daemon and then returns to sign-in because Admin sessions are process-local.
 
-The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, visualize inherited versus overridden workspace fields, preview safe override compaction, create and edit custom tool profiles, map named tunnels to profiles, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, refresh upstream MCP catalogs while previewing active/cached/live contract diffs, explore a bounded tail of already-redacted audit records, and download a sanitized diagnostic JSON bundle. Browser same-origin rules prevent Codebridge from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
+The Admin UI can run the guided setup flow, open OpenAI tunnel and API-key settings in new tabs, persist a tunnel ID, store referenced secrets write-only, browse directories, register named workspaces, remove registrations, optionally delete a workspace override file, visualize inherited versus overridden workspace fields, preview safe override compaction, create and edit custom tool profiles, map named tunnels to profiles, inspect live runtime/module metrics, approve or deny exact pending actions through the authenticated local control plane, refresh upstream MCP catalogs while previewing active/cached/live contract diffs, explore a bounded tail of already-redacted audit records, and download a sanitized diagnostic JSON bundle. Browser same-origin rules prevent Wormhole from reading or auto-filling OpenAI Platform pages, so generated IDs and keys must be pasted into the local inputs. Removal preserves repository files and workspace runtime state. Enable/disable, daemon restart, tunnel-client installation, and tunnel lifecycle remain explicit CLI operations; registry changes require a restart before active MCP endpoints are reconciled.
 
 ### Admin UI development
 
@@ -363,29 +363,29 @@ npm run dev
 
 | Command | Purpose |
 |---|---|
-| `codebridge` | Start and auto-register the current Git repository |
-| `codebridge setup` | Configure workspace, policy, tunnel, and optional memory |
-| `codebridge restart` | Reconcile config and restart server/tunnel |
-| `codebridge status --json` | Show endpoints, process IDs, and health |
-| `codebridge doctor` | Check local server, tunnel, memory, and upstream MCP dependencies |
-| `codebridge logs` | Print bounded server and tunnel log tails |
-| `codebridge profile` | Regenerate the tunnel-client profile |
-| `codebridge tunnel install` | Download and verify OpenAI tunnel-client |
-| `codebridge admin` | Print the local Admin UI URL |
-| `codebridge admin set-password [username]` | Create or replace the local Admin account |
-| `codebridge admin reset-password [username]` | Reset the password and invalidate browser sessions |
-| `codebridge admin status` | Show whether the local Admin account is configured |
-| `codebridge key set` | Store the Runtime API key in `.env` |
-| `codebridge config get` | Print the effective non-secret configuration |
-| `codebridge state gc --dry-run` | Preview safe state cleanup |
-| `codebridge help` | Show the complete CLI surface |
+| `wormhole` | Start and auto-register the current Git repository |
+| `wormhole setup` | Configure workspace, policy, tunnel, and optional memory |
+| `wormhole restart` | Reconcile config and restart server/tunnel |
+| `wormhole status --json` | Show endpoints, process IDs, and health |
+| `wormhole doctor` | Check local server, tunnel, memory, and upstream MCP dependencies |
+| `wormhole logs` | Print bounded server and tunnel log tails |
+| `wormhole profile` | Regenerate the tunnel-client profile |
+| `wormhole tunnel install` | Download and verify OpenAI tunnel-client |
+| `wormhole admin` | Print the local Admin UI URL |
+| `wormhole admin set-password [username]` | Create or replace the local Admin account |
+| `wormhole admin reset-password [username]` | Reset the password and invalidate browser sessions |
+| `wormhole admin status` | Show whether the local Admin account is configured |
+| `wormhole key set` | Store the Runtime API key in `.env` |
+| `wormhole config get` | Print the effective non-secret configuration |
+| `wormhole state gc --dry-run` | Preview safe state cleanup |
+| `wormhole help` | Show the complete CLI surface |
 
 ## Configuration and secrets
 
 Persistent data lives under:
 
 ```text
-~/.codebridge/
+~/.wormhole/
   admin-auth.json
   config.json          non-secret global configuration
   .env                 Runtime API key and referenced secrets
@@ -394,7 +394,7 @@ Persistent data lives under:
   state/               logs, process state, audit, backups, approvals, caches
 ```
 
-Set `CODEBRIDGE_HOME=/custom/path` to relocate the complete tree.
+Set `WORMHOLE_HOME=/custom/path` to relocate the complete tree.
 
 Configuration precedence:
 
@@ -420,7 +420,7 @@ For example, this workspace uses another database URI while inheriting the globa
 }
 ```
 
-To disable one inherited server for a workspace, use `"enabled": false`; to remove it from the effective map entirely, set that server entry to `null`. Existing full workspace config files remain valid, but every field present in them is treated as an explicit override. Use `codebridge workspace compact <id> --dry-run` to preview removal of values that merely duplicate the current global config, then rerun without `--dry-run` to persist the compact version. An explicit `extraRoots: []` is preserved so future global roots do not leak into that workspace.
+To disable one inherited server for a workspace, use `"enabled": false`; to remove it from the effective map entirely, set that server entry to `null`. Existing full workspace config files remain valid, but every field present in them is treated as an explicit override. Use `wormhole workspace compact <id> --dry-run` to preview removal of values that merely duplicate the current global config, then rerun without `--dry-run` to persist the compact version. An explicit `extraRoots: []` is preserved so future global roots do not leak into that workspace.
 
 Custom tool profiles filter the globally enabled runtime catalog; they cannot re-enable a globally denied tool. Empty allow lists expose every globally enabled tool before the profile deny list is applied. Allow groups and exact allow tools form a union, while denied tools always win:
 
@@ -442,7 +442,7 @@ Custom tool profiles filter the globally enabled runtime catalog; they cannot re
       "tunnelId": "tunnel_0123456789abcdef0123456789abcdef",
       "mode": "full",
       "toolProfile": "review",
-      "profile": "codebridge-review",
+      "profile": "wormhole-review",
       "runtimeKeyEnv": "CONTROL_PLANE_API_KEY"
     }
   }
@@ -478,7 +478,7 @@ Do not commit `.env`, API keys, tunnel credentials, local state, or private work
 
 ## Optional upstream MCP servers
 
-Codebridge can expose tools from trusted stdio or Streamable HTTP MCP servers under the same workspace policy and audit pipeline.
+Wormhole can expose tools from trusted stdio or Streamable HTTP MCP servers under the same workspace policy and audit pipeline.
 
 Example:
 
@@ -493,7 +493,7 @@ Example:
         "DATABASE_URI": "POSTGRES_PROD_MCP_DATABASE_URI"
       },
       "required": false,
-      "workspaceIds": ["codebridge"],
+      "workspaceIds": ["wormhole"],
       "startupMode": "lazy",
       "policy": {
         "default": "approval",
@@ -512,31 +512,31 @@ Example:
 - `background` registers a cached tool contract immediately, then connects and refreshes it asynchronously.
 - `lazy` registers a cached tool contract immediately and connects on the first tool call.
 
-Required servers always behave as `eager`. The first `background` or `lazy` startup without a cache performs one eager discovery so Codebridge can publish typed tools; later starts use the cache. Deferred clients refresh `tools/list` after connecting, and the refreshed contract is applied on the next Codebridge restart. The Admin MCP Servers editor can also force a fresh connection and catalog discovery. It displays active, cached, and live contract hashes plus added, removed, and changed tool names; refreshing never mutates the downstream `tools/list` contract in place.
+Required servers always behave as `eager`. The first `background` or `lazy` startup without a cache performs one eager discovery so Wormhole can publish typed tools; later starts use the cache. Deferred clients refresh `tools/list` after connecting, and the refreshed contract is applied on the next Wormhole restart. The Admin MCP Servers editor can also force a fresh connection and catalog discovery. It displays active, cached, and live contract hashes plus added, removed, and changed tool names; refreshing never mutates the downstream `tools/list` contract in place.
 
-Tool catalogs are stored owner-only under `~/.codebridge/state/upstream-mcp/catalogs`. They contain only bounded tool names, descriptions, input schemas, and annotations—not credentials, calls, arguments, results, or arbitrary upstream metadata. Codebridge retains at most 64 catalogs and prunes entries older than 90 days when saving a catalog.
+Tool catalogs are stored owner-only under `~/.wormhole/state/upstream-mcp/catalogs`. They contain only bounded tool names, descriptions, input schemas, and annotations—not credentials, calls, arguments, results, or arbitrary upstream metadata. Wormhole retains at most 64 catalogs and prunes entries older than 90 days when saving a catalog.
 
-Keep credentials in `.env` or the process environment, not `config.json`. Restart Codebridge after changing upstream servers so their tools are rediscovered.
+Keep credentials in `.env` or the process environment, not `config.json`. Restart Wormhole after changing upstream servers so their tools are rediscovered.
 
 Community MCP servers run as local code with your user's privileges. Pin versions and review them before enabling them.
 
 ## Optional project memory
 
-Codebridge supports provider-neutral project memory with an agentmemory adapter. Enable it through:
+Wormhole supports provider-neutral project memory with an agentmemory adapter. Enable it through:
 
 ```bash
-codebridge setup
-codebridge restart
-codebridge doctor
+wormhole setup
+wormhole restart
+wormhole doctor
 ```
 
-Memory is historical context, not the current source of truth. Codebridge still verifies current files and repository state before editing. Raw source, patches, command output, and secrets are excluded from automatic memory capture.
+Memory is historical context, not the current source of truth. Wormhole still verifies current files and repository state before editing. Raw source, patches, command output, and secrets are excluded from automatic memory capture.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for provider configuration, capture modes, queueing, retry behavior, and session scoping.
 
 ## State retention
 
-Codebridge creates workspace state lazily and removes only regenerable or expired data:
+Wormhole creates workspace state lazily and removes only regenerable or expired data:
 
 - Repository index cache: 7 days.
 - Terminal approvals: 30 days.
@@ -549,10 +549,10 @@ Durable notes, checkpoints, current tasks, decisions, and unknown files are pres
 The Overview page can download a bounded diagnostic JSON bundle containing non-secret configuration, secret presence only, runtime/module metrics, profile hashes, workspace registry summaries, recent audit metadata without arguments or session IDs, and redacted log tails. Referenced environment values and direct upstream environment/header values are never included.
 
 ```bash
-codebridge state gc --dry-run
-codebridge stop
-codebridge state gc
-codebridge restart
+wormhole state gc --dry-run
+wormhole stop
+wormhole state gc
+wormhole restart
 ```
 
 ## Security model
@@ -564,7 +564,7 @@ codebridge restart
 - `balanced` allows normal edits and requests exact approval for risky actions.
 - `full` enables the complete workflow while catastrophic system commands remain blocked.
 - A non-loopback local MCP listener requires a bearer token.
-- Codebridge is not an operating-system sandbox; approved commands run with the current user's privileges.
+- Wormhole is not an operating-system sandbox; approved commands run with the current user's privileges.
 - Audit arguments and error text are redacted and bounded before being written locally.
 - Each workspace runtime limits concurrent tool execution with `maxConcurrentToolCalls` (default `16`); queued calls remain cancellable.
 - Routed session tools are validated again against the selected workspace's exact input schema before dispatch.
@@ -579,16 +579,16 @@ Check all four layers:
 
 1. The tunnel includes the correct ChatGPT workspace scope.
 2. Your ChatGPT operator and Runtime API key principal have Tunnels Read + Use.
-3. `codebridge status` shows the tunnel online.
+3. `wormhole status` shows the tunnel online.
 4. The ChatGPT workspace has Developer mode and custom MCP apps enabled.
 
 Then run:
 
 ```bash
-codebridge doctor
-codebridge logs
-codebridge profile
-codebridge restart
+wormhole doctor
+wormhole logs
+wormhole profile
+wormhole restart
 ```
 
 Reopen **Settings → Apps → Create**, select the tunnel, and scan tools again.
@@ -596,13 +596,13 @@ Reopen **Settings → Apps → Create**, select the tunnel, and scan tools again
 ### `missing Runtime API key`
 
 ```bash
-codebridge key set
-codebridge restart
+wormhole key set
+wormhole restart
 ```
 
 ### The app has an old tool list
 
-ChatGPT may retain the discovered tool contract. Restart Codebridge after configuration changes, then rescan the app's tools or recreate the draft app.
+ChatGPT may retain the discovered tool contract. Restart Wormhole after configuration changes, then rescan the app's tools or recreate the draft app.
 
 ### A workspace binding expired
 
@@ -615,9 +615,9 @@ workspace <id>
 ### Inspect local health
 
 ```bash
-codebridge status --json
-codebridge doctor --json
-codebridge logs
+wormhole status --json
+wormhole doctor --json
+wormhole logs
 ```
 
 ## Development
@@ -636,4 +636,4 @@ Useful project documents:
 
 ## License
 
-Codebridge is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
+Wormhole is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).

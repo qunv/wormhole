@@ -4,7 +4,7 @@ import type {
   ApprovalsResponse,
   AuditResponse,
   Bootstrap,
-  CodebridgeConfig,
+  WormholeConfig,
   ConfigSnapshot,
   OperationsResponse,
   ProfilesResponse,
@@ -19,7 +19,7 @@ import type {
 } from "./types";
 
 const API = "/admin/api/v1";
-export const AUTH_REQUIRED_EVENT = "codebridge-auth-required";
+export const AUTH_REQUIRED_EVENT = "wormhole-auth-required";
 export const DIAGNOSTICS_URL = `${API}/diagnostics`;
 
 export class APIError extends Error {
@@ -49,7 +49,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   headers.set("Accept", "application/json");
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    headers.set("X-Codebridge-CSRF", readCookie("codebridge_admin_csrf"));
+    headers.set("X-Wormhole-CSRF", readCookie("wormhole_admin_csrf"));
   }
   const response = await fetch(`${API}${path}`, { ...init, headers, credentials: "same-origin" });
   const body = await response.json().catch(() => ({}));
@@ -107,12 +107,12 @@ export const api = {
     return request<AuditResponse>(`/audit?${query.toString()}`);
   },
   config: () => request<ConfigSnapshot>("/config"),
-  validateConfig: (config: CodebridgeConfig) =>
-    request<{ valid: true; config: CodebridgeConfig }>("/config/validate", {
+  validateConfig: (config: WormholeConfig) =>
+    request<{ valid: true; config: WormholeConfig }>("/config/validate", {
       method: "POST",
       body: JSON.stringify(config),
     }),
-  saveConfig: (config: CodebridgeConfig, revision: string) =>
+  saveConfig: (config: WormholeConfig, revision: string) =>
     request<ConfigSnapshot>("/config", {
       method: "PUT",
       headers: { "If-Match": `"${revision}"` },

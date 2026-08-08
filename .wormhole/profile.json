@@ -1,5 +1,5 @@
 {
-  "description": "Codebridge Go MCP server",
+  "description": "Wormhole Go MCP server",
   "conventions": "Use gofmt, keep MCP contracts backward compatible, prefer bounded concurrency and cache-aware repository operations.",
   "ignoredDirs": [
     ".agents",

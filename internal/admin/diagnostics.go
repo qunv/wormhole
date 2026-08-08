@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/mcpserver"
-	"codebridge/internal/security"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/mcpserver"
+	"wormhole/internal/security"
+	"wormhole/internal/workspaceregistry"
 )
 
 const (
@@ -107,7 +107,7 @@ func (h *Handler) getDiagnostics(writer http.ResponseWriter, request *http.Reque
 	}
 	bundle := map[string]any{
 		"diagnosticVersion": diagnosticBundleVersion,
-		"generatedAt":       time.Now().UTC(), "name": "Codebridge",
+		"generatedAt":       time.Now().UTC(), "name": "Wormhole",
 		"version": h.Runtime.Version, "tier": h.Runtime.Tier,
 		"activeConfigId": h.Runtime.ConfigID,
 		"paths": map[string]any{
@@ -130,7 +130,7 @@ func (h *Handler) getDiagnostics(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	raw = append(raw, '\n')
-	filename := "codebridge-diagnostics-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
+	filename := "wormhole-diagnostics-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	writer.Header().Set("Cache-Control", "no-store")

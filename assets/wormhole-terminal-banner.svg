@@ -1,6 +1,6 @@
 <svg width="1280" height="420" viewBox="0 0 1280 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Codebridge terminal banner</title>
-  <desc id="desc">Animated developer terminal introducing Codebridge as a local multi-workspace MCP coding agent.</desc>
+  <title id="title">Wormhole terminal banner</title>
+  <desc id="desc">Animated developer terminal introducing Wormhole as a local multi-workspace MCP coding agent.</desc>
 
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="420" gradientUnits="userSpaceOnUse">
@@ -89,7 +89,7 @@
   <ellipse cx="1110" cy="95" rx="250" ry="180" fill="url(#glowRight)"/>
 
   <g transform="translate(72 38)">
-    <text x="0" y="0" dominant-baseline="hanging" class="brand">Codebridge</text>
+    <text x="0" y="0" dominant-baseline="hanging" class="brand">Wormhole</text>
     <text x="264" y="9" dominant-baseline="hanging" class="tagline">local coding agent · multi-workspace MCP gateway</text>
     <rect x="948" y="0" width="188" height="28" rx="14" fill="#0F172A" stroke="#1E293B"/>
     <circle cx="966" cy="14" r="5" fill="#34D399" class="pulse"/>
@@ -104,7 +104,7 @@
     <circle cx="94" cy="95" r="5" fill="#FB7185"/>
     <circle cx="111" cy="95" r="5" fill="#FBBF24"/>
     <circle cx="128" cy="95" r="5" fill="#4ADE80"/>
-    <text x="155" y="100" class="ui termDim">~/projects/codebridge</text>
+    <text x="155" y="100" class="ui termDim">~/projects/wormhole</text>
     <rect x="630" y="84" width="96" height="22" rx="6" fill="#111827" stroke="#263449"/>
     <text x="644" y="99" class="ui termDim">main</text>
     <circle cx="708" cy="95" r="4" fill="#4ADE80" class="pulseDelay"/>
@@ -116,7 +116,7 @@
         <rect x="92" y="122" width="78" height="198" rx="8" fill="url(#accent)" opacity="0.05"/>
       </g>
 
-      <text x="98" y="146" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  codebridge</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan class="white"> codebridge start --workspace ./api</tspan></text>
+      <text x="98" y="146" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  wormhole</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan class="white"> wormhole start --workspace ./api</tspan></text>
 
       <g class="log1">
         <text x="98" y="174" class="ui term"><tspan class="cyan">[router]</tspan><tspan> session endpoint ready at </tspan><tspan class="blue">/mcp/session</tspan></text>
@@ -128,11 +128,11 @@
         <text x="98" y="222" class="ui term"><tspan class="cyan">[tools]</tspan><tspan> loaded </tspan><tspan class="green">75 built-in</tspan><tspan> + </tspan><tspan class="blue">8 upstream</tspan></text>
       </g>
       <g class="log4">
-        <text x="98" y="246" class="ui term"><tspan class="cyan">[memory]</tspan><tspan> project scope </tspan><tspan class="blue">git:github.com/qunv/codebridge</tspan></text>
+        <text x="98" y="246" class="ui term"><tspan class="cyan">[memory]</tspan><tspan> project scope </tspan><tspan class="blue">git:github.com/qunv/wormhole</tspan></text>
       </g>
 
-      <text x="98" y="286" class="ui term"><tspan class="green">✓</tspan><tspan> Codebridge is ready </tspan><tspan class="termDim">(localhost:8132)</tspan></text>
-      <text x="98" y="316" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  codebridge</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan> </tspan></text>
+      <text x="98" y="286" class="ui term"><tspan class="green">✓</tspan><tspan> Wormhole is ready </tspan><tspan class="termDim">(localhost:8132)</tspan></text>
+      <text x="98" y="316" class="ui term"><tspan class="green">➜</tspan><tspan class="blue">  wormhole</tspan><tspan class="termDim"> git:(</tspan><tspan class="cyan">main</tspan><tspan class="termDim">)</tspan><tspan> </tspan></text>
       <rect x="326" y="304" width="8" height="16" rx="1" fill="#E2E8F0" class="cursor"/>
     </g>
   </g>
@@ -181,5 +181,5 @@
 
   <path d="M72 384H1208" stroke="#1E293B"/>
   <text x="72" y="404" class="ui tiny">LOCAL-FIRST · GO · MCP · MULTI-WORKSPACE · CODEGRAPH · MEMORY · OBSERVABILITY</text>
-  <text x="1208" y="404" text-anchor="end" class="ui tiny">github.com/qunv/codebridge</text>
+  <text x="1208" y="404" text-anchor="end" class="ui tiny">github.com/qunv/wormhole</text>
 </svg>

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Boxes, Cable, CopyPlus, Save, Search, ShieldCheck, Trash2, Wrench } from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, Field, LoadingPage, MultiSelect, Notice, PageHeader, Select, TextInput, Toggle } from "./components";
-import type { CodebridgeConfig, ProfileTool, ToolProfile, ToolProfileConfig } from "./types";
+import type { WormholeConfig, ProfileTool, ToolProfile, ToolProfileConfig } from "./types";
 
 type ScopeFilter = "all" | "session" | "workspace";
 
@@ -46,7 +46,7 @@ export function Profiles() {
   }, [selected?.id, selected?.contractHash, configSnapshot?.revision]);
 
   const saveConfig = useMutation({
-    mutationFn: ({ config, success }: { config: CodebridgeConfig; success: string }) =>
+    mutationFn: ({ config, success }: { config: WormholeConfig; success: string }) =>
       api.saveConfig(config, configSnapshot!.revision).then((result) => ({ result, success })),
     onSuccess: async ({ result, success }) => {
       queryClient.setQueryData(["config"], result);
@@ -74,16 +74,16 @@ export function Profiles() {
   const create = () => {
     const id = newID.trim().toLowerCase();
     if (!validProfileID(id) || profiles.some((profile) => profile.id === id)) return;
-    const next: CodebridgeConfig = structuredClone(configSnapshot.config);
+    const next: WormholeConfig = structuredClone(configSnapshot.config);
     next.toolProfiles = { ...(next.toolProfiles ?? {}), [id]: { name: id, outputMode: "both" } };
-    saveConfig.mutate({ config: next, success: `Profile ${id} was saved. Restart Codebridge to activate its endpoints.` });
+    saveConfig.mutate({ config: next, success: `Profile ${id} was saved. Restart Wormhole to activate its endpoints.` });
     setSelectedId(id);
     setNewID("");
   };
 
   const saveProfile = () => {
     if (!editor || selected.builtIn) return;
-    const next: CodebridgeConfig = structuredClone(configSnapshot.config);
+    const next: WormholeConfig = structuredClone(configSnapshot.config);
     next.toolProfiles = { ...(next.toolProfiles ?? {}), [selected.id]: editor };
     const tunnels = { ...(next.tunnels ?? {}) };
     for (const [name, tunnel] of Object.entries(tunnels)) {
@@ -93,12 +93,12 @@ export function Profiles() {
       else if (currentlyAssigned) tunnels[name] = { ...tunnel, toolProfile: "" };
     }
     next.tunnels = tunnels;
-    saveConfig.mutate({ config: next, success: `Profile ${selected.id} was saved. Restart Codebridge to activate the new contract.` });
+    saveConfig.mutate({ config: next, success: `Profile ${selected.id} was saved. Restart Wormhole to activate the new contract.` });
   };
 
   const removeProfile = () => {
     if (selected.builtIn) return;
-    const next: CodebridgeConfig = structuredClone(configSnapshot.config);
+    const next: WormholeConfig = structuredClone(configSnapshot.config);
     const profiles = { ...(next.toolProfiles ?? {}) };
     delete profiles[selected.id];
     next.toolProfiles = profiles;
@@ -107,7 +107,7 @@ export function Profiles() {
       if (effectiveTunnelProfile(tunnel.mode, tunnel.toolProfile) === selected.id) tunnels[name] = { ...tunnel, toolProfile: "" };
     }
     next.tunnels = tunnels;
-    saveConfig.mutate({ config: next, success: `Profile ${selected.id} was removed. Restart Codebridge to remove its endpoints.` });
+    saveConfig.mutate({ config: next, success: `Profile ${selected.id} was removed. Restart Wormhole to remove its endpoints.` });
     setSelectedId("fast");
   };
 
@@ -128,7 +128,7 @@ export function Profiles() {
     <div className="profile-selector">
       {profiles.map((profile) => <ProfileButton key={profile.id} profile={profile} active={profile.id === selected.id} onClick={() => setSelectedId(profile.id)} />)}
     </div>
-    {selected.restartRequired && <Notice tone="warning"><strong>{selected.active ? "Saved configuration differs from the active runtime." : "Configured but not active."}</strong> Restart Codebridge before relying on <code>{selected.endpoint}</code>.</Notice>}
+    {selected.restartRequired && <Notice tone="warning"><strong>{selected.active ? "Saved configuration differs from the active runtime." : "Configured but not active."}</strong> Restart Wormhole before relying on <code>{selected.endpoint}</code>.</Notice>}
     <ProfileSummary profile={selected} workspaceCount={profilesQuery.data.workspaceCount} />
 
     {!selected.builtIn && editor && <Card

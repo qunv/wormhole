@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -37,7 +37,7 @@ func gatewayUpstreamServer() *mcp.Server {
 	return server
 }
 
-func TestCodebridgeGatewayExposesAndForwardsUpstreamTools(t *testing.T) {
+func TestWormholeGatewayExposesAndForwardsUpstreamTools(t *testing.T) {
 	upstreamHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return gatewayUpstreamServer() },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
@@ -45,7 +45,7 @@ func TestCodebridgeGatewayExposesAndForwardsUpstreamTools(t *testing.T) {
 	upstream := httptest.NewServer(upstreamHandler)
 	defer upstream.Close()
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	cfg.MCPServers["echo"] = config.MCPServerConfig{
@@ -111,7 +111,7 @@ func TestUpstreamModuleParticipatesInToolExposure(t *testing.T) {
 	upstream := httptest.NewServer(upstreamHandler)
 	defer upstream.Close()
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel = t.TempDir(), true
 	cfg.MCPServers["echo"] = config.MCPServerConfig{

@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package config
@@ -166,14 +166,14 @@ func Default() Config {
 		Policy:        "balanced",
 		Port:          DefaultPort,
 		Host:          "127.0.0.1",
-		Profile:       "codebridge",
+		Profile:       "wormhole",
 		ProfileDir:    filepath.Join(AppDataDir(), "profiles"),
 		RuntimeKeyEnv: "CONTROL_PLANE_API_KEY",
 		TunnelBin:     filepath.Join(AppDataDir(), tunnelExecutable()),
 		Memory: MemoryConfig{
 			Enabled: false, Provider: "none", Endpoint: "http://127.0.0.1:3111",
-			SecretEnv: "CODEBRIDGE_MEMORY_SECRET", TimeoutMS: 3_000,
-			CaptureMode: "selected", TokenBudget: 1_600, AgentID: "chatgpt-codebridge",
+			SecretEnv: "WORMHOLE_MEMORY_SECRET", TimeoutMS: 3_000,
+			CaptureMode: "selected", TokenBudget: 1_600, AgentID: "chatgpt-wormhole",
 			ProjectStrategy: "git-origin",
 			QueueSize:       128, DeliveryWorkers: 4, DeliveryTimeoutMS: 2_000, RetryMaxAttempts: 3,
 			RetryBackoffMS: 100, HealthCacheMS: 5_000,
@@ -195,33 +195,33 @@ func Default() Config {
 }
 
 func ConfigPath() string {
-	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_CONFIG_PATH")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("WORMHOLE_CONFIG_PATH")); value != "" {
 		return filepath.Clean(value)
 	}
 	return filepath.Join(AppConfigDir(), "config.json")
 }
 
-// AppHomeDir is the canonical root for persistent Codebridge files. Keeping
+// AppHomeDir is the canonical root for persistent Wormhole files. Keeping
 // configuration and runtime state below one directory makes installations
 // easier to inspect, back up, and relocate.
 func AppHomeDir() string {
-	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_HOME")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("WORMHOLE_HOME")); value != "" {
 		return filepath.Clean(value)
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codebridge")
+	return filepath.Join(home, ".wormhole")
 }
 
 func AppConfigDir() string { return AppHomeDir() }
 
 func AppDataDir() string {
-	if value := strings.TrimSpace(os.Getenv("CODEBRIDGE_DATA_DIR")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("WORMHOLE_DATA_DIR")); value != "" {
 		return filepath.Clean(value)
 	}
 	return filepath.Join(AppHomeDir(), "state")
 }
 
-// LegacyConfigDir and LegacyDataDir describe the pre-.codebridge defaults.
+// LegacyConfigDir and LegacyDataDir describe the pre-.wormhole defaults.
 // They are exported for schema migrations that contain absolute legacy paths.
 func LegacyConfigDir() string {
 	home, _ := os.UserHomeDir()
@@ -231,15 +231,15 @@ func LegacyConfigDir() string {
 		if base == "" {
 			base = filepath.Join(home, "AppData", "Roaming")
 		}
-		return filepath.Join(base, "Codebridge")
+		return filepath.Join(base, "Wormhole")
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Codebridge")
+		return filepath.Join(home, "Library", "Application Support", "Wormhole")
 	default:
 		base := os.Getenv("XDG_CONFIG_HOME")
 		if base == "" {
 			base = filepath.Join(home, ".config")
 		}
-		return filepath.Join(base, "codebridge")
+		return filepath.Join(base, "wormhole")
 	}
 }
 
@@ -251,15 +251,15 @@ func LegacyDataDir() string {
 		if base == "" {
 			base = filepath.Join(home, "AppData", "Local")
 		}
-		return filepath.Join(base, "Codebridge")
+		return filepath.Join(base, "Wormhole")
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Codebridge")
+		return filepath.Join(home, "Library", "Application Support", "Wormhole")
 	default:
 		base := os.Getenv("XDG_STATE_HOME")
 		if base == "" {
 			base = filepath.Join(home, ".local", "state")
 		}
-		return filepath.Join(base, "codebridge")
+		return filepath.Join(base, "wormhole")
 	}
 }
 
@@ -286,7 +286,7 @@ func TunnelLogPathFor(name string) string {
 func LogPath() string { return filepath.Join(AppDataDir(), "launcher.log") }
 
 // MigrateLegacyLayout copies files from the former OS-specific config/state
-// directories into ~/.codebridge. Existing destinations are never replaced
+// directories into ~/.wormhole. Existing destinations are never replaced
 // and legacy files are intentionally retained as a rollback-safe backup.
 func MigrateLegacyLayout() error {
 	if customLayoutConfigured() {
@@ -329,7 +329,7 @@ func MigrateLegacyLayout() error {
 
 func customLayoutConfigured() bool {
 	for _, name := range []string{
-		"CODEBRIDGE_HOME", "CODEBRIDGE_CONFIG_PATH", "CODEBRIDGE_DATA_DIR", "CODEBRIDGE_WORKSPACE_REGISTRY_PATH",
+		"WORMHOLE_HOME", "WORMHOLE_CONFIG_PATH", "WORMHOLE_DATA_DIR", "WORMHOLE_WORKSPACE_REGISTRY_PATH",
 	} {
 		if strings.TrimSpace(os.Getenv(name)) != "" {
 			return true
@@ -1048,7 +1048,7 @@ func normalizeTunnels(c *Config) {
 		if tunnel.Profile == "" {
 			base := strings.TrimSuffix(strings.TrimSpace(c.Profile), filepath.Ext(c.Profile))
 			if base == "" {
-				base = "codebridge"
+				base = "wormhole"
 			}
 			tunnel.Profile = base + "-" + name
 		}
@@ -1082,7 +1082,7 @@ func normalize(c *Config) {
 		c.RuntimeKeyEnv = "CONTROL_PLANE_API_KEY"
 	}
 	if c.Profile == "" {
-		c.Profile = "codebridge"
+		c.Profile = "wormhole"
 	}
 	if c.ProfileDir == "" {
 		c.ProfileDir = filepath.Join(AppDataDir(), "profiles")
@@ -1098,7 +1098,7 @@ func normalize(c *Config) {
 		c.Memory.Endpoint = "http://127.0.0.1:3111"
 	}
 	if c.Memory.SecretEnv == "" {
-		c.Memory.SecretEnv = "CODEBRIDGE_MEMORY_SECRET"
+		c.Memory.SecretEnv = "WORMHOLE_MEMORY_SECRET"
 	}
 	if c.Memory.TimeoutMS == 0 {
 		c.Memory.TimeoutMS = 3_000
@@ -1110,7 +1110,7 @@ func normalize(c *Config) {
 		c.Memory.TokenBudget = 1_600
 	}
 	if c.Memory.AgentID == "" {
-		c.Memory.AgentID = "chatgpt-codebridge"
+		c.Memory.AgentID = "chatgpt-wormhole"
 	}
 	if c.Memory.ProjectStrategy == "" {
 		c.Memory.ProjectStrategy = "git-origin"
@@ -1198,31 +1198,31 @@ func applyEnvironment(c *Config) {
 	stringEnv("TUNNEL_BIN", &c.TunnelBin)
 	stringEnv("TUNNEL_PROFILE", &c.Profile)
 	stringEnv("TUNNEL_PROFILE_DIR", &c.ProfileDir)
-	stringEnv("CODEBRIDGE_MEMORY_PROVIDER", &c.Memory.Provider)
-	stringEnv("CODEBRIDGE_MEMORY_ENDPOINT", &c.Memory.Endpoint)
-	stringEnv("CODEBRIDGE_MEMORY_SECRET_ENV", &c.Memory.SecretEnv)
-	stringEnv("CODEBRIDGE_MEMORY_CAPTURE", &c.Memory.CaptureMode)
-	stringEnv("CODEBRIDGE_MEMORY_AGENT_ID", &c.Memory.AgentID)
-	stringEnv("CODEBRIDGE_MEMORY_PROJECT_STRATEGY", &c.Memory.ProjectStrategy)
+	stringEnv("WORMHOLE_MEMORY_PROVIDER", &c.Memory.Provider)
+	stringEnv("WORMHOLE_MEMORY_ENDPOINT", &c.Memory.Endpoint)
+	stringEnv("WORMHOLE_MEMORY_SECRET_ENV", &c.Memory.SecretEnv)
+	stringEnv("WORMHOLE_MEMORY_CAPTURE", &c.Memory.CaptureMode)
+	stringEnv("WORMHOLE_MEMORY_AGENT_ID", &c.Memory.AgentID)
+	stringEnv("WORMHOLE_MEMORY_PROJECT_STRATEGY", &c.Memory.ProjectStrategy)
 	intEnv("PORT", &c.Port)
-	intEnv("CODEBRIDGE_MEMORY_TIMEOUT_MS", &c.Memory.TimeoutMS)
-	intEnv("CODEBRIDGE_MEMORY_TOKEN_BUDGET", &c.Memory.TokenBudget)
-	intEnv("CODEBRIDGE_MEMORY_QUEUE_SIZE", &c.Memory.QueueSize)
-	intEnv("CODEBRIDGE_MEMORY_DELIVERY_WORKERS", &c.Memory.DeliveryWorkers)
-	intEnv("CODEBRIDGE_MEMORY_DELIVERY_TIMEOUT_MS", &c.Memory.DeliveryTimeoutMS)
-	intEnv("CODEBRIDGE_MEMORY_RETRY_MAX_ATTEMPTS", &c.Memory.RetryMaxAttempts)
-	intEnv("CODEBRIDGE_MEMORY_RETRY_BACKOFF_MS", &c.Memory.RetryBackoffMS)
-	intEnv("CODEBRIDGE_MEMORY_HEALTH_CACHE_MS", &c.Memory.HealthCacheMS)
+	intEnv("WORMHOLE_MEMORY_TIMEOUT_MS", &c.Memory.TimeoutMS)
+	intEnv("WORMHOLE_MEMORY_TOKEN_BUDGET", &c.Memory.TokenBudget)
+	intEnv("WORMHOLE_MEMORY_QUEUE_SIZE", &c.Memory.QueueSize)
+	intEnv("WORMHOLE_MEMORY_DELIVERY_WORKERS", &c.Memory.DeliveryWorkers)
+	intEnv("WORMHOLE_MEMORY_DELIVERY_TIMEOUT_MS", &c.Memory.DeliveryTimeoutMS)
+	intEnv("WORMHOLE_MEMORY_RETRY_MAX_ATTEMPTS", &c.Memory.RetryMaxAttempts)
+	intEnv("WORMHOLE_MEMORY_RETRY_BACKOFF_MS", &c.Memory.RetryBackoffMS)
+	intEnv("WORMHOLE_MEMORY_HEALTH_CACHE_MS", &c.Memory.HealthCacheMS)
 	intEnv("AGENT_MAX_READ_CHARS", &c.MaxReadChars)
 	intEnv("AGENT_READ_DEFAULT", &c.ReadDefault)
 	intEnv("AGENT_MAX_BATCH_READ_CHARS", &c.MaxBatchReadChars)
 	intEnv("AGENT_MAX_COMMAND_OUTPUT", &c.MaxCommandOutput)
 	intEnv("AGENT_CMD_OUTPUT_DEFAULT", &c.CommandOutput)
 	intEnv("AGENT_MAX_BODY_BYTES", &c.MaxBodyBytes)
-	intEnv("CODEBRIDGE_MAX_CONCURRENT_TOOL_CALLS", &c.MaxConcurrentToolCalls)
-	intEnv("CODEBRIDGE_GIT_STATUS_CACHE_MS", &c.GitStatusCacheMS)
-	c.Memory.Enabled = envBool("CODEBRIDGE_MEMORY_ENABLED", c.Memory.Enabled)
-	c.Memory.Required = envBool("CODEBRIDGE_MEMORY_REQUIRED", c.Memory.Required)
+	intEnv("WORMHOLE_MAX_CONCURRENT_TOOL_CALLS", &c.MaxConcurrentToolCalls)
+	intEnv("WORMHOLE_GIT_STATUS_CACHE_MS", &c.GitStatusCacheMS)
+	c.Memory.Enabled = envBool("WORMHOLE_MEMORY_ENABLED", c.Memory.Enabled)
+	c.Memory.Required = envBool("WORMHOLE_MEMORY_REQUIRED", c.Memory.Required)
 	c.Audit = !envIs("AGENT_AUDIT", "0", !c.Audit)
 	c.AuditArgs = !envIs("AGENT_AUDIT_ARGS", "0", !c.AuditArgs)
 	c.HTTPLog = envBool("AGENT_HTTP_LOG", c.HTTPLog)

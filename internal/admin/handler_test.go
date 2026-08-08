@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/adminauth"
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/adminauth"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
+	"wormhole/internal/workspaceregistry"
 )
 
 func TestAdminRequiresConfiguredLoginAndSupportsLogout(t *testing.T) {
@@ -44,7 +44,7 @@ func TestAdminRequiresConfiguredLoginAndSupportsLogout(t *testing.T) {
 
 	loginRequest := localRequest(http.MethodPost, apiPrefix+"/auth/login", strings.NewReader(`{"username":"admin","password":"correct horse battery staple"}`))
 	loginRequest.Header.Set("Origin", "http://127.0.0.1:8789")
-	loginRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	loginRequest.Header.Set("X-Wormhole-CSRF", csrf.Value)
 	loginRequest.AddCookie(csrf)
 	loginResponse := httptest.NewRecorder()
 	handler.ServeHTTP(loginResponse, loginRequest)
@@ -66,7 +66,7 @@ func TestAdminRequiresConfiguredLoginAndSupportsLogout(t *testing.T) {
 
 	logoutRequest := localRequest(http.MethodPost, apiPrefix+"/auth/logout", strings.NewReader(`{}`))
 	logoutRequest.Header.Set("Origin", "http://127.0.0.1:8789")
-	logoutRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	logoutRequest.Header.Set("X-Wormhole-CSRF", csrf.Value)
 	logoutRequest.AddCookie(csrf)
 	logoutRequest.AddCookie(sessionCookie)
 	logoutResponse := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestAdminMissingCredentialsCanBeInitializedOnceFromLoopbackUI(t *testing.T)
 
 	setupRequest := localRequest(http.MethodPost, apiPrefix+"/auth/setup", strings.NewReader(`{"username":"admin","password":"correct horse battery staple"}`))
 	setupRequest.Header.Set("Origin", "http://127.0.0.1:8789")
-	setupRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	setupRequest.Header.Set("X-Wormhole-CSRF", csrf.Value)
 	setupRequest.AddCookie(csrf)
 	setupResponse := httptest.NewRecorder()
 	handler.ServeHTTP(setupResponse, setupRequest)
@@ -126,7 +126,7 @@ func TestAdminMissingCredentialsCanBeInitializedOnceFromLoopbackUI(t *testing.T)
 
 	secondRequest := localRequest(http.MethodPost, apiPrefix+"/auth/setup", strings.NewReader(`{"username":"other","password":"replacement password"}`))
 	secondRequest.Header.Set("Origin", "http://127.0.0.1:8789")
-	secondRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	secondRequest.Header.Set("X-Wormhole-CSRF", csrf.Value)
 	secondRequest.AddCookie(csrf)
 	secondResponse := httptest.NewRecorder()
 	handler.ServeHTTP(secondResponse, secondRequest)
@@ -338,7 +338,7 @@ func TestAdminAssetsSetSecurityHeadersAndCSRFCookie(t *testing.T) {
 }
 
 func TestAdminConfigFallsBackToActiveRuntimeWhenFileIsMissing(t *testing.T) {
-	t.Setenv("CODEBRIDGE_HOME", t.TempDir())
+	t.Setenv("WORMHOLE_HOME", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace = t.TempDir()
 	cfg.NoTunnel = true
@@ -402,7 +402,7 @@ func TestAdminConfigWritesRequireSameOriginCSRFAndRevision(t *testing.T) {
 	request := localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body)))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
 	request.AddCookie(cookie)
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusPreconditionFailed || !strings.Contains(response.Body.String(), "revision_conflict") {
@@ -412,7 +412,7 @@ func TestAdminConfigWritesRequireSameOriginCSRFAndRevision(t *testing.T) {
 	request = localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body)))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
 	request.Header.Set("If-Match", quoteETag(snapshot.Revision))
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.AddCookie(cookie)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -432,7 +432,7 @@ func TestAdminConfigWritesRequireSameOriginCSRFAndRevision(t *testing.T) {
 	request = localRequest(http.MethodPut, apiPrefix+"/config", strings.NewReader(string(body)))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
 	request.Header.Set("If-Match", quoteETag(snapshot.Revision))
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.AddCookie(cookie)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -477,7 +477,7 @@ func TestAdminWorkspaceOverridesRejectOwnedFieldsAndUseRevisions(t *testing.T) {
 
 	request := localRequest(http.MethodPut, apiPrefix+"/workspaces/"+id, strings.NewReader(`{"workspace":"/tmp/escape"}`))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.Header.Set("If-Match", quoteETag(payload.Revision))
 	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
@@ -488,7 +488,7 @@ func TestAdminWorkspaceOverridesRejectOwnedFieldsAndUseRevisions(t *testing.T) {
 
 	request = localRequest(http.MethodPut, apiPrefix+"/workspaces/"+id, strings.NewReader(`{"policy":"strict","extraRoots":[]}`))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.Header.Set("If-Match", quoteETag(payload.Revision))
 	request.AddCookie(cookie)
 	response = httptest.NewRecorder()
@@ -506,7 +506,7 @@ func TestAdminWorkspaceOverridesRejectOwnedFieldsAndUseRevisions(t *testing.T) {
 }
 
 func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
-	const secretName = "CODEBRIDGE_TEST_MEMORY_SECRET"
+	const secretName = "WORMHOLE_TEST_MEMORY_SECRET"
 	const secretValue = "super-secret-value"
 	const externalValue = "external-secret-value"
 	t.Setenv(secretName, externalValue)
@@ -526,7 +526,7 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 
 	request := localRequest(http.MethodPut, apiPrefix+"/secrets/NOT_REFERENCED", strings.NewReader(`{"value":"x"}`))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -536,7 +536,7 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 
 	request = localRequest(http.MethodPut, apiPrefix+"/secrets/"+secretName, strings.NewReader(`{"value":"`+secretValue+`"}`))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.AddCookie(cookie)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -559,7 +559,7 @@ func TestAdminSecretsAreWriteOnlyAndReferenceScoped(t *testing.T) {
 
 	request = localRequest(http.MethodDelete, apiPrefix+"/secrets/"+secretName, nil)
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.AddCookie(cookie)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -622,7 +622,7 @@ func TestAdminUpstreamStatusAndInvalidRefresh(t *testing.T) {
 	csrf := csrfCookie(t, response.Result())
 	request := localRequest(http.MethodPost, apiPrefix+"/upstream/missing/server/refresh", strings.NewReader(`{}`))
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	request.Header.Set("X-Wormhole-CSRF", csrf.Value)
 	request.AddCookie(csrf)
 	refresh := httptest.NewRecorder()
 	handler.ServeHTTP(refresh, request)
@@ -657,7 +657,7 @@ func TestAdminDiagnosticsBundleIsDownloadableAndRedacted(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
 		t.Fatalf("diagnostics content type = %q", contentType)
 	}
-	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, "codebridge-diagnostics-") {
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, "wormhole-diagnostics-") {
 		t.Fatalf("diagnostics disposition = %q", disposition)
 	}
 	body := response.Body.String()
@@ -689,7 +689,7 @@ func TestAdminRestartSchedulesDetachedLifecycleHelperOnce(t *testing.T) {
 	requestRestart := func() *httptest.ResponseRecorder {
 		request := localRequest(http.MethodPost, apiPrefix+"/lifecycle/restart", strings.NewReader(`{}`))
 		request.Header.Set("Origin", "http://127.0.0.1:8789")
-		request.Header.Set("X-Codebridge-CSRF", csrf.Value)
+		request.Header.Set("X-Wormhole-CSRF", csrf.Value)
 		request.AddCookie(csrf)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
@@ -748,7 +748,7 @@ func TestAdminOperationsApprovalsAndAuditExplorer(t *testing.T) {
 	csrf := csrfCookie(t, approvalsResponse.Result())
 	decisionRequest := localRequest(http.MethodPost, apiPrefix+"/approvals/default/"+approval.ID, strings.NewReader(`{"decision":"approved"}`))
 	decisionRequest.Header.Set("Origin", "http://127.0.0.1:8789")
-	decisionRequest.Header.Set("X-Codebridge-CSRF", csrf.Value)
+	decisionRequest.Header.Set("X-Wormhole-CSRF", csrf.Value)
 	decisionRequest.AddCookie(csrf)
 	decisionResponse := httptest.NewRecorder()
 	handler.ServeHTTP(decisionResponse, decisionRequest)
@@ -828,9 +828,9 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 			"review": {Name: "Review", AllowedTools: []string{"read_file"}, OutputMode: "structured"},
 		}
 		cfg.Tunnels = map[string]config.TunnelConfig{
-			"fast":   {TunnelID: "tunnel_fast", Mode: "fast", Profile: "codebridge-fast", RuntimeKeyEnv: "FAST_KEY"},
-			"full":   {TunnelID: "tunnel_full", Mode: "full", Profile: "codebridge-full", RuntimeKeyEnv: "FULL_KEY"},
-			"review": {TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "codebridge-review", RuntimeKeyEnv: "REVIEW_KEY"},
+			"fast":   {TunnelID: "tunnel_fast", Mode: "fast", Profile: "wormhole-fast", RuntimeKeyEnv: "FAST_KEY"},
+			"full":   {TunnelID: "tunnel_full", Mode: "full", Profile: "wormhole-full", RuntimeKeyEnv: "FULL_KEY"},
+			"review": {TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "wormhole-review", RuntimeKeyEnv: "REVIEW_KEY"},
 		}
 	})
 	response := httptest.NewRecorder()
@@ -939,7 +939,7 @@ func TestAdminSecretsIncludeNamedTunnelRuntimeKeys(t *testing.T) {
 func newAdminHandler(t *testing.T, mutate func(*config.Config)) *Handler {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", home)
+	t.Setenv("WORMHOLE_HOME", home)
 	workspace := t.TempDir()
 	cfg := config.Default()
 	cfg.Workspace = workspace
@@ -991,7 +991,7 @@ func cookieByName(t *testing.T, response *http.Response, name string) *http.Cook
 
 func secureAdminWrite(request *http.Request, cookie *http.Cookie, revision string) {
 	request.Header.Set("Origin", "http://127.0.0.1:8789")
-	request.Header.Set("X-Codebridge-CSRF", cookie.Value)
+	request.Header.Set("X-Wormhole-CSRF", cookie.Value)
 	request.Header.Set("If-Match", quoteETag(revision))
 	request.AddCookie(cookie)
 }

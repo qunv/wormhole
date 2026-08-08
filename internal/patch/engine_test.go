@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/state"
-	"codebridge/internal/workspace"
+	"wormhole/internal/state"
+	"wormhole/internal/workspace"
 )
 
 func TestApplyOperationsRollsBackExactBatch(t *testing.T) {

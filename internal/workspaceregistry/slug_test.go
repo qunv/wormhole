@@ -21,8 +21,8 @@ func TestSlugID(t *testing.T) {
 }
 
 func TestIDFromPathUsesFolderName(t *testing.T) {
-	path := filepath.Join("home", "user", "CodeBridge Repo")
-	if got := IDFromPath(path); got != "codebridge-repo" {
+	path := filepath.Join("home", "user", "Wormhole Repo")
+	if got := IDFromPath(path); got != "wormhole-repo" {
 		t.Fatalf("IDFromPath(%q) = %q", path, got)
 	}
 }

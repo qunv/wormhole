@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestRuntimeMetricsTrackOutcomesAndAuditCorrelation(t *testing.T) {

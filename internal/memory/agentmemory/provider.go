@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agentmemory
@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/memory"
+	"wormhole/internal/memory"
 )
 
 const (

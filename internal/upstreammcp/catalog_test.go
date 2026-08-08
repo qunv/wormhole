@@ -23,7 +23,7 @@ func catalogTestTools() []*mcp.Tool {
 }
 
 func TestToolCatalogRoundTrip(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	key := strings.Repeat("a", 32)
 	if err := SaveToolCatalog(key, catalogTestTools()); err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestToolCatalogRoundTrip(t *testing.T) {
 }
 
 func TestToolCatalogRejectsInvalidAndCorruptContent(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	if err := SaveToolCatalog("invalid", catalogTestTools()); err == nil {
 		t.Fatal("invalid catalog key was accepted")
 	}

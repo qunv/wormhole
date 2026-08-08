@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/workspaceregistry"
 )
 
 type namedWorkspaceConfig struct {
@@ -37,17 +37,17 @@ func (a App) workspaceCommand(ctx context.Context, defaultConfig config.Config, 
 		return a.workspaceList(defaultConfig, opts)
 	case "start", "stop", "status":
 		if len(opts.Rest) < 2 {
-			return fmt.Errorf("usage: codebridge workspace %s <id>", opts.Rest[0])
+			return fmt.Errorf("usage: wormhole workspace %s <id>", opts.Rest[0])
 		}
 		return a.workspaceLifecycle(ctx, defaultConfig, opts.Rest[0], opts.Rest[1], opts)
 	case "remove":
 		if len(opts.Rest) < 2 {
-			return errors.New("usage: codebridge workspace remove <id>")
+			return errors.New("usage: wormhole workspace remove <id>")
 		}
 		return a.workspaceRemove(defaultConfig, opts.Rest[1], opts)
 	case "compact":
 		if len(opts.Rest) < 2 {
-			return errors.New("usage: codebridge workspace compact <id> [--dry-run]")
+			return errors.New("usage: wormhole workspace compact <id> [--dry-run]")
 		}
 		return a.workspaceCompact(defaultConfig, opts.Rest[1], opts)
 	default:
@@ -57,7 +57,7 @@ func (a App) workspaceCommand(ctx context.Context, defaultConfig config.Config, 
 
 func (a App) workspaceAdd(defaultConfig config.Config, opts options) error {
 	if len(opts.Rest) < 3 {
-		return errors.New("usage: codebridge workspace add <id> <path> [--force]")
+		return errors.New("usage: wormhole workspace add <id> <path> [--force]")
 	}
 	entry, _, err := a.registerWorkspace(defaultConfig, opts.Rest[1], opts.Rest[2], opts, opts.Force)
 	if err != nil {
@@ -80,7 +80,7 @@ func (a App) workspaceAdd(defaultConfig config.Config, opts options) error {
 	if opts.Profile != "" {
 		fmt.Fprintln(a.Stdout, "  note:     --profile ignored; the shared daemon owns one tunnel profile")
 	}
-	fmt.Fprintln(a.Stdout, "Restart Codebridge to activate the endpoint, or run: codebridge workspace start "+entry.ID)
+	fmt.Fprintln(a.Stdout, "Restart Wormhole to activate the endpoint, or run: wormhole workspace start "+entry.ID)
 	return nil
 }
 
@@ -306,7 +306,7 @@ func (a App) workspaceRemoveUnlocked(defaultConfig config.Config, rawID string, 
 	}
 	fmt.Fprintf(a.Stdout, "Workspace %s removed from the daemon registry\n", id)
 	if readHealth(defaultConfig.Port) != nil {
-		fmt.Fprintln(a.Stdout, "Restart Codebridge to remove the active endpoint.")
+		fmt.Fprintln(a.Stdout, "Restart Wormhole to remove the active endpoint.")
 	}
 	return nil
 }
@@ -438,7 +438,7 @@ func (a App) workspaceLifecycleUnlocked(ctx context.Context, defaultConfig confi
 	}
 	entry, exists := registry.Workspaces[id]
 	if !exists {
-		return fmt.Errorf("workspace %q is not registered; run codebridge workspace list", id)
+		return fmt.Errorf("workspace %q is not registered; run wormhole workspace list", id)
 	}
 	health := readHealth(defaultConfig.Port)
 	_, online := workspaceHealthMap(health)[id]

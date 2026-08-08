@@ -3,9 +3,9 @@ package factory
 import (
 	"testing"
 
-	"codebridge/internal/config"
-	"codebridge/internal/memory"
-	"codebridge/internal/memory/noop"
+	"wormhole/internal/config"
+	"wormhole/internal/memory"
+	"wormhole/internal/memory/noop"
 )
 
 func TestRegistryContainsBuiltInProviders(t *testing.T) {

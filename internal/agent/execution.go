@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/processx"
-	"codebridge/internal/security"
+	"wormhole/internal/processx"
+	"wormhole/internal/security"
 )
 
 func (r *Runtime) handleExec(ctx context.Context, name string, args map[string]any) (any, error) {

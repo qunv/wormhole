@@ -57,7 +57,7 @@ func processIdentity(pid int) (string, error) {
 	return hex.EncodeToString(sum[:16]), nil
 }
 
-func processLooksLikeCodebridgeChild(pid int, label string) bool {
+func processLooksLikeWormholeChild(pid int, label string) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -73,7 +73,7 @@ func processLooksLikeCodebridgeChild(pid int, label string) bool {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return false
 	}
-	return codebridgeChildCommandLine(value.ExecutablePath, value.CommandLine, label)
+	return wormholeChildCommandLine(value.ExecutablePath, value.CommandLine, label)
 }
 
 func stopPID(pid int) error {

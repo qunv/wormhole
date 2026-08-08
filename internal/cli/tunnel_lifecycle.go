@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func migrateTunnelProcessState(state *processState) {
@@ -62,7 +62,7 @@ func ownedNamedTunnelProcess(name string, process tunnelProcessState, stateOwned
 		if processMatches(process.PID, process.Identity) {
 			return process.PID, process.Identity, true
 		}
-		if !stateOwned || !processLooksLikeCodebridgeChild(process.PID, tunnelLabel(name)) {
+		if !stateOwned || !processLooksLikeWormholeChild(process.PID, tunnelLabel(name)) {
 			return 0, "", false
 		}
 		identity, err := captureChildProcessIdentity(process.PID, tunnelLabel(name), 500*time.Millisecond)
@@ -119,7 +119,7 @@ func inspectTunnelOwnership(state *processState, stateOwned bool) (map[string]tu
 		process := state.Tunnels[name]
 		pid, identity, owned := ownedNamedTunnelProcess(name, process, stateOwned)
 		if process.PID > 0 && !owned && pidAlive(process.PID) {
-			return nil, fmt.Errorf("tunnel %q PID %d is alive but is not owned by the current Codebridge process state", name, process.PID)
+			return nil, fmt.Errorf("tunnel %q PID %d is alive but is not owned by the current Wormhole process state", name, process.PID)
 		}
 		result[name] = tunnelOwnership{PID: pid, Identity: identity, Owned: owned}
 	}

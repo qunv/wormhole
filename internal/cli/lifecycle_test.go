@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestLifecycleLockSerializesAndReleases(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	release, err := acquireLifecycleLock(context.Background(), "first")
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestLifecycleLockSerializesAndReleases(t *testing.T) {
 }
 
 func TestLifecycleLockDoesNotDeleteFreshPartialRecord(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	path := filepath.Join(config.AppDataDir(), "lifecycle.lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestLifecycleLockDoesNotDeleteFreshPartialRecord(t *testing.T) {
 }
 
 func TestLifecycleLockRecoversStaleRecord(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	path := filepath.Join(config.AppDataDir(), "lifecycle.lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestLifecycleLockRecoversStaleRecord(t *testing.T) {
 }
 
 func TestNormalizeLinuxExecutablePreservesIdentityAfterBinaryReplacement(t *testing.T) {
-	path := "/home/user/.local/bin/codebridge"
+	path := "/home/user/.local/bin/wormhole"
 	if got := normalizeLinuxExecutable(path + " (deleted)"); got != path {
 		t.Fatalf("normalizeLinuxExecutable() = %q, want %q", got, path)
 	}
@@ -85,17 +85,17 @@ func TestNormalizeLinuxExecutablePreservesIdentityAfterBinaryReplacement(t *test
 	}
 }
 
-func TestCodebridgeChildInvocationRequiresExactExecutableAndArguments(t *testing.T) {
+func TestWormholeChildInvocationRequiresExactExecutableAndArguments(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := []string{executable, "__child", "tunnel", childLogPath("tunnel"), config.AppDataDir(), "/path/to/tunnel-client"}
-	if !codebridgeChildInvocation(executable, args, "tunnel") {
+	if !wormholeChildInvocation(executable, args, "tunnel") {
 		t.Fatalf("valid tunnel child invocation was rejected: %#v", args)
 	}
 	for name, mutate := range map[string]func([]string) []string{
-		"wrong executable": func(value []string) []string { value[0] = "/tmp/not-codebridge"; return value },
+		"wrong executable": func(value []string) []string { value[0] = "/tmp/not-wormhole"; return value },
 		"wrong marker":     func(value []string) []string { value[1] = "serve"; return value },
 		"wrong label":      func(value []string) []string { value[2] = "server"; return value },
 		"wrong log":        func(value []string) []string { value[3] = "/tmp/tunnel.log"; return value },
@@ -107,7 +107,7 @@ func TestCodebridgeChildInvocationRequiresExactExecutableAndArguments(t *testing
 			if name == "wrong executable" {
 				executablePath = candidate[0]
 			}
-			if codebridgeChildInvocation(executablePath, candidate, "tunnel") {
+			if wormholeChildInvocation(executablePath, candidate, "tunnel") {
 				t.Fatalf("invalid invocation was accepted: %#v", candidate)
 			}
 		})
@@ -186,7 +186,7 @@ func TestOwnedTunnelProcessMigratesOnlyWithVerifiedState(t *testing.T) {
 }
 
 func TestProcessStateRoundTripPreservesIdentities(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	want := processState{
 		ServerPID: 11, ServerIdentity: "server-identity",
 		TunnelPID: 22, TunnelIdentity: "tunnel-identity",
@@ -268,7 +268,7 @@ func TestReadFileTailBoundsLargeLogs(t *testing.T) {
 }
 
 func TestLoggedChildRejectsUnexpectedLogPath(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	err := (App{}).runLoggedChild(context.Background(), []string{"server", filepath.Join(t.TempDir(), "other.log"), "", os.Args[0]})
 	if err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("unexpected validation result: %v", err)
@@ -276,7 +276,7 @@ func TestLoggedChildRejectsUnexpectedLogPath(t *testing.T) {
 }
 
 func TestChildLogPathSeparatesServerAndTunnel(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	if childLogPath("server") != config.ServerLogPath() {
 		t.Fatalf("server log path = %s", childLogPath("server"))
 	}
@@ -289,18 +289,18 @@ func TestChildLogPathSeparatesServerAndTunnel(t *testing.T) {
 }
 
 func TestForegroundChildKeepsLogWriterOpen(t *testing.T) {
-	if os.Getenv("CODEBRIDGE_TEST_FOREGROUND_CHILD") == "1" {
+	if os.Getenv("WORMHOLE_TEST_FOREGROUND_CHILD") == "1" {
 		_, _ = os.Stdout.WriteString("first line\n")
 		time.Sleep(50 * time.Millisecond)
 		_, _ = os.Stdout.WriteString("second line\n")
 		return
 	}
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	app := App{Stdout: &stdout, Stderr: &stderr, Stdin: strings.NewReader("")}
 	cmd := exec.Command(os.Args[0], "-test.run=TestForegroundChildKeepsLogWriterOpen")
-	cmd.Env = append(os.Environ(), "CODEBRIDGE_TEST_FOREGROUND_CHILD=1")
+	cmd.Env = append(os.Environ(), "WORMHOLE_TEST_FOREGROUND_CHILD=1")
 	child, err := app.startChild("test", cmd, false)
 	if err != nil {
 		t.Fatal(err)
@@ -326,12 +326,12 @@ func TestForegroundChildKeepsLogWriterOpen(t *testing.T) {
 
 func TestSaveMemorySecretKeepsOrClearsExistingValue(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", base)
+	t.Setenv("WORMHOLE_HOME", base)
 	path := config.DotEnvPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("CONTROL_PLANE_API_KEY=runtime\nCODEBRIDGE_MEMORY_SECRET=existing\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("CONTROL_PLANE_API_KEY=runtime\nWORMHOLE_MEMORY_SECRET=existing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
@@ -420,7 +420,7 @@ func TestReadHealthRejectsUnidentifiedPublicHealth(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	if health := readHealth(port); health != nil {
-		t.Fatalf("unidentified public health must not be treated as Codebridge: %#v", health)
+		t.Fatalf("unidentified public health must not be treated as Wormhole: %#v", health)
 	}
 }
 
@@ -442,7 +442,7 @@ func TestPortAvailableDetectsListener(t *testing.T) {
 }
 
 func TestStartupWaitTimeoutIncludesConfiguredDependencies(t *testing.T) {
-	t.Setenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH", filepath.Join(t.TempDir(), "workspaces.json"))
+	t.Setenv("WORMHOLE_WORKSPACE_REGISTRY_PATH", filepath.Join(t.TempDir(), "workspaces.json"))
 	cfg := config.Default()
 	cfg.Memory.Enabled = true
 	cfg.Memory.Required = true
@@ -518,17 +518,17 @@ func TestWaitForHealthProgressDetectsProcessExit(t *testing.T) {
 
 func TestSaveMemorySecretStoresOnlySecret(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", base)
+	t.Setenv("WORMHOLE_HOME", base)
 	path := config.DotEnvPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	existing := strings.Join([]string{
 		"CONTROL_PLANE_API_KEY=runtime-secret",
-		"CODEBRIDGE_MEMORY_ENABLED=true",
-		"CODEBRIDGE_MEMORY_PROVIDER=agentmemory",
-		"CODEBRIDGE_MEMORY_ENDPOINT=http://127.0.0.1:3111",
-		"CODEBRIDGE_MEMORY_SECRET=old-secret",
+		"WORMHOLE_MEMORY_ENABLED=true",
+		"WORMHOLE_MEMORY_PROVIDER=agentmemory",
+		"WORMHOLE_MEMORY_ENDPOINT=http://127.0.0.1:3111",
+		"WORMHOLE_MEMORY_SECRET=old-secret",
 		"",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
@@ -537,7 +537,7 @@ func TestSaveMemorySecretStoresOnlySecret(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Memory.SecretEnv = "CUSTOM_MEMORY_SECRET"
-	if err := saveMemorySecret(cfg, "CODEBRIDGE_MEMORY_SECRET", "new secret", false); err != nil {
+	if err := saveMemorySecret(cfg, "WORMHOLE_MEMORY_SECRET", "new secret", false); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -552,8 +552,8 @@ func TestSaveMemorySecretStoresOnlySecret(t *testing.T) {
 		t.Fatalf("memory secret = %q, want new secret", got)
 	}
 	for _, key := range []string{
-		"CODEBRIDGE_MEMORY_ENABLED", "CODEBRIDGE_MEMORY_PROVIDER",
-		"CODEBRIDGE_MEMORY_ENDPOINT", "CODEBRIDGE_MEMORY_SECRET",
+		"WORMHOLE_MEMORY_ENABLED", "WORMHOLE_MEMORY_PROVIDER",
+		"WORMHOLE_MEMORY_ENDPOINT", "WORMHOLE_MEMORY_SECRET",
 	} {
 		if _, exists := values[key]; exists {
 			t.Fatalf("non-secret or old secret key %s remained in .env: %s", key, raw)

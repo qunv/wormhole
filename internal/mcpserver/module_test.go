@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -30,7 +30,7 @@ func (*mcpTestModule) Health(context.Context) any { return map[string]any{"avail
 func (*mcpTestModule) Close() error               { return nil }
 
 func TestMCPRegistersRuntimeModulesAndPropagatesIdentity(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	runtime, err := agent.New(cfg, "test", "pro", "test-config")

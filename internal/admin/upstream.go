@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/security"
+	"wormhole/internal/security"
 )
 
 func (h *Handler) getUpstreamMCP(writer http.ResponseWriter, request *http.Request) {

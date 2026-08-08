@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package server
@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/admin"
-	"codebridge/internal/agent"
-	"codebridge/internal/mcpserver"
+	"wormhole/internal/admin"
+	"wormhole/internal/agent"
+	"wormhole/internal/mcpserver"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -182,7 +182,7 @@ func sessionStreamableDefinitionHandler(router *mcpserver.SessionRouter, profile
 func (h *HTTP) ListenAndServe(ctx context.Context) error {
 	errs := make(chan error, 1)
 	go func() {
-		fmt.Printf("Codebridge v%s listening on http://%s\n", h.Runtime.Version, h.Server.Addr)
+		fmt.Printf("Wormhole v%s listening on http://%s\n", h.Runtime.Version, h.Server.Addr)
 		fmt.Printf("Mode: %s  Policy: %s  Auth: %s\n", h.Runtime.Config.Mode, h.Runtime.Config.Policy, ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"))
 		fmt.Printf("Workspace: %s\nMCP endpoint: http://%s/mcp\nFast MCP endpoint: http://%s/mcp/fast\n", h.Runtime.Workspace.Primary, h.Server.Addr, h.Server.Addr)
 		errs <- h.Server.ListenAndServe()
@@ -203,7 +203,7 @@ func (h *HTTP) ListenAndServe(ctx context.Context) error {
 
 func (h *HTTP) root(writer http.ResponseWriter, _ *http.Request) {
 	h.sendJSON(writer, http.StatusOK, map[string]any{
-		"status": "ok", "name": "Codebridge", "version": h.Runtime.Version,
+		"status": "ok", "name": "Wormhole", "version": h.Runtime.Version,
 		"workspace_count": 1 + len(h.Runtimes), "session_endpoint": mcpserver.SessionEndpoint,
 		"session_fast_endpoint": mcpserver.SessionFastEndpoint, "fast_endpoint": "/mcp/fast",
 	})
@@ -218,7 +218,7 @@ func (h *HTTP) health(writer http.ResponseWriter, _ *http.Request) {
 func (h *HTTP) oauthMetadata(writer http.ResponseWriter, _ *http.Request) {
 	h.sendJSON(writer, http.StatusOK, map[string]any{
 		"resource": "http://" + h.Server.Addr + "/mcp", "bearer_methods_supported": []string{"header"},
-		"scopes_supported": []string{}, "resource_name": "Codebridge MCP",
+		"scopes_supported": []string{}, "resource_name": "Wormhole MCP",
 		"resource_documentation": "http://" + h.Server.Addr + "/",
 	})
 }

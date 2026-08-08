@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codebridge Orchestrator — Kiến trúc tổng thể và kế hoạch triển khai</title>
+  <title>Wormhole Orchestrator — Kiến trúc tổng thể và kế hoạch triển khai</title>
   <style>
     :root {
       --bg: #08111f;
@@ -400,21 +400,21 @@
     <div class="brand">
       <div class="brand-mark"></div>
       <div>
-        <strong>Codebridge Orchestrator</strong>
+        <strong>Wormhole Orchestrator</strong>
         <small>Architecture Review Draft</small>
       </div>
     </div>
     <nav>
       <a href="#summary">1. Tóm tắt</a>
       <a href="#principles">2. Nguyên tắc thiết kế</a>
-      <a href="#current-state">3. Hiện trạng Codebridge</a>
+      <a href="#current-state">3. Hiện trạng Wormhole</a>
       <a href="#architecture">4. Kiến trúc tổng thể</a>
       <a href="#components">5. Thành phần chính</a>
       <a href="#flows">6. Luồng điều phối</a>
       <a href="#states">7. State machine</a>
       <a href="#data-model">8. Mô hình dữ liệu</a>
       <a href="#contracts">9. Contract với agent</a>
-      <a href="#integration">10. Tích hợp Codebridge</a>
+      <a href="#integration">10. Tích hợp Wormhole</a>
       <a href="#security">11. An toàn và cô lập</a>
       <a href="#failures">12. Xử lý lỗi</a>
       <a href="#observability">13. Observability</a>
@@ -431,7 +431,7 @@
   <main>
     <header class="hero">
       <div class="eyebrow">Architecture & Implementation Plan</div>
-      <h1>Tầng điều phối nhiều agent trên Codebridge</h1>
+      <h1>Tầng điều phối nhiều agent trên Wormhole</h1>
       <p class="lead">
         Thiết kế control plane để phân rã công việc, cấp workspace/Git worktree riêng cho từng agent session,
         theo dõi tiến độ, kiểm chứng kết quả và hợp nhất thay đổi — không cần agent giao tiếp trực tiếp với nhau.
@@ -442,7 +442,7 @@
         <span class="badge">Artifact handoff</span>
         <span class="badge">Lease-based scheduling</span>
         <span class="badge">SQLite control state</span>
-        <span class="badge">Codebridge execution plane</span>
+        <span class="badge">Wormhole execution plane</span>
       </div>
     </header>
 
@@ -451,7 +451,7 @@
       <div class="callout success">
         <strong>Đề xuất chính:</strong> xây một orchestrator bên ngoài <code>agent.Runtime</code>, dùng pool workspace cố định,
         mỗi workspace trỏ tới một Git worktree riêng. Orchestrator cấp lease cho task, gọi agent qua fixed MCP endpoint,
-        nhận structured result, tự kiểm chứng bằng Codebridge rồi mới hoàn thành hoặc merge.
+        nhận structured result, tự kiểm chứng bằng Wormhole rồi mới hoàn thành hoặc merge.
       </div>
 
       <div class="grid-3">
@@ -462,7 +462,7 @@
         </article>
         <article class="card">
           <span class="label">Execution plane</span>
-          <h3>Codebridge</h3>
+          <h3>Wormhole</h3>
           <p>Cung cấp MCP tools, workspace confinement, Git, process, policy, audit, memory và quality gate.</p>
         </article>
         <article class="card">
@@ -486,7 +486,7 @@
       <h3>Không nằm trong MVP</h3>
       <ul>
         <li>Agent-to-agent messaging, mailbox hoặc hội thoại trực tiếp.</li>
-        <li>Provision runtime Codebridge động mà không restart daemon.</li>
+        <li>Provision runtime Wormhole động mà không restart daemon.</li>
         <li>Cho agent tự quản lý worktree lifecycle hoặc merge vào branch chính.</li>
         <li>Dùng long-term memory làm task queue hoặc dependency transport.</li>
         <li>Scheduler tối ưu bằng ML hoặc tự động chia task hoàn toàn không kiểm soát.</li>
@@ -514,17 +514,17 @@
         </article>
         <article class="card">
           <h3>2.5 Workspace pool trước, dynamic runtime sau</h3>
-          <p>Codebridge hiện reconcile daemon khi tập workspace thay đổi. MVP dùng pool cố định để tránh restart ảnh hưởng agent đang chạy.</p>
+          <p>Wormhole hiện reconcile daemon khi tập workspace thay đổi. MVP dùng pool cố định để tránh restart ảnh hưởng agent đang chạy.</p>
         </article>
         <article class="card">
           <h3>2.6 Control plane không thao tác repo tùy tiện</h3>
-          <p>Orchestrator chỉ thực hiện lifecycle thao tác đã định nghĩa; mọi coding action vẫn đi qua Codebridge và policy tương ứng.</p>
+          <p>Orchestrator chỉ thực hiện lifecycle thao tác đã định nghĩa; mọi coding action vẫn đi qua Wormhole và policy tương ứng.</p>
         </article>
       </div>
     </section>
 
     <section id="current-state">
-      <h2>3. Hiện trạng Codebridge liên quan</h2>
+      <h2>3. Hiện trạng Wormhole liên quan</h2>
       <table>
         <thead>
           <tr><th>Khả năng hiện có</th><th>Đánh giá</th><th>Vị trí chính</th></tr>
@@ -562,7 +562,7 @@
           </div>
           <div class="arrow">→</div>
           <div class="node green">
-            <strong>Codebridge Execution Plane</strong>
+            <strong>Wormhole Execution Plane</strong>
             <small>MCP · Workspace · Git · Process · Policy · Audit</small>
           </div>
         </div>
@@ -602,10 +602,10 @@
           <tr>
             <td>Orchestrator</td>
             <td>Job, task DAG, lease, scheduling, agent run, artifact, retry, verification policy, merge workflow.</td>
-            <td>Không trực tiếp cung cấp coding tools; không thay thế Codebridge policy/audit.</td>
+            <td>Không trực tiếp cung cấp coding tools; không thay thế Wormhole policy/audit.</td>
           </tr>
           <tr>
-            <td>Codebridge</td>
+            <td>Wormhole</td>
             <td>Workspace confinement, MCP contract, file/Git/process tools, approvals, audit, runtime health.</td>
             <td>Không quyết định task dependency, agent assignment hoặc merge strategy của job.</td>
           </tr>
@@ -710,7 +710,7 @@ type Verifier interface {
             <div class="step">6c. Return structured result</div>
           </div>
           <div class="lane">
-            <strong>Codebridge</strong>
+            <strong>Wormhole</strong>
             <div class="step">MCP tool execution</div>
             <div class="step">Policy and approvals</div>
             <div class="step">Git / test / review</div>
@@ -955,12 +955,12 @@ created_at DATETIME</pre>
 }</pre>
 
       <div class="callout warning">
-        Structured result không được dùng làm bằng chứng duy nhất. Verifier phải đọc trạng thái thực tế từ workspace qua Codebridge.
+        Structured result không được dùng làm bằng chứng duy nhất. Verifier phải đọc trạng thái thực tế từ workspace qua Wormhole.
       </div>
     </section>
 
     <section id="integration">
-      <h2>10. Tích hợp với Codebridge</h2>
+      <h2>10. Tích hợp với Wormhole</h2>
 
       <h3>10.1 Endpoint sử dụng</h3>
       <table>
@@ -986,15 +986,15 @@ created_at DATETIME</pre>
 
       <h3>10.3 Chuẩn bị workspace pool</h3>
       <pre>Repository chính
-  ├── worktrees/codebridge-worker-01  → branch orchestrator/worker-01
-  ├── worktrees/codebridge-worker-02  → branch orchestrator/worker-02
-  ├── worktrees/codebridge-worker-03  → branch orchestrator/worker-03
-  ├── worktrees/codebridge-worker-04  → branch orchestrator/worker-04
-  └── worktrees/codebridge-integration → branch orchestrator/integration</pre>
+  ├── worktrees/wormhole-worker-01  → branch orchestrator/worker-01
+  ├── worktrees/wormhole-worker-02  → branch orchestrator/worker-02
+  ├── worktrees/wormhole-worker-03  → branch orchestrator/worker-03
+  ├── worktrees/wormhole-worker-04  → branch orchestrator/worker-04
+  └── worktrees/wormhole-integration → branch orchestrator/integration</pre>
 
       <p>Mỗi đường dẫn được đăng ký thành named workspace một lần. Orchestrator chỉ lease và reset các workspace này, không add/remove registry cho từng task.</p>
 
-      <h3>10.4 Thay đổi Codebridge đề xuất cho MVP</h3>
+      <h3>10.4 Thay đổi Wormhole đề xuất cho MVP</h3>
       <table>
         <thead><tr><th>Thay đổi</th><th>Mức cần thiết</th><th>Ghi chú</th></tr></thead>
         <tbody>
@@ -1028,7 +1028,7 @@ created_at DATETIME</pre>
         </article>
         <article class="card">
           <h3>Policy inheritance</h3>
-          <p>Codebridge policy, approval, audit và path confinement vẫn là lớp bảo vệ bắt buộc cho mọi tool call.</p>
+          <p>Wormhole policy, approval, audit và path confinement vẫn là lớp bảo vệ bắt buộc cho mọi tool call.</p>
         </article>
         <article class="card">
           <h3>Secret handling</h3>
@@ -1057,7 +1057,7 @@ created_at DATETIME</pre>
           <tr><td>Agent treo</td><td>Heartbeat quá hạn.</td><td>Đánh dấu run LOST, kiểm tra process/workspace, lưu partial diff, cleanup hoặc quarantine, retry.</td></tr>
           <tr><td>Agent trả result muộn</td><td>Lease token/run attempt không còn active.</td><td>Từ chối result; lưu telemetry nhưng không thay đổi task hiện tại.</td></tr>
           <tr><td>Workspace dirty trước task</td><td>Prepare check thất bại.</td><td>Không lease; cleanup; nếu vẫn lỗi thì quarantine.</td></tr>
-          <tr><td>Codebridge unavailable</td><td>Health/MCP call thất bại.</td><td>Không start run mới; retry với backoff; đánh dấu workspace unavailable.</td></tr>
+          <tr><td>Wormhole unavailable</td><td>Health/MCP call thất bại.</td><td>Không start run mới; retry với backoff; đánh dấu workspace unavailable.</td></tr>
           <tr><td>Verification fail</td><td>Test/lint/build/review không đạt.</td><td>Tạo verification artifact; retry task hoặc tạo fix task.</td></tr>
           <tr><td>Merge conflict</td><td>Cherry-pick/merge exit không thành công.</td><td>Tạo conflict artifact; BLOCKED hoặc resolution task trong workspace riêng.</td></tr>
           <tr><td>Orchestrator restart</td><td>Startup recovery scan.</td><td>Load active leases/runs, đối chiếu heartbeat và runner state, tiếp tục hoặc mark LOST.</td></tr>
@@ -1070,7 +1070,7 @@ created_at DATETIME</pre>
         <li>Chuyển active run sang <code>LOST_PENDING_INSPECTION</code>.</li>
         <li>Không cấp workspace cho run mới ngay lập tức.</li>
         <li>Kiểm tra runner process còn sống hay không.</li>
-        <li>Gọi Codebridge thu <code>git_status</code>, diff và process list.</li>
+        <li>Gọi Wormhole thu <code>git_status</code>, diff và process list.</li>
         <li>Lưu partial artifact nếu có giá trị.</li>
         <li>Stop process còn sót, cleanup hoặc quarantine.</li>
         <li>Chỉ sau đó mới retry task ở workspace khác hoặc cùng workspace đã sạch.</li>
@@ -1098,7 +1098,7 @@ attempt
 workspace_id
 lease_id
 artifact_id
-codebridge_call_id (khi có)</pre>
+wormhole_call_id (khi có)</pre>
 
       <h3>Audit event mẫu</h3>
       <pre>{
@@ -1118,9 +1118,9 @@ codebridge_call_id (khi có)</pre>
       <h3>14.1 Local single-host MVP</h3>
       <div class="diagram">
         <div class="flow">
-          <div class="node"><strong>codebridge daemon</strong><small>5 named workspaces</small></div>
+          <div class="node"><strong>wormhole daemon</strong><small>5 named workspaces</small></div>
           <div class="arrow">+</div>
-          <div class="node accent"><strong>codebridge orchestrator</strong><small>SQLite + scheduler + runners</small></div>
+          <div class="node accent"><strong>wormhole orchestrator</strong><small>SQLite + scheduler + runners</small></div>
           <div class="arrow">+</div>
           <div class="node green"><strong>agent processes</strong><small>Local CLI/API workers</small></div>
         </div>
@@ -1130,8 +1130,8 @@ codebridge_call_id (khi có)</pre>
 
       <h3>14.2 Package layout đề xuất</h3>
       <pre>cmd/
-  codebridge/
-  codebridge-orchestrator/
+  wormhole/
+  wormhole-orchestrator/
 
 internal/orchestrator/
   service.go
@@ -1155,9 +1155,9 @@ internal/orchestrator/
 
       <h3>14.3 Process ownership</h3>
       <ul>
-        <li>Codebridge daemon tiếp tục sở hữu runtime, MCP listener, process registry và tunnel.</li>
+        <li>Wormhole daemon tiếp tục sở hữu runtime, MCP listener, process registry và tunnel.</li>
         <li>Orchestrator sở hữu agent runner process do nó khởi chạy.</li>
-        <li>Không dùng Codebridge managed process registry làm nguồn sự thật cho orchestrator run lifecycle trong MVP; chỉ dùng để hỗ trợ inspection nếu agent chạy qua Codebridge.</li>
+        <li>Không dùng Wormhole managed process registry làm nguồn sự thật cho orchestrator run lifecycle trong MVP; chỉ dùng để hỗ trợ inspection nếu agent chạy qua Wormhole.</li>
         <li>SQLite là nguồn sự thật cho job/task/lease/run/artifact.</li>
       </ul>
     </section>
@@ -1231,7 +1231,7 @@ internal/orchestrator/
           <div>
             <h3>Verifier và retry policy</h3>
             <ul>
-              <li>Codebridge MCP client cho verifier.</li>
+              <li>Wormhole MCP client cho verifier.</li>
               <li>Git/commit/diff verification.</li>
               <li>Quality gate, review và security policy.</li>
               <li>Retry classification: retryable/fatal/blocked.</li>
@@ -1278,7 +1278,7 @@ internal/orchestrator/
               <li>Planner agent tạo DAG có schema và validation.</li>
               <li>Overlap/risk hints từ CodeGraph.</li>
               <li>Dynamic workspace provisioning.</li>
-              <li>Codebridge RuntimeManager add/remove workspace không restart daemon.</li>
+              <li>Wormhole RuntimeManager add/remove workspace không restart daemon.</li>
               <li>SessionRouter/tool contract refresh an toàn.</li>
             </ul>
             <p><strong>Exit criteria:</strong> provision/release workspace per-job mà không gián đoạn active agents.</p>
@@ -1294,7 +1294,7 @@ internal/orchestrator/
         <li><code>feat(orchestrator): add workspace pool and leases</code></li>
         <li><code>feat(orchestrator): add runner interface and local runner</code></li>
         <li><code>feat(orchestrator): add scheduler and recovery</code></li>
-        <li><code>feat(orchestrator): add Codebridge verifier</code></li>
+        <li><code>feat(orchestrator): add Wormhole verifier</code></li>
         <li><code>feat(orchestrator): add integration merge manager</code></li>
         <li><code>feat(orchestrator): add API and metrics</code></li>
       </ol>
@@ -1323,7 +1323,7 @@ internal/orchestrator/
       <table>
         <thead><tr><th>#</th><th>Quyết định</th><th>Khuyến nghị hiện tại</th></tr></thead>
         <tbody>
-          <tr><td>D1</td><td>Orchestrator nằm cùng binary hay binary riêng?</td><td>Package cùng repo, binary riêng <code>codebridge-orchestrator</code>.</td></tr>
+          <tr><td>D1</td><td>Orchestrator nằm cùng binary hay binary riêng?</td><td>Package cùng repo, binary riêng <code>wormhole-orchestrator</code>.</td></tr>
           <tr><td>D2</td><td>Agent tự động dùng session endpoint hay fixed endpoint?</td><td>Fixed endpoint theo workspace.</td></tr>
           <tr><td>D3</td><td>Workspace per-task hay pool cố định?</td><td>Pool cố định cho MVP.</td></tr>
           <tr><td>D4</td><td>State store?</td><td>SQLite WAL.</td></tr>
@@ -1331,19 +1331,19 @@ internal/orchestrator/
           <tr><td>D6</td><td>Ai được merge?</td><td>Merge Manager độc quyền integration workspace.</td></tr>
           <tr><td>D7</td><td>Agent result có đáng tin không?</td><td>Không; bắt buộc verifier độc lập.</td></tr>
           <tr><td>D8</td><td>Planner agent xuất DAG tự do?</td><td>Không trong MVP; phase sau với schema, limits và cycle validation.</td></tr>
-          <tr><td>D9</td><td>Workspace cleanup dùng shell hay Codebridge tool chuyên dụng?</td><td>MVP có thể dùng trusted lifecycle adapter; dài hạn thêm dedicated privileged API/tool.</td></tr>
+          <tr><td>D9</td><td>Workspace cleanup dùng shell hay Wormhole tool chuyên dụng?</td><td>MVP có thể dùng trusted lifecycle adapter; dài hạn thêm dedicated privileged API/tool.</td></tr>
           <tr><td>D10</td><td>Dynamic runtime add/remove?</td><td>Phase P7, không chặn MVP.</td></tr>
         </tbody>
       </table>
 
       <div class="callout success">
         <strong>Kiến trúc khuyến nghị để bắt đầu:</strong><br>
-        <code>codebridge-orchestrator</code> + SQLite + 4 worker workspaces + 1 integration workspace + fixed MCP endpoints + structured agent output + independent verifier.
+        <code>wormhole-orchestrator</code> + SQLite + 4 worker workspaces + 1 integration workspace + fixed MCP endpoints + structured agent output + independent verifier.
       </div>
     </section>
 
     <footer class="footer">
-      <p><strong>Document:</strong> Codebridge Orchestrator Architecture & Implementation Plan</p>
+      <p><strong>Document:</strong> Wormhole Orchestrator Architecture & Implementation Plan</p>
       <p><strong>Status:</strong> Review draft · <strong>Generated:</strong> 2026-07-28 · <strong>Scope:</strong> Multi-agent orchestration without direct agent communication</p>
     </footer>
   </main>

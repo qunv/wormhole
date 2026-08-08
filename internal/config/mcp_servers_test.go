@@ -112,7 +112,7 @@ func TestMCPServersRejectPolicyAndHeaderCollisions(t *testing.T) {
 }
 
 func TestMCPServerConfigIDIncludesSecretFingerprints(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "codebridge")
+	binary := filepath.Join(t.TempDir(), "wormhole")
 	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/state"
+	"wormhole/internal/state"
 )
 
 func TestApprovalConsumeIsExactOnceUnderConcurrency(t *testing.T) {

@@ -10,15 +10,15 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
-	"codebridge/internal/mcpserver"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
+	"wormhole/internal/mcpserver"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestHTTPGuards(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.AuthToken = t.TempDir(), true, "secret"
 	runtime, err := agent.New(cfg, "test", "pro", "id")
@@ -154,7 +154,7 @@ func TestCustomProfileEndpointsExposeFilteredContract(t *testing.T) {
 			DeniedTools: []string{"git_status"}, OutputMode: "structured",
 		},
 	}
-	runtime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "codebridge", t.TempDir(), cfg, "test", "pro", "custom-profile", nil)
+	runtime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "wormhole", t.TempDir(), cfg, "test", "pro", "custom-profile", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestCustomProfileEndpointsExposeFilteredContract(t *testing.T) {
 	defer httpServer.Close()
 
 	ctx := context.Background()
-	fixed := connectMCP(t, ctx, httpServer.URL+mcpserver.FixedProfileEndpoint("codebridge", "review"))
+	fixed := connectMCP(t, ctx, httpServer.URL+mcpserver.FixedProfileEndpoint("wormhole", "review"))
 	defer fixed.Close()
 	fixedTools, err := fixed.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
@@ -186,7 +186,7 @@ func TestCustomProfileEndpointsExposeFilteredContract(t *testing.T) {
 	if len(sessionTools.Tools) != 5 {
 		t.Fatalf("custom session tool count = %d, want 5", len(sessionTools.Tools))
 	}
-	selected := callTool(t, ctx, session, "workspace_select", map[string]any{"id": "codebridge"})
+	selected := callTool(t, ctx, session, "workspace_select", map[string]any{"id": "wormhole"})
 	binding, _ := toolObject(t, selected)["workspace_binding"].(string)
 	read = callTool(t, ctx, session, "read_file", map[string]any{"workspace_binding": binding, "path": "sample.txt"})
 	if !strings.HasPrefix(toolText(read), "Structured result") {
@@ -195,7 +195,7 @@ func TestCustomProfileEndpointsExposeFilteredContract(t *testing.T) {
 }
 
 func TestFastSessionEndpointPreservesWorkspaceSelectionWithCompactTools(t *testing.T) {
-	runtime := newWorkspaceRuntime(t, "codebridge", t.TempDir(), t.TempDir())
+	runtime := newWorkspaceRuntime(t, "wormhole", t.TempDir(), t.TempDir())
 	httpServer := httptest.NewServer(New(runtime).Server.Handler)
 	defer httpServer.Close()
 
@@ -225,7 +225,7 @@ func TestFastSessionEndpointPreservesWorkspaceSelectionWithCompactTools(t *testi
 		t.Fatalf("missing fast session tools: %#v", want)
 	}
 
-	selected := callTool(t, ctx, session, "workspace_select", map[string]any{"id": "codebridge"})
+	selected := callTool(t, ctx, session, "workspace_select", map[string]any{"id": "wormhole"})
 	binding, _ := toolObject(t, selected)["workspace_binding"].(string)
 	if binding == "" {
 		t.Fatal("fast session did not return a workspace binding")
@@ -363,7 +363,7 @@ func TestNamedEndpointUsesItsRuntimeRequestLimits(t *testing.T) {
 }
 
 func TestInternalHealthListsWorkspaceEndpoints(t *testing.T) {
-	defaultRuntime := newWorkspaceRuntime(t, "codebridge", t.TempDir(), t.TempDir())
+	defaultRuntime := newWorkspaceRuntime(t, "wormhole", t.TempDir(), t.TempDir())
 	apiRuntime := newWorkspaceRuntime(t, "api", t.TempDir(), t.TempDir())
 	if _, err := defaultRuntime.Handle(context.Background(), "ping", nil); err != nil {
 		t.Fatal(err)
@@ -390,7 +390,7 @@ func TestInternalHealthListsWorkspaceEndpoints(t *testing.T) {
 	}
 	raw, _ := json.Marshal(items)
 	text := string(raw)
-	for _, want := range []string{`"id":"codebridge"`, `"endpoint":"/mcp"`, `"id":"api"`, `"endpoint":"/mcp/workspaces/api"`} {
+	for _, want := range []string{`"id":"wormhole"`, `"endpoint":"/mcp"`, `"id":"api"`, `"endpoint":"/mcp/workspaces/api"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("health summaries missing %s: %s", want, text)
 		}

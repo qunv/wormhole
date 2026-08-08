@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package adminauth owns local Admin UI credentials and browser sessions.
@@ -155,19 +155,19 @@ func LoadCredentials(path string) (Credentials, error) {
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Credentials{}, errors.New("admin credential document contains trailing data; reset it with the Codebridge CLI")
+		return Credentials{}, errors.New("admin credential document contains trailing data; reset it with the Wormhole CLI")
 	}
 	if credential.SchemaVersion != credentialSchemaVersion || credential.Algorithm != passwordAlgorithm {
-		return Credentials{}, errors.New("admin credential format is unsupported; reset it with the Codebridge CLI")
+		return Credentials{}, errors.New("admin credential format is unsupported; reset it with the Wormhole CLI")
 	}
 	if !usernamePattern.MatchString(credential.Username) || credential.Iterations < 10_000 || credential.Iterations > 5_000_000 {
-		return Credentials{}, errors.New("admin credential document is invalid; reset it with the Codebridge CLI")
+		return Credentials{}, errors.New("admin credential document is invalid; reset it with the Wormhole CLI")
 	}
 	salt, saltErr := base64.RawStdEncoding.DecodeString(credential.Salt)
 	hash, hashErr := base64.RawStdEncoding.DecodeString(credential.PasswordHash)
 	version, versionErr := base64.RawStdEncoding.DecodeString(credential.CredentialVersion)
 	if saltErr != nil || hashErr != nil || versionErr != nil || len(salt) != saltBytes || len(hash) != passwordKeyBytes || len(version) != credentialVersionBytes {
-		return Credentials{}, errors.New("admin credential document is invalid; reset it with the Codebridge CLI")
+		return Credentials{}, errors.New("admin credential document is invalid; reset it with the Wormhole CLI")
 	}
 	return credential, nil
 }

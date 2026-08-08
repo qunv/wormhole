@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package mcpserver
@@ -9,11 +9,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	home, err := os.MkdirTemp("", "codebridge-mcpserver-test-*")
+	home, err := os.MkdirTemp("", "wormhole-mcpserver-test-*")
 	if err != nil {
 		panic(err)
 	}
-	if err := os.Setenv("CODEBRIDGE_HOME", home); err != nil {
+	if err := os.Setenv("WORMHOLE_HOME", home); err != nil {
 		panic(err)
 	}
 	code := m.Run()

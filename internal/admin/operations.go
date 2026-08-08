@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/security"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/agent"
+	"wormhole/internal/security"
+	"wormhole/internal/workspaceregistry"
 )
 
 const (

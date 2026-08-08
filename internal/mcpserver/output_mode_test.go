@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

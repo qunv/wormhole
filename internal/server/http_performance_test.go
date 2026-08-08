@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
-	"codebridge/internal/mcpserver"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
+	"wormhole/internal/mcpserver"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

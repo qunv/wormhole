@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestTaskContextHonorsCharacterBudget(t *testing.T) {

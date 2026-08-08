@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadProfileFilePrefersCodebridgeAndFallsBackToAgent(t *testing.T) {
+func TestLoadProfileFilePrefersWormholeAndFallsBackToAgent(t *testing.T) {
 	root := t.TempDir()
 	canonical := workspaceProfilePath(root)
 	legacy := legacyWorkspaceProfilePath(root)
@@ -44,7 +44,7 @@ func TestLoadProfileFilePrefersCodebridgeAndFallsBackToAgent(t *testing.T) {
 
 func TestMissingProfileReportsCanonicalPath(t *testing.T) {
 	root := t.TempDir()
-	if got, want := activeWorkspaceProfilePath(root), filepath.Join(root, ".codebridge", "profile.json"); got != want {
+	if got, want := activeWorkspaceProfilePath(root), filepath.Join(root, ".wormhole", "profile.json"); got != want {
 		t.Fatalf("active profile path = %q, want %q", got, want)
 	}
 }

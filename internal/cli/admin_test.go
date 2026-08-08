@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -10,16 +10,16 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/adminauth"
-	"codebridge/internal/config"
+	"wormhole/internal/adminauth"
+	"wormhole/internal/config"
 )
 
 func TestAdminSetPasswordCreatesLocalCredential(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", home)
+	t.Setenv("WORMHOLE_HOME", home)
 	var output bytes.Buffer
 	app := App{
-		Name: "Codebridge", Version: "test", Tier: "test",
+		Name: "Wormhole", Version: "test", Tier: "test",
 		Stdout: &output, Stderr: &output,
 		Stdin: strings.NewReader("correct horse battery staple\ncorrect horse battery staple\n"),
 	}
@@ -43,9 +43,9 @@ func TestAdminSetPasswordCreatesLocalCredential(t *testing.T) {
 
 func TestAdminSetPasswordRejectsMismatchedConfirmation(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", home)
+	t.Setenv("WORMHOLE_HOME", home)
 	app := App{
-		Name: "Codebridge", Version: "test", Tier: "test",
+		Name: "Wormhole", Version: "test", Tier: "test",
 		Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
 		Stdin: strings.NewReader("first password value\nsecond password value\n"),
 	}

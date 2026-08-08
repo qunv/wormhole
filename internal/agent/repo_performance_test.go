@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func phase5RepositoryRuntime(b *testing.B) *Runtime {

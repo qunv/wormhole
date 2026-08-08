@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package noop
@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 
-	"codebridge/internal/memory"
+	"wormhole/internal/memory"
 )
 
 type Provider struct{}

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -69,7 +69,7 @@ func agentUpstreamConfig(endpoint string) config.MCPServerConfig {
 }
 
 func TestRuntimeRefreshesUpstreamCatalogWithoutMutatingActiveContract(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	var exposeExtra atomic.Bool
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server {
@@ -129,7 +129,7 @@ func TestRuntimeRefreshesUpstreamCatalogWithoutMutatingActiveContract(t *testing
 }
 
 func TestRuntimeUsesMCPServerNameAsToolNamespace(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
@@ -194,7 +194,7 @@ func TestRuntimeUsesMCPServerNameAsToolNamespace(t *testing.T) {
 }
 
 func TestMultipleMCPServersWithSameToolsUseDistinctNamespaces(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
@@ -223,7 +223,7 @@ func TestMultipleMCPServersWithSameToolsUseDistinctNamespaces(t *testing.T) {
 }
 
 func TestUpstreamMCPWorkspaceScopeSkipsUnrelatedRuntimes(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	upstream := newAgentUpstreamHTTPServer(t)
 	shared := NewSharedServices("test")
 	defer shared.Close()
@@ -260,11 +260,11 @@ func TestUpstreamMCPWorkspaceScopeSkipsUnrelatedRuntimes(t *testing.T) {
 }
 
 func TestOptionalAndRequiredUpstreamStartupBehavior(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	base := config.Default()
 	base.Workspace, base.NoTunnel = t.TempDir(), true
 	missing := config.MCPServerConfig{
-		Command:          "codebridge-command-that-does-not-exist",
+		Command:          "wormhole-command-that-does-not-exist",
 		StartupTimeoutMS: 500, CallTimeoutMS: 500, HealthTimeoutMS: 500, MaxTools: 10,
 		Policy: config.MCPServerPolicyConfig{Default: "approval"},
 	}
@@ -307,7 +307,7 @@ func TestUpstreamToolsAreExcludedFromAutomaticMemoryCapture(t *testing.T) {
 	defer memoryServer.Close()
 	upstream := newAgentUpstreamHTTPServer(t)
 
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = t.TempDir(), true, "full"
 	cfg.Memory.Enabled = true

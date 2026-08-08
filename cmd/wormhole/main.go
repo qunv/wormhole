@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package main
@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"codebridge/internal/app"
+	"wormhole/internal/app"
 )
 
 func main() {

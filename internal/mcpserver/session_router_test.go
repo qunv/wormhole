@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -21,19 +21,19 @@ func TestWorkspaceInstructionsPreventExternalContainerFallback(t *testing.T) {
 		"base":    Instructions,
 		"session": SessionInstructions,
 	} {
-		for _, required := range []string{"Codebridge tools", "container", "ENOENT", "reselect the workspace"} {
+		for _, required := range []string{"Wormhole tools", "container", "ENOENT", "reselect the workspace"} {
 			if !strings.Contains(instructions, required) {
 				t.Fatalf("%s instructions missing %q: %s", name, required, instructions)
 			}
 		}
 	}
 
-	runtime := newSessionTestRuntime(t, "codebridge", t.TempDir())
+	runtime := newSessionTestRuntime(t, "wormhole", t.TempDir())
 	router := NewSessionRouter(runtime, nil)
 	chat := connectSessionGateway(t, router)
-	selected := callSessionTool(t, chat, "workspace_select", map[string]any{"id": "codebridge"}, false)
+	selected := callSessionTool(t, chat, "workspace_select", map[string]any{"id": "wormhole"}, false)
 	object := resultObject(t, selected)
-	if object["workspace_access"] != "codebridge_tools_only" {
+	if object["workspace_access"] != "wormhole_tools_only" {
 		t.Fatalf("workspace access marker = %#v", object["workspace_access"])
 	}
 	instruction, _ := object["instruction"].(string)
@@ -44,30 +44,30 @@ func TestWorkspaceInstructionsPreventExternalContainerFallback(t *testing.T) {
 	binding, _ := object["workspace_binding"].(string)
 	current := callSessionTool(t, chat, "workspace_current", map[string]any{"workspace_binding": binding}, false)
 	currentObject := resultObject(t, current)
-	if currentObject["workspace_access"] != "codebridge_tools_only" ||
+	if currentObject["workspace_access"] != "wormhole_tools_only" ||
 		!strings.Contains(fmt.Sprint(currentObject["instruction"]), "ENOENT") {
 		t.Fatalf("current workspace response omitted access contract: %#v", currentObject)
 	}
 }
 
 func TestSessionRouterUsesPrimaryRuntimeWorkspaceID(t *testing.T) {
-	primary := newSessionTestRuntime(t, "codebridge", t.TempDir())
+	primary := newSessionTestRuntime(t, "wormhole", t.TempDir())
 	api := newSessionTestRuntime(t, "api", t.TempDir())
 	router := NewSessionRouter(primary, map[string]*agent.Runtime{"api": api})
 
 	ids := router.workspaceIDs()
-	if len(ids) != 2 || ids[0] != "codebridge" || ids[1] != "api" {
+	if len(ids) != 2 || ids[0] != "wormhole" || ids[1] != "api" {
 		t.Fatalf("workspace IDs = %#v", ids)
 	}
-	binding, runtime, err := router.selectWorkspace("chat", "codebridge")
+	binding, runtime, err := router.selectWorkspace("chat", "wormhole")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binding.WorkspaceID != "codebridge" || runtime != primary {
+	if binding.WorkspaceID != "wormhole" || runtime != primary {
 		t.Fatalf("primary selection = %#v runtime=%p, want %p", binding, runtime, primary)
 	}
 	items := router.workspaceList("chat", binding.Token)
-	if items[0]["id"] != "codebridge" || items[0]["selected"] != true {
+	if items[0]["id"] != "wormhole" || items[0]["selected"] != true {
 		t.Fatalf("primary workspace list item = %#v", items[0])
 	}
 }

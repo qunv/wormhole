@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/agent"
+	"wormhole/internal/agent"
 )
 
 func BenchmarkSessionRouterResolve10000Bindings(b *testing.B) {

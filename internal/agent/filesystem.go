@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -16,7 +16,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"codebridge/internal/patch"
+	"wormhole/internal/patch"
 )
 
 func (r *Runtime) handleFS(ctx context.Context, name string, args map[string]any) (any, error) {

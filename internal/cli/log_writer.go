@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 const (
@@ -200,7 +200,7 @@ func commandText(command string, args []string) string {
 }
 
 // runLoggedChild owns the child output pipes for the lifetime of a detached
-// process. Rotation therefore closes and reopens only Codebridge-owned files;
+// process. Rotation therefore closes and reopens only Wormhole-owned files;
 // the server or tunnel never holds a stale descriptor to a renamed log.
 func (a App) runLoggedChild(ctx context.Context, args []string) error {
 	if len(args) < 4 {

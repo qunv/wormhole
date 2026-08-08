@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package admin
@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/workspaceregistry"
 )
 
 const maxBrowseDirectories = 200
@@ -228,7 +228,7 @@ func (h *Handler) createWorkspace(writer http.ResponseWriter, request *http.Requ
 	writer.Header().Set("ETag", quoteETag(newRevision))
 	h.sendJSON(writer, http.StatusCreated, map[string]any{
 		"workspace": entry, "revision": newRevision, "restartRequired": true,
-		"message": "Workspace registered. Restart Codebridge to activate its MCP endpoint.",
+		"message": "Workspace registered. Restart Wormhole to activate its MCP endpoint.",
 	})
 }
 

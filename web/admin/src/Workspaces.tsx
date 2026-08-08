@@ -120,7 +120,7 @@ export function Workspaces() {
       const id = data.workspace?.id;
       if (id) setSelected(id);
       setShowAdd(false);
-      setMessage({ tone: "success", text: data.message ?? "Workspace registered. Restart Codebridge to activate it." });
+      setMessage({ tone: "success", text: data.message ?? "Workspace registered. Restart Wormhole to activate it." });
     },
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
   });
@@ -152,7 +152,7 @@ export function Workspaces() {
     {message && <Notice tone={message.tone}>{message.text}</Notice>}
 
     {!isDetailView && <>
-      <Notice tone="info">Registry changes are saved immediately, but MCP endpoints are reconciled only after restarting Codebridge. Removing a workspace never deletes its runtime state.</Notice>
+      <Notice tone="info">Registry changes are saved immediately, but MCP endpoints are reconciled only after restarting Wormhole. Removing a workspace never deletes its runtime state.</Notice>
 
       {showAdd && <Card title="Register a workspace" description="Browse within your home directory or type any existing absolute directory path.">
         <div className="workspace-add-grid">
@@ -326,7 +326,7 @@ function WorkspaceEditor({ id, query, registryRevision, onRemoved }: {
       queryClient.setQueryData(["workspace-config", id], data);
       setRaw(JSON.stringify(data.override, null, 2));
       setDirty(false);
-      setMessage({ tone: "success", text: "Override saved. Restart Codebridge to activate it." });
+      setMessage({ tone: "success", text: "Override saved. Restart Wormhole to activate it." });
     },
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
   });
@@ -337,7 +337,7 @@ function WorkspaceEditor({ id, query, registryRevision, onRemoved }: {
       queryClient.removeQueries({ queryKey: ["workspace-config", id] });
       await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       onRemoved(data.activeUntilRestart
-        ? `Workspace ${id} was removed from the registry. Restart Codebridge to unload its active endpoint.`
+        ? `Workspace ${id} was removed from the registry. Restart Wormhole to unload its active endpoint.`
         : `Workspace ${id} was removed from the registry.`);
     },
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),

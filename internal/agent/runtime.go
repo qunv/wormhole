@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -16,13 +16,13 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/memory"
-	"codebridge/internal/patch"
-	"codebridge/internal/processx"
-	"codebridge/internal/security"
-	"codebridge/internal/state"
-	"codebridge/internal/workspace"
+	"wormhole/internal/config"
+	"wormhole/internal/memory"
+	"wormhole/internal/patch"
+	"wormhole/internal/processx"
+	"wormhole/internal/security"
+	"wormhole/internal/state"
+	"wormhole/internal/workspace"
 )
 
 type Runtime struct {
@@ -166,7 +166,7 @@ func newWorkspaceContext(ctx context.Context, workspaceID, dataDir string, cfg c
 		reportStartup(reporter, "memory", "initialized; availability will be checked on demand")
 	}
 	memoryProject := memory.ResolveProject(manager.Primary, cfg.Memory.ProjectStrategy)
-	memorySessionID := fmt.Sprintf("codebridge-process-%d-%d", os.Getpid(), time.Now().UnixNano())
+	memorySessionID := fmt.Sprintf("wormhole-process-%d-%d", os.Getpid(), time.Now().UnixNano())
 	memoryRecorder := memoryLease.Recorder
 	runtime := &Runtime{
 		Config: cfg, WorkspaceID: workspaceID, DataDir: store.DataDir,
@@ -536,7 +536,7 @@ func explicitQualityCommand(tool string, args map[string]any) bool {
 }
 
 func workspaceProfilePath(root string) string {
-	return filepath.Join(root, ".codebridge", "profile.json")
+	return filepath.Join(root, ".wormhole", "profile.json")
 }
 
 func legacyWorkspaceProfilePath(root string) string {

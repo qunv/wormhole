@@ -1,6 +1,6 @@
-# Contributing to Codebridge
+# Contributing to Wormhole
 
-Thank you for helping improve Codebridge. This project is a local-first coding agent and MCP gateway written in Go. Contributions should preserve its security boundaries, stable tool contract, workspace isolation, bounded resource usage, and cross-platform behavior.
+Thank you for helping improve Wormhole. This project is a local-first coding agent and MCP gateway written in Go. Contributions should preserve its security boundaries, stable tool contract, workspace isolation, bounded resource usage, and cross-platform behavior.
 
 Before making a substantial change, read [README.md](README.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The architecture document is the source of truth for package ownership, runtime lifecycle, security invariants, memory behavior, and release compatibility.
 
@@ -39,8 +39,8 @@ Optional:
 Clone your fork and verify the repository before changing code:
 
 ```bash
-git clone https://github.com/<your-account>/codebridge.git
-cd codebridge
+git clone https://github.com/<your-account>/wormhole.git
+cd wormhole
 go test ./...
 go vet ./...
 go build ./...
@@ -54,10 +54,10 @@ make vet
 make build
 ```
 
-Run Codebridge locally without a tunnel:
+Run Wormhole locally without a tunnel:
 
 ```bash
-go run ./cmd/codebridge serve --no-tunnel
+go run ./cmd/wormhole serve --no-tunnel
 ```
 
 When changing the Admin UI, verify and regenerate the committed embedded assets:
@@ -68,10 +68,10 @@ make admin-ui
 git diff --exit-code -- internal/adminui/dist
 ```
 
-Use temporary directories or `CODEBRIDGE_HOME` when a test or manual workflow should not touch your normal configuration:
+Use temporary directories or `WORMHOLE_HOME` when a test or manual workflow should not touch your normal configuration:
 
 ```bash
-export CODEBRIDGE_HOME="$(mktemp -d)"
+export WORMHOLE_HOME="$(mktemp -d)"
 ```
 
 Never commit `.env`, runtime tokens, database credentials, tunnel credentials, local state, generated binaries, logs, profiles, or private workspace configuration.
@@ -82,7 +82,7 @@ Keep changes inside the package that owns the behavior:
 
 | Path | Responsibility |
 |---|---|
-| `cmd/codebridge` | Executable entrypoint and process exit behavior |
+| `cmd/wormhole` | Executable entrypoint and process exit behavior |
 | `internal/app` | Version metadata and application composition |
 | `internal/cli` | CLI grammar, setup, lifecycle, tunnel, and installation |
 | `internal/server` | HTTP composition, authentication, Origin policy, health, and limits |
@@ -121,7 +121,7 @@ Follow standard Go conventions and the existing source style.
 New Go source files should retain the project license header:
 
 ```go
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 ```
 
@@ -167,7 +167,7 @@ For a sensitive vulnerability, do not publish credentials, private workspace dat
 
 ## Configuration and state changes
 
-Persistent configuration and state live under the canonical `~/.codebridge` layout. Changes to paths or schemas must be backward compatible unless explicitly released as a breaking change.
+Persistent configuration and state live under the canonical `~/.wormhole` layout. Changes to paths or schemas must be backward compatible unless explicitly released as a breaking change.
 
 When changing configuration or persisted state:
 
@@ -185,7 +185,7 @@ Named workspaces must remain isolated in configuration, runtime state, approvals
 
 ## Memory-provider changes
 
-The canonical `memory.Provider` contract must remain provider-neutral. Adapters normalize provider-specific payloads into Codebridge result types; runtime and MCP modules must not depend on a backend's private schema.
+The canonical `memory.Provider` contract must remain provider-neutral. Adapters normalize provider-specific payloads into Wormhole result types; runtime and MCP modules must not depend on a backend's private schema.
 
 Memory contributions should preserve:
 
@@ -202,7 +202,7 @@ Tests should cover unavailable providers, timeouts, retries, shutdown, response 
 
 ## Testing
 
-Add regression tests for every bug fix and focused tests for new behavior. Prefer deterministic tests that use temporary directories, loopback listeners, fake providers, fake upstream servers, and explicit timeouts. Any package test that constructs a runtime through the default data directory must isolate `CODEBRIDGE_HOME` in `TestMain`; tests must never create entries in the developer's real `~/.codebridge/state/workspaces` tree.
+Add regression tests for every bug fix and focused tests for new behavior. Prefer deterministic tests that use temporary directories, loopback listeners, fake providers, fake upstream servers, and explicit timeouts. Any package test that constructs a runtime through the default data directory must isolate `WORMHOLE_HOME` in `TestMain`; tests must never create entries in the developer's real `~/.wormhole/state/workspaces` tree.
 
 Minimum verification for ordinary changes:
 
@@ -243,11 +243,11 @@ goreleaser release --snapshot --clean
 For the external Streamable HTTP path, use the documented smoke test when a local server is available:
 
 ```bash
-CODEBRIDGE_TEST_ENDPOINT=http://127.0.0.1:8132/mcp \
+WORMHOLE_TEST_ENDPOINT=http://127.0.0.1:8132/mcp \
   go test ./internal/server -run TestExternalStreamableHTTP -v
 ```
 
-Tests must not depend on a developer's normal `~/.codebridge` state, credentials, internet access, wall-clock timing without tolerance, or execution order.
+Tests must not depend on a developer's normal `~/.wormhole` state, credentials, internet access, wall-clock timing without tolerance, or execution order.
 
 ## Documentation
 
@@ -312,6 +312,6 @@ Suggested checklist:
 
 ## Licensing
 
-Codebridge is licensed under the GNU Affero General Public License, version 3 or later. By submitting a contribution, you agree that it may be distributed under the same license. Preserve existing copyright, attribution, and SPDX notices.
+Wormhole is licensed under the GNU Affero General Public License, version 3 or later. By submitting a contribution, you agree that it may be distributed under the same license. Preserve existing copyright, attribution, and SPDX notices.
 
 See [LICENSE](LICENSE) for the complete terms.

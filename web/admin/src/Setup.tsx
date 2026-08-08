@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, Field, LoadingPage, Notice, PageHeader, Select, TextInput, Toggle } from "./components";
-import type { CodebridgeConfig } from "./types";
+import type { WormholeConfig } from "./types";
 
 const OPENAI_TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
 const OPENAI_API_KEYS_URL = "https://platform.openai.com/settings/organization/api-keys";
@@ -33,7 +33,7 @@ export function Setup() {
   const queryClient = useQueryClient();
   const snapshot = useQuery({ queryKey: ["config"], queryFn: api.config });
   const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
-  const [draft, setDraft] = useState<CodebridgeConfig | null>(null);
+  const [draft, setDraft] = useState<WormholeConfig | null>(null);
   const [step, setStep] = useState<StepID>("runtime");
   const [apiKey, setAPIKey] = useState("");
   const [memorySecret, setMemorySecret] = useState("");
@@ -47,7 +47,7 @@ export function Setup() {
 
   const save = useMutation({
     mutationFn: async () => {
-      const prepared: CodebridgeConfig = {
+      const prepared: WormholeConfig = {
         ...draft!,
         workspace: draft!.workspace.trim(),
         tunnelId: draft!.tunnelId?.trim(),
@@ -102,7 +102,7 @@ export function Setup() {
       void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       setMessage(secretErrors.length
         ? { tone: "danger", text: `Configuration was saved, but these secret writes failed: ${secretErrors.join("; ")}` }
-        : { tone: "success", text: "Setup was saved safely. Restart Codebridge to activate the new runtime and tunnel settings." });
+        : { tone: "success", text: "Setup was saved safely. Restart Wormhole to activate the new runtime and tunnel settings." });
       setStep("review");
     },
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
@@ -130,11 +130,11 @@ export function Setup() {
   const overallReady = runtimeReady && tunnelReady && apiKeyReady;
   const stepReady = step === "runtime" ? runtimeReady : step === "tunnel" ? tunnelReady : step === "api-key" ? apiKeyReady : true;
 
-  const update = <K extends keyof CodebridgeConfig>(key: K, value: CodebridgeConfig[K]) => {
+  const update = <K extends keyof WormholeConfig>(key: K, value: WormholeConfig[K]) => {
     setDraft({ ...draft, [key]: value });
     setMessage(null);
   };
-  const updateMemory = (patch: Partial<CodebridgeConfig["memory"]>) => {
+  const updateMemory = (patch: Partial<WormholeConfig["memory"]>) => {
     setDraft({ ...draft, memory: { ...draft.memory, ...patch } });
     setMessage(null);
   };
@@ -149,8 +149,8 @@ export function Setup() {
   return <>
     <PageHeader
       eyebrow="Guided first-run flow"
-      title="Setup Codebridge"
-      description="Configure the same core choices as codebridge setup while preserving existing advanced settings and keeping secret values out of config.json."
+      title="Setup Wormhole"
+      description="Configure the same core choices as wormhole setup while preserving existing advanced settings and keeping secret values out of config.json."
       actions={<Badge tone="info">Step {activeIndex + 1} of {steps.length}</Badge>}
     />
     {message && <Notice tone={message.tone}>{message.text}</Notice>}
@@ -184,15 +184,15 @@ export function Setup() {
           </div>
         </Card>}
 
-        {step === "tunnel" && <Card title="Secure MCP Tunnel" description="Create the tunnel in OpenAI Platform, then paste its ID into Codebridge.">
+        {step === "tunnel" && <Card title="Secure MCP Tunnel" description="Create the tunnel in OpenAI Platform, then paste its ID into Wormhole.">
           <div className="toggle-stack">
-            <Toggle checked={!draft.noTunnel} onChange={(enabled) => update("noTunnel", !enabled)} label="Use ChatGPT Web tunnel" description="Disable this to keep Codebridge local-only." />
+            <Toggle checked={!draft.noTunnel} onChange={(enabled) => update("noTunnel", !enabled)} label="Use ChatGPT Web tunnel" description="Disable this to keep Wormhole local-only." />
           </div>
           {!draft.noTunnel ? <>
             <ExternalSetupCard
               icon={<Network size={21} />}
               title="Create or inspect a tunnel"
-              description="Open the OpenAI organization tunnel settings in a new browser tab. Codebridge cannot read that page, so copy the generated tunnel ID back here."
+              description="Open the OpenAI organization tunnel settings in a new browser tab. Wormhole cannot read that page, so copy the generated tunnel ID back here."
               button="Open tunnel settings"
               onOpen={() => openExternal(OPENAI_TUNNELS_URL, tunnelInput.current)}
             />
@@ -217,12 +217,12 @@ export function Setup() {
           </> : <Notice tone="info">Tunnel setup is skipped. The MCP endpoint will remain local to this machine.</Notice>}
         </Card>}
 
-        {step === "api-key" && <Card title="Runtime API key" description="The value is written only to the owner-only Codebridge .env file and is never returned by the API.">
+        {step === "api-key" && <Card title="Runtime API key" description="The value is written only to the owner-only Wormhole .env file and is never returned by the API.">
           {draft.noTunnel ? <Notice tone="info">A runtime API key is not required while the tunnel is disabled. You can continue to the next step.</Notice> : <>
             <ExternalSetupCard
               icon={<KeyRound size={21} />}
               title="Create an OpenAI API key"
-              description="Open the organization API key settings in a new tab, create a key, then paste it into the focused write-only field below. Browser cross-origin rules prevent Codebridge from auto-reading or auto-filling the OpenAI page."
+              description="Open the organization API key settings in a new tab, create a key, then paste it into the focused write-only field below. Browser cross-origin rules prevent Wormhole from auto-reading or auto-filling the OpenAI page."
               button="Open API key settings"
               onOpen={() => openExternal(OPENAI_API_KEYS_URL, apiKeyInput.current)}
             />
@@ -248,7 +248,7 @@ export function Setup() {
           </>}
         </Card>}
 
-        {step === "memory" && <Card title="Project memory" description="This optional step mirrors the core memory questions from codebridge setup; advanced delivery settings remain unchanged.">
+        {step === "memory" && <Card title="Project memory" description="This optional step mirrors the core memory questions from wormhole setup; advanced delivery settings remain unchanged.">
           <div className="toggle-stack">
             <Toggle checked={draft.memory.enabled} onChange={(enabled) => updateMemory({ enabled })} label="Enable memory" description="Capture selected project context for later retrieval." />
           </div>
@@ -272,7 +272,7 @@ export function Setup() {
             <ReviewItem label="Memory" value={draft.memory.enabled ? `${draft.memory.provider}${draft.memory.endpoint ? ` · ${draft.memory.endpoint}` : ""}` : "Disabled"} />
           </div>
           {!overallReady && <Notice tone="danger">Complete the required runtime, tunnel, and API-key fields before saving.</Notice>}
-          <Notice tone="warning"><strong>Restart required.</strong> Saving updates files atomically, but the active daemon and tunnel continue using their current settings until Codebridge is restarted.</Notice>
+          <Notice tone="warning"><strong>Restart required.</strong> Saving updates files atomically, but the active daemon and tunnel continue using their current settings until Wormhole is restarted.</Notice>
         </Card>}
 
         <div className="setup-actions">

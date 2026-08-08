@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestLoadMigratesPhaseOneRegistry(t *testing.T) {
@@ -71,11 +71,11 @@ func TestFingerprintChangesWithConfig(t *testing.T) {
 	}
 }
 
-func TestLoadMigratesLegacyDefaultPathsToCodebridgeLayout(t *testing.T) {
+func TestLoadMigratesLegacyDefaultPathsToWormholeLayout(t *testing.T) {
 	base := t.TempDir()
 	newHome := filepath.Join(base, "new-home")
-	t.Setenv("CODEBRIDGE_HOME", newHome)
-	t.Setenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry.json"))
+	t.Setenv("WORMHOLE_HOME", newHome)
+	t.Setenv("WORMHOLE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry.json"))
 	switch runtime.GOOS {
 	case "windows":
 		t.Setenv("USERPROFILE", filepath.Join(base, "home"))
@@ -155,6 +155,6 @@ func configureRegistryTestPaths(t *testing.T) {
 	default:
 		t.Setenv("XDG_CONFIG_HOME", filepath.Join(base, "config"))
 	}
-	t.Setenv("CODEBRIDGE_DATA_DIR", filepath.Join(base, "data"))
-	t.Setenv("CODEBRIDGE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry", "workspaces.json"))
+	t.Setenv("WORMHOLE_DATA_DIR", filepath.Join(base, "data"))
+	t.Setenv("WORMHOLE_WORKSPACE_REGISTRY_PATH", filepath.Join(base, "registry", "workspaces.json"))
 }

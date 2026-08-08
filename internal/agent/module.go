@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -42,7 +42,7 @@ type ToolPolicyProvider interface {
 
 // ToolAuditProvider lets a module reduce audit data to metadata appropriate for
 // its trust boundary. Community MCP modules use this to avoid persisting raw
-// arguments or upstream payloads whose schemas Codebridge does not control.
+// arguments or upstream payloads whose schemas Wormhole does not control.
 type ToolAuditProvider interface {
 	AuditArguments(string, map[string]any) any
 	AuditMetadata(string, map[string]any, any) map[string]any

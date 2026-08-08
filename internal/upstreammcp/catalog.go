@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package upstreammcp
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

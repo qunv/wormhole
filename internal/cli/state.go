@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -12,17 +12,17 @@ import (
 	"sort"
 	"strings"
 
-	"codebridge/internal/config"
-	"codebridge/internal/maintenance"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/maintenance"
+	"wormhole/internal/workspaceregistry"
 )
 
 func (a App) stateCommand(cfg config.Config, opts options) error {
 	if len(opts.Rest) == 0 || opts.Rest[0] != "gc" {
-		return errors.New("usage: codebridge state gc [--dry-run] [--json] [--force]")
+		return errors.New("usage: wormhole state gc [--dry-run] [--json] [--force]")
 	}
 	if !opts.DryRun && readHealth(cfg.Port) != nil && !opts.Force {
-		return errors.New("Codebridge is running; use --dry-run, stop it first, or pass --force")
+		return errors.New("Wormhole is running; use --dry-run, stop it first, or pass --force")
 	}
 	report, err := maintenance.GCState(stateDataDirs(), maintenance.StateGCOptions{DryRun: opts.DryRun})
 	if err != nil {

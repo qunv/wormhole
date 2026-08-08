@@ -3,8 +3,8 @@ package mcpserver
 import (
 	"testing"
 
-	"codebridge/internal/agent"
-	"codebridge/internal/config"
+	"wormhole/internal/agent"
+	"wormhole/internal/config"
 )
 
 func TestFastProfileExposesCompactCodingTools(t *testing.T) {

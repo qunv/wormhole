@@ -80,7 +80,7 @@ export interface ToolProfileConfig {
   compactDefaults?: boolean;
 }
 
-export interface CodebridgeConfig {
+export interface WormholeConfig {
   workspace: string;
   extraRoots?: string[];
   mode: "safe" | "full" | string;
@@ -180,7 +180,7 @@ export interface ToolCatalogResponse {
 }
 
 export interface ConfigSnapshot {
-  config: CodebridgeConfig;
+  config: WormholeConfig;
   revision: string;
   path: string;
   restartRequired: boolean;
@@ -437,7 +437,7 @@ export interface WorkspaceOverrideProvenance {
 export interface WorkspaceConfigResponse {
   registration: WorkspaceSummary;
   override: Record<string, unknown>;
-  effective: CodebridgeConfig;
+  effective: WormholeConfig;
   provenance: WorkspaceOverrideProvenance;
   revision: string;
   restartRequired: boolean;

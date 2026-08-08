@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestStateDataDirsIncludesUnregisteredInstances(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", home)
+	t.Setenv("WORMHOLE_HOME", home)
 	orphanInstance := filepath.Join(config.AppDataDir(), "instances", "removed-workspace")
 	if err := os.MkdirAll(orphanInstance, 0o700); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestStateDataDirsIncludesUnregisteredInstances(t *testing.T) {
 
 func TestStateGCDryRunAndApply(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("CODEBRIDGE_HOME", home)
+	t.Setenv("WORMHOLE_HOME", home)
 	workspaceDir := filepath.Join(config.AppDataDir(), "workspaces", "empty")
 	if err := os.MkdirAll(filepath.Join(workspaceDir, "backups"), 0o700); err != nil {
 		t.Fatal(err)

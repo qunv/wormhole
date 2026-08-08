@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/state"
+	"wormhole/internal/state"
 )
 
 func BenchmarkApprovalConsumeMissingWith1000Records(b *testing.B) {

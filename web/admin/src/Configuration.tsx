@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Braces, Cpu, Database, Gauge, Network, Plus, RefreshCw, Save, Shield, Trash2, Waypoints } from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, Field as BaseField, LoadingPage, MultiSelect, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
-import type { CodebridgeConfig, MCPServerConfig, ToolCatalogResponse, UpstreamMCPStatus } from "./types";
+import type { WormholeConfig, MCPServerConfig, ToolCatalogResponse, UpstreamMCPStatus } from "./types";
 
 type Tab = "general" | "memory" | "mcp" | "tools" | "advanced";
 const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -19,11 +19,11 @@ const CONFIG_HELP: Record<string, string> = {
   "Execution mode": "Controls which local operations are available. Safe mode restricts risky execution; full mode enables the complete tool set subject to policy.",
   "Policy": "Determines when mutating or sensitive actions require approval. Strict asks more often; full permits the broadest execution.",
   "Host": "Network interface used by the MCP listener. The Admin UI remains restricted to loopback for security.",
-  "Port": "TCP port used by the local Codebridge HTTP and MCP server.",
+  "Port": "TCP port used by the local Wormhole HTTP and MCP server.",
   "Extra roots": "Additional directories that tools may access besides the primary workspace. Each path must pass root-confinement checks.",
   "Allowed browser origins": "Exact browser origins permitted to call the local server. Use full origins such as http://127.0.0.1:3000.",
-  "Disable tunnel": "Prevents Codebridge from creating the external Secure MCP Tunnel and keeps the service local only.",
-  "Tunnel ID": "Identifier of the Secure MCP Tunnel that exposes this local Codebridge daemon.",
+  "Disable tunnel": "Prevents Wormhole from creating the external Secure MCP Tunnel and keeps the service local only.",
+  "Tunnel ID": "Identifier of the Secure MCP Tunnel that exposes this local Wormhole daemon.",
   "Organization ID": "Organization that owns or authorizes the configured tunnel.",
   "Tunnel binary": "Optional custom path or command name for the tunnel executable.",
   "Profile": "Named tunnel profile used to resolve tunnel credentials and settings.",
@@ -33,14 +33,14 @@ const CONFIG_HELP: Record<string, string> = {
   "Audit tool calls": "Records bounded local audit events for tool calls, outcomes, and approvals without storing full results.",
   "Include redacted argument metadata": "Adds reduced and redacted argument metadata to audit records for better diagnostics.",
   "HTTP access log": "Logs Admin and MCP HTTP requests locally. Useful for troubleshooting but can add noise.",
-  "Enable memory": "Allows Codebridge to capture selected project context and retrieve it in later agent sessions.",
+  "Enable memory": "Allows Wormhole to capture selected project context and retrieve it in later agent sessions.",
   "Provider": "Memory backend adapter to use, for example agentmemory.",
   "Endpoint": "Base URL of the memory provider service.",
   "Secret environment": "Environment variable name containing the memory provider credential; the value is never stored here.",
   "Agent ID": "Stable identity sent to the memory provider to separate observations from different agents.",
   "Capture mode": "Controls automatic memory capture: off disables capture, metadata stores reduced metadata, and selected stores approved contextual observations.",
   "Project strategy": "Defines how projects receive stable memory identities. git-origin follows the repository remote; path-hash derives identity from the local path.",
-  "Required for startup": "When enabled, Codebridge startup fails if the memory provider is unavailable instead of continuing without memory.",
+  "Required for startup": "When enabled, Wormhole startup fails if the memory provider is unavailable instead of continuing without memory.",
   "Request timeout (ms)": "Maximum time allowed for a memory provider request before it is cancelled.",
   "Token budget": "Maximum amount of retrieved memory context that may be inserted into an agent prompt.",
   "Queue size": "Maximum number of memory observations waiting for asynchronous delivery.",
@@ -50,7 +50,7 @@ const CONFIG_HELP: Record<string, string> = {
   "Retry backoff (ms)": "Delay between memory delivery retries.",
   "Health cache (ms)": "How long a memory provider health result is reused before checking again.",
   "Provider options": "Provider-specific non-secret settings passed to the selected memory adapter.",
-  "Server enabled": "Controls whether this upstream MCP server is available to Codebridge workspaces.",
+  "Server enabled": "Controls whether this upstream MCP server is available to Wormhole workspaces.",
   "Transport": "Connection type for the upstream MCP server: a local stdio process or a Streamable HTTP endpoint.",
   "Startup mode": "Eager starts during daemon initialization, background starts asynchronously, and lazy connects on the first tool request.",
   "Command": "Executable used to start a stdio MCP server.",
@@ -71,9 +71,9 @@ const CONFIG_HELP: Record<string, string> = {
   "Max command output": "Hard upper bound for captured stdout and stderr from one command.",
   "Default command output": "Default command output limit when a tool call does not specify one.",
   "Max HTTP body bytes": "Largest HTTP request body accepted by the local Admin and MCP server.",
-  "Max managed processes": "Maximum number of background processes Codebridge may manage at the same time.",
+  "Max managed processes": "Maximum number of background processes Wormhole may manage at the same time.",
   "Max concurrent tool calls": "Maximum number of tool requests that may execute concurrently inside one workspace runtime. Additional calls wait and remain cancellable.",
-  "Git status cache (ms)": "How long a git status result is reused before Codebridge executes git status again.",
+  "Git status cache (ms)": "How long a git status result is reused before Wormhole executes git status again.",
   "Complete JSON document": "Raw editor for the entire non-secret configuration. Changes are applied to the structured form before validation and saving.",
 };
 
@@ -90,7 +90,7 @@ export function Configuration() {
   const snapshot = useQuery({ queryKey: ["config"], queryFn: api.config });
   const toolCatalog = useQuery({ queryKey: ["tool-catalog"], queryFn: api.toolCatalog });
   const [tab, setTab] = useState<Tab>("general");
-  const [draft, setDraft] = useState<CodebridgeConfig | null>(null);
+  const [draft, setDraft] = useState<WormholeConfig | null>(null);
   const [dirty, setDirty] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "danger" | "info"; text: string } | null>(null);
 
@@ -113,7 +113,7 @@ export function Configuration() {
       queryClient.setQueryData(["config"], data);
       setDraft(structuredClone(data.config));
       setDirty(false);
-      setMessage({ tone: "success", text: "Saved safely. Restart Codebridge to activate the new configuration." });
+      setMessage({ tone: "success", text: "Saved safely. Restart Wormhole to activate the new configuration." });
       void queryClient.invalidateQueries({ queryKey: ["secrets"] });
       void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
     },
@@ -131,7 +131,7 @@ export function Configuration() {
       queryClient.setQueryData(["config"], saved);
       setDraft(structuredClone(saved.config));
       setDirty(false);
-      setMessage({ tone: "info", text: scheduled.message ?? "Restart scheduled. Waiting for Codebridge to return…" });
+      setMessage({ tone: "info", text: scheduled.message ?? "Restart scheduled. Waiting for Wormhole to return…" });
       void waitForDaemon(scheduled.retryAfterMs);
     },
     onError: (error) => setMessage({ tone: "danger", text: errorMessage(error) }),
@@ -139,7 +139,7 @@ export function Configuration() {
 
   if (snapshot.isLoading || !draft || !snapshot.data) return <LoadingPage />;
 
-  const update = (next: CodebridgeConfig) => {
+  const update = (next: WormholeConfig) => {
     setDraft(next);
     setDirty(true);
     setMessage(null);
@@ -172,7 +172,7 @@ export function Configuration() {
 }
 
 function GeneralEditor({ value, onChange }: EditorProps) {
-  const set = <K extends keyof CodebridgeConfig>(key: K, next: CodebridgeConfig[K]) => onChange({ ...value, [key]: next });
+  const set = <K extends keyof WormholeConfig>(key: K, next: WormholeConfig[K]) => onChange({ ...value, [key]: next });
   return <div className="stack">
     <Card title="Runtime and access" description="Safe defaults are recommended for daily development.">
       <div className="form-grid">
@@ -195,7 +195,7 @@ function GeneralEditor({ value, onChange }: EditorProps) {
         <Field label="Profile directory"><TextInput value={value.profileDir ?? ""} onChange={(e) => set("profileDir", e.target.value)} /></Field>
         <Field label="Runtime key environment"><TextInput value={value.runtimeKeyEnv ?? ""} onChange={(e) => set("runtimeKeyEnv", e.target.value)} /></Field>
       </div>
-      <JSONField label="Tunnel definitions" value={value.tunnels ?? {}} onChange={(tunnels) => set("tunnels", tunnels as CodebridgeConfig["tunnels"])} hint="Example: fast/full entries with tunnelId, mode, profile and runtimeKeyEnv." />
+      <JSONField label="Tunnel definitions" value={value.tunnels ?? {}} onChange={(tunnels) => set("tunnels", tunnels as WormholeConfig["tunnels"])} hint="Example: fast/full entries with tunnelId, mode, profile and runtimeKeyEnv." />
     </Card>
     <Card title="Observability" description="Audit records are local, bounded and redacted by the runtime.">
       <div className="toggle-stack">
@@ -336,7 +336,7 @@ function UpstreamStatusCard({ workspaceId, root, status, refreshing, onRefresh }
 
 function ToolsEditor({ value, onChange, catalog, catalogLoading }: EditorProps & { catalog?: ToolCatalogResponse; catalogLoading: boolean }) {
   const tools = value.tools ?? {};
-  const set = <K extends keyof CodebridgeConfig>(key: K, next: CodebridgeConfig[K]) => onChange({ ...value, [key]: next });
+  const set = <K extends keyof WormholeConfig>(key: K, next: WormholeConfig[K]) => onChange({ ...value, [key]: next });
   const setTools = (patch: Partial<typeof tools>) => onChange({ ...value, tools: { ...tools, ...patch } });
   const groupOptions = (catalog?.groups ?? []).map((group) => ({
     value: group.name,
@@ -378,7 +378,7 @@ function AdvancedEditor({ value, onChange }: EditorProps) {
   const [error, setError] = useState("");
   useEffect(() => setRaw(JSON.stringify(value, null, 2)), [value]);
   const apply = () => {
-    try { onChange(JSON.parse(raw) as CodebridgeConfig); setError(""); }
+    try { onChange(JSON.parse(raw) as WormholeConfig); setError(""); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   };
   return <Card title="Complete JSON document" titleHelp={CONFIG_HELP["Complete JSON document"]} description="Use this fallback for exact control over every supported field." actions={<Button variant="secondary" onClick={apply}><Cpu size={15} /> Apply to form</Button>}>
@@ -405,7 +405,7 @@ function NumberField({ label, value, onChange }: { label: string; value?: number
   return <Field label={label}><TextInput type="number" min={1} value={value ?? 0} onChange={(e) => onChange(number(e.target.value))} /></Field>;
 }
 
-interface EditorProps { value: CodebridgeConfig; onChange: (value: CodebridgeConfig) => void }
+interface EditorProps { value: WormholeConfig; onChange: (value: WormholeConfig) => void }
 const lines = (value: string) => value.split("\n").map((entry) => entry.trim()).filter(Boolean);
 const number = (value: string) => Number.parseInt(value || "0", 10);
 async function waitForDaemon(initialDelayMs: number) {

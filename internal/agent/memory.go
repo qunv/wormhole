@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/memory"
-	"codebridge/internal/security"
+	"wormhole/internal/memory"
+	"wormhole/internal/security"
 )
 
 func (r *Runtime) handleMemory(ctx context.Context, name string, args map[string]any) (any, error) {
@@ -105,7 +105,7 @@ func (r *Runtime) handleMemory(ctx context.Context, name string, args map[string
 		if next := stringsArg(args, "next_steps"); len(next) > 0 {
 			content += "\n\nNext steps:\n- " + strings.Join(next, "\n- ")
 		}
-		concepts := append([]string{"codebridge-session"}, stringsArg(args, "concepts")...)
+		concepts := append([]string{"wormhole-session"}, stringsArg(args, "concepts")...)
 		return r.Memory.Remember(ctx, memory.RememberRequest{
 			Content: content, Kind: "session", Project: project,
 			AgentID: r.Config.Memory.AgentID, SessionID: memorySessionID(ctx),
@@ -242,7 +242,7 @@ func (r *Runtime) captureMemoryObservation(callID, sessionID, name string, args 
 	response := memoryCaptureResult(value)
 	if callErr != nil {
 		hookType = "PostToolUseFailure"
-		response = map[string]any{"ok": false, "error": "tool failed; inspect the local Codebridge audit for details"}
+		response = map[string]any{"ok": false, "error": "tool failed; inspect the local Wormhole audit for details"}
 	}
 	input := memoryCaptureInput(name, args, mode)
 	accepted := r.MemoryRecorder.Record(memory.ObservationRequest{

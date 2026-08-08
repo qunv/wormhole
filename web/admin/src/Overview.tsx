@@ -49,7 +49,7 @@ export function Overview() {
       <Card title="Paths and identity" description="Useful when diagnosing which installation is being edited.">
         <dl className="definition-grid">
           <div><dt>Configuration</dt><dd>{bootstrap.data?.configPath ?? "—"}</dd></div>
-          <div><dt>Codebridge home</dt><dd>{bootstrap.data?.homePath ?? "—"}</dd></div>
+          <div><dt>Wormhole home</dt><dd>{bootstrap.data?.homePath ?? "—"}</dd></div>
           <div><dt>Active config ID</dt><dd><code>{bootstrap.data?.activeConfigId ?? "—"}</code></dd></div>
           <div><dt>Primary workspace</dt><dd>{cfg?.workspace ?? "—"}</dd></div>
         </dl>

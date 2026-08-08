@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -56,12 +56,12 @@ func memoryToolSpecs() []ToolSpec {
 			"memory_id": str("Provider memory ID."), "session_id": str("Provider session ID."),
 			"observation_ids": array(str("")),
 		}), true),
-		roSpec("memory_export", "Export memory", "Export provider memories into Codebridge's canonical migration schema.", object(map[string]any{
+		roSpec("memory_export", "Export memory", "Export provider memories into Wormhole's canonical migration schema.", object(map[string]any{
 			"path": str("Workspace path used to resolve project scope."), "format": enum("object", "jsonl"),
 		})),
-		rwSpec("memory_import", "Import memory", "Import canonical Codebridge memories into the configured provider.", object(map[string]any{
+		rwSpec("memory_import", "Import memory", "Import canonical Wormhole memories into the configured provider.", object(map[string]any{
 			"path": str("Workspace path used to resolve project scope."), "memories": array(memoryItemSchema()),
-			"jsonl": str("Canonical Codebridge memory items, one JSON object per line."),
+			"jsonl": str("Canonical Wormhole memory items, one JSON object per line."),
 		}), false),
 	}
 }

@@ -1,6 +1,6 @@
 version: 2
 
-project_name: codebridge
+project_name: wormhole
 
 before:
   hooks:
@@ -8,16 +8,16 @@ before:
     - go test ./...
 
 builds:
-  - id: codebridge
-    main: ./cmd/codebridge
-    binary: codebridge
+  - id: wormhole
+    main: ./cmd/wormhole
+    binary: wormhole
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags:
       - -s -w
-      - -X codebridge/internal/app.Version={{.Version}}
+      - -X wormhole/internal/app.Version={{.Version}}
 
 archives:
   - formats: [tar.gz]

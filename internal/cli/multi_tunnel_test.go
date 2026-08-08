@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 func TestNamedTunnelProfilesExposeSelectedModeAsMain(t *testing.T) {
@@ -21,15 +21,15 @@ func TestNamedTunnelProfilesExposeSelectedModeAsMain(t *testing.T) {
 	cfg.TunnelID = ""
 	cfg.Tunnels = map[string]config.TunnelConfig{
 		"fast": {
-			TunnelID: "tunnel_fast", Mode: "fast", Profile: "codebridge-fast",
+			TunnelID: "tunnel_fast", Mode: "fast", Profile: "wormhole-fast",
 			RuntimeKeyEnv: "FAST_KEY",
 		},
 		"full": {
-			TunnelID: "tunnel_full", Mode: "full", Profile: "codebridge-full",
+			TunnelID: "tunnel_full", Mode: "full", Profile: "wormhole-full",
 			RuntimeKeyEnv: "FULL_KEY",
 		},
 		"review": {
-			TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "codebridge-review",
+			TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "wormhole-review",
 			RuntimeKeyEnv: "REVIEW_KEY",
 		},
 	}
@@ -48,9 +48,9 @@ func TestNamedTunnelProfilesExposeSelectedModeAsMain(t *testing.T) {
 		}
 		profiles[filepath.Base(path)] = string(raw)
 	}
-	fast := profiles["codebridge-fast.yaml"]
-	full := profiles["codebridge-full.yaml"]
-	review := profiles["codebridge-review.yaml"]
+	fast := profiles["wormhole-fast.yaml"]
+	full := profiles["wormhole-full.yaml"]
+	review := profiles["wormhole-review.yaml"]
 	if !strings.Contains(fast, "channel: main") || !strings.Contains(fast, "/mcp/session/fast") || strings.Contains(fast, "channel: fast") {
 		t.Fatalf("fast profile did not expose only fast as main: %s", fast)
 	}
@@ -85,7 +85,7 @@ func TestLegacyTunnelProfileKeepsLogicalChannels(t *testing.T) {
 }
 
 func TestMigrateTunnelProcessStateAndRoundTripNamedProcesses(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	state := processState{TunnelPID: 22, TunnelIdentity: "legacy"}
 	migrateTunnelProcessState(&state)
 	if state.TunnelPID != 0 || state.TunnelIdentity != "" || state.Tunnels["default"].PID != 22 {
@@ -138,7 +138,7 @@ func TestRuntimeKeyIdentityMaterialIncludesEveryEnabledTunnel(t *testing.T) {
 }
 
 func TestChildLogPathSeparatesNamedTunnels(t *testing.T) {
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	if got := childLogPath("tunnel-fast"); got != config.TunnelLogPathFor("fast") {
 		t.Fatalf("fast tunnel log path = %s", got)
 	}
@@ -151,7 +151,7 @@ func TestChildLogPathSeparatesNamedTunnels(t *testing.T) {
 }
 
 func TestKeyCommandSupportsTunnelSpecificEnvironment(t *testing.T) {
-	t.Setenv("CODEBRIDGE_HOME", t.TempDir())
+	t.Setenv("WORMHOLE_HOME", t.TempDir())
 	var output bytes.Buffer
 	app := App{Stdout: &output, Stderr: &output, Stdin: strings.NewReader("")}
 	if err := app.keyCommand(options{Rest: []string{"set", "secret"}, RuntimeEnv: "FAST_KEY"}); err != nil {

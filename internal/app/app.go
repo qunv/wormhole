@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package app
@@ -7,11 +7,11 @@ import (
 	"context"
 	"os"
 
-	"codebridge/internal/cli"
+	"wormhole/internal/cli"
 )
 
 const (
-	Name = "Codebridge"
+	Name = "Wormhole"
 	Tier = "pro"
 )
 

@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package cli
@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 )
 
 const maxTunnelDownloadBytes = 200 << 20
@@ -64,7 +64,7 @@ func (a App) tunnelCommand(ctx context.Context, cfg config.Config, opts options)
 		fmt.Fprintf(a.Stdout, "Installed tunnel-client: %s\n", path)
 		return nil
 	default:
-		return errors.New("usage: codebridge tunnel status|list|install")
+		return errors.New("usage: wormhole tunnel status|list|install")
 	}
 }
 
@@ -94,7 +94,7 @@ func downloadTunnelClient(ctx context.Context, destination string) (string, erro
 		return "", err
 	}
 
-	tempDir, err := os.MkdirTemp("", "codebridge-tunnel-*")
+	tempDir, err := os.MkdirTemp("", "wormhole-tunnel-*")
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +186,7 @@ func fetch(ctx context.Context, client *http.Client, url string) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", "codebridge-setup")
+	request.Header.Set("User-Agent", "wormhole-setup")
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err

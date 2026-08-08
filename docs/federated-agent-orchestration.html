@@ -394,7 +394,7 @@
       <h1>Điều phối coding agent phân tán giữa nhiều người, nhiều máy và nhiều repository</h1>
       <p class="lead">
         Mỗi nhân sự sở hữu coding agent và local repository riêng. Agent đăng ký vào một logical workspace trung tâm,
-        nhận task qua resident runner, làm việc bằng CodeBridge tại máy cục bộ, rồi publish commit và artifact để kích hoạt
+        nhận task qua resident runner, làm việc bằng Wormhole tại máy cục bộ, rồi publish commit và artifact để kích hoạt
         công việc phụ thuộc ở cùng repo hoặc repo khác.
       </p>
       <div class="meta">
@@ -412,7 +412,7 @@
         <div class="callout success">
           <strong>Đề xuất:</strong> xây dựng một <code>Central Orchestrator</code> quản lý logical workspace, agent registration,
           workspace dependency, task DAG, artifact và trạng thái run. Trên mỗi máy nhân sự chạy một <code>Agent Runner</code>
-          kết nối outbound tới orchestrator và sử dụng CodeBridge để thao tác local repository.
+          kết nối outbound tới orchestrator và sử dụng Wormhole để thao tác local repository.
         </div>
 
         <div class="grid-4">
@@ -461,7 +461,7 @@
 
         <h3>Các khoảng trống của MCP đơn thuần</h3>
         <table>
-          <thead><tr><th>Khả năng</th><th>MCP / CodeBridge</th><th>Orchestrator cần bổ sung</th></tr></thead>
+          <thead><tr><th>Khả năng</th><th>MCP / Wormhole</th><th>Orchestrator cần bổ sung</th></tr></thead>
           <tbody>
             <tr><td>Thao tác file, Git, command, test</td><td>Phù hợp</td><td>Không cần nhân bản chức năng</td></tr>
             <tr><td>Đánh thức agent đang không chạy</td><td>Không phải vai trò của MCP</td><td>Resident runner + assignment channel</td></tr>
@@ -496,7 +496,7 @@
           <tbody>
             <tr><td><code>Workspace</code></td><td>Logical repository/project identity.</td><td><code>backend-payment</code>, <code>frontend-web</code></td></tr>
             <tr><td><code>Agent</code></td><td>Coding executor gắn với nhân sự hoặc service account.</td><td><code>blob-agent</code>, <code>alice-agent</code></td></tr>
-            <tr><td><code>Machine</code></td><td>Thiết bị chạy runner và CodeBridge.</td><td><code>blob-macbook</code></td></tr>
+            <tr><td><code>Machine</code></td><td>Thiết bị chạy runner và Wormhole.</td><td><code>blob-macbook</code></td></tr>
             <tr><td><code>WorkspaceRegistration</code></td><td>Một local clone cụ thể được agent đăng ký vào logical workspace.</td><td>Blob + máy X + <code>/work/backend</code></td></tr>
             <tr><td><code>WorkspaceLink</code></td><td>Quan hệ dài hạn giữa hai workspace.</td><td>Backend <code>provides_api_to</code> Frontend</td></tr>
             <tr><td><code>Contract</code></td><td>Giao diện được workspace producer publish cho consumer.</td><td><code>payment-api</code>, <code>user-events</code></td></tr>
@@ -550,9 +550,9 @@ Contract  1 ── * ArtifactVersion</pre>
             <div class="node purple"><strong>CI / Integration Runner</strong><small>Dedicated merge & validation</small></div>
           </div>
           <div class="flow" style="min-width:900px;margin:1rem 0">
-            <div class="node cyan"><strong>Blob CodeBridge</strong><small>Backend tools & policy</small></div>
-            <div class="node cyan"><strong>Alice CodeBridge</strong><small>Frontend tools & policy</small></div>
-            <div class="node cyan"><strong>CI CodeBridge</strong><small>Integration tools</small></div>
+            <div class="node cyan"><strong>Blob Wormhole</strong><small>Backend tools & policy</small></div>
+            <div class="node cyan"><strong>Alice Wormhole</strong><small>Frontend tools & policy</small></div>
+            <div class="node cyan"><strong>CI Wormhole</strong><small>Integration tools</small></div>
           </div>
           <div class="flow" style="min-width:900px">
             <div class="node green"><strong>Backend local clone</strong><small>repo A</small></div>
@@ -572,7 +572,7 @@ Contract  1 ── * ArtifactVersion</pre>
             <p>Duy trì kết nối, nhận assignment, gọi agent adapter, gửi heartbeat, upload result và xử lý cancellation.</p>
           </div>
           <div class="card">
-            <h4>CodeBridge</h4>
+            <h4>Wormhole</h4>
             <p>Cung cấp execution plane local: file, Git, command, test, policy, audit và context cho agent đang chạy.</p>
           </div>
         </div>
@@ -639,7 +639,7 @@ shared-contracts
         <ol>
           <li>Job được tạo với task Backend và Frontend; Frontend phụ thuộc artifact contract từ Backend.</li>
           <li>Scheduler chọn Blob registration có workspace Backend, capability phù hợp và còn capacity.</li>
-          <li>Blob Runner nhận assignment, launch coding agent và trỏ MCP tới CodeBridge local.</li>
+          <li>Blob Runner nhận assignment, launch coding agent và trỏ MCP tới Wormhole local.</li>
           <li>Agent sửa code, chạy test, commit và push branch hoặc upload patch/bundle.</li>
           <li>Runner trả structured result kèm commit, artifact manifest và check result.</li>
           <li>Verifier độc lập xác nhận commit truy cập được, tests pass và contract hợp lệ.</li>
@@ -760,7 +760,7 @@ shared-contracts
         <div class="grid-3">
           <div class="card"><h4>Connection Manager</h4><p>Duy trì WebSocket/long-poll, reconnect, auth refresh và receive assignment.</p></div>
           <div class="card"><h4>Agent Adapter</h4><p>Chuẩn hoá cách launch Codex, Claude hoặc agent khác và parse structured output.</p></div>
-          <div class="card"><h4>Workspace Adapter</h4><p>Kiểm tra local clone, branch policy, base commit, cleanup và CodeBridge endpoint.</p></div>
+          <div class="card"><h4>Workspace Adapter</h4><p>Kiểm tra local clone, branch policy, base commit, cleanup và Wormhole endpoint.</p></div>
           <div class="card"><h4>Run Supervisor</h4><p>Heartbeat, timeout, cancellation, process isolation, log streaming và resource limit.</p></div>
           <div class="card"><h4>Artifact Uploader</h4><p>Upload report, diff, schema, log và metadata theo content hash.</p></div>
           <div class="card"><h4>Credential Provider</h4><p>Lấy token ngắn hạn cho orchestrator, Git remote và artifact store.</p></div>
@@ -815,7 +815,7 @@ interface RunningAgent {
     "workspace_id": "workspace-frontend",
     "registration_id": "alice-frontend-registration",
     "base_commit": "frontend123",
-    "mcp_endpoint": "local://codebridge/frontend/fast"
+    "mcp_endpoint": "local://wormhole/frontend/fast"
   },
   "source_workspace_refs": [
     {
@@ -1061,7 +1061,7 @@ events(
             <h3>Runner trust</h3>
             <ul>
               <li>Isolate process theo run.</li>
-              <li>Giới hạn command/tool bằng CodeBridge policy.</li>
+              <li>Giới hạn command/tool bằng Wormhole policy.</li>
               <li>Redact secret khỏi logs và artifact.</li>
               <li>Không expose inbound port công khai mặc định.</li>
             </ul>
@@ -1076,7 +1076,7 @@ events(
             <tr><td>Replay result cũ</td><td>Attempt + fencing token + state check.</td></tr>
             <tr><td>Artifact bị thay đổi</td><td>Content hash, immutable storage, signed manifest.</td></tr>
             <tr><td>Agent đọc artifact không thuộc quyền</td><td>Scoped artifact URL và authorization theo task.</td></tr>
-            <tr><td>Command nguy hiểm</td><td>CodeBridge policy, approval gate, sandbox/container khi cần.</td></tr>
+            <tr><td>Command nguy hiểm</td><td>Wormhole policy, approval gate, sandbox/container khi cần.</td></tr>
             <tr><td>Prompt injection từ artifact</td><td>Artifact type allowlist, provenance, trusted/untrusted labels, verifier rules.</td></tr>
             <tr><td>Leaked secrets trong logs</td><td>Redaction tại runner và server, retention policy.</td></tr>
           </tbody>
@@ -1142,7 +1142,7 @@ events(
             <h3>P2 — Resident Agent Runner</h3>
             <p><strong>Deliverables:</strong> runner daemon, registration, heartbeat, assignment stream và generic agent adapter.</p>
             <ul>
-              <li>Runner config local: agent identity, workspace mappings, CodeBridge endpoints.</li>
+              <li>Runner config local: agent identity, workspace mappings, Wormhole endpoints.</li>
               <li>Process supervision, log streaming, cancellation và timeout.</li>
               <li>ACK/heartbeat/complete/fail protocol với fencing token.</li>
               <li>Single-run concurrency trước; mở rộng multi-run sau.</li>
@@ -1150,7 +1150,7 @@ events(
           </div>
 
           <div class="phase">
-            <h3>P3 — CodeBridge workspace adapter</h3>
+            <h3>P3 — Wormhole workspace adapter</h3>
             <p><strong>Deliverables:</strong> preflight, local Git validation, task context bootstrap và post-run inspection.</p>
             <ul>
               <li>Kiểm tra repo identity, branch, clean state và base commit.</li>
@@ -1209,7 +1209,7 @@ events(
             <p><strong>Deliverables:</strong> RBAC, secrets, observability, quotas, HA và operational tooling.</p>
             <ul>
               <li>Metrics: queue latency, run duration, lease loss, verification failure, artifact size.</li>
-              <li>Tracing xuyên suốt orchestrator → runner → CodeBridge.</li>
+              <li>Tracing xuyên suốt orchestrator → runner → Wormhole.</li>
               <li>Runner auto-update, version compatibility và drain mode.</li>
               <li>Backup/restore, event retention và incident runbook.</li>
             </ul>
@@ -1295,7 +1295,7 @@ events(
 
         <div class="callout success">
           <strong>Kiến trúc khuyến nghị để bắt đầu:</strong><br>
-          <code>codebridge-orchestrator</code> + persistent DB + S3-compatible artifact store + resident runner trên mỗi máy + fixed local CodeBridge workspace endpoint + verified Git/artifact handoff + dedicated integration runner.
+          <code>wormhole-orchestrator</code> + persistent DB + S3-compatible artifact store + resident runner trên mỗi máy + fixed local Wormhole workspace endpoint + verified Git/artifact handoff + dedicated integration runner.
         </div>
       </section>
     </div>

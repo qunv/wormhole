@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"codebridge/internal/config"
-	"codebridge/internal/processx"
+	"wormhole/internal/config"
+	"wormhole/internal/processx"
 )
 
 func TestCodegraphExploreSkipsUnindexedWorkspace(t *testing.T) {
@@ -69,7 +69,7 @@ func TestCodegraphExploreUsesDirectArguments(t *testing.T) {
 func newCodegraphTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	workspace := t.TempDir()
-	t.Setenv("CODEBRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("WORMHOLE_DATA_DIR", t.TempDir())
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = workspace, true, "full"
 	runtime, err := New(cfg, "test", "pro", "test-config")

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"codebridge/internal/config"
-	"codebridge/internal/workspaceregistry"
+	"wormhole/internal/config"
+	"wormhole/internal/workspaceregistry"
 )
 
 func TestEnsureAutoWorkspaceCreatesSlugFromFolderName(t *testing.T) {

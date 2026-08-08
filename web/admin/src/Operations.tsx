@@ -179,7 +179,7 @@ function RuntimePanel({ workspaces, router, shared }: { workspaces: OperationsWo
     </div>
 
     {scope === "workspaces" && (workspaces.length === 0 ?
-      <EmptyState title="No active workspaces" description="Restart Codebridge after registering a workspace to include it in runtime operations." /> :
+      <EmptyState title="No active workspaces" description="Restart Wormhole after registering a workspace to include it in runtime operations." /> :
       <div className="operations-master-detail">
         <Card title="Workspace overview" description="Select a workspace to inspect its live runtime details." className="operations-workspace-overview">
           <div className="operations-workspace-list">

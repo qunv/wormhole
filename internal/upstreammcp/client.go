@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package upstreammcp
@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"codebridge/internal/config"
+	"wormhole/internal/config"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -326,7 +326,7 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 		return c.sanitizedError(err)
 	}
 	client := mcp.NewClient(
-		&mcp.Implementation{Name: "codebridge-upstream-" + c.name, Version: c.version},
+		&mcp.Implementation{Name: "wormhole-upstream-" + c.name, Version: c.version},
 		&mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{}},
 	)
 	session, err := client.Connect(ctx, build.transport, nil)
@@ -390,7 +390,7 @@ func (c *Client) connectLocked(ctx context.Context, discover bool) error {
 // RefreshCatalog establishes a fresh session, discovers the complete live tool
 // contract, atomically swaps the client session, and persists the secret-free
 // catalog when configured. Existing in-flight borrowers keep their retired
-// session until release; downstream Codebridge ToolSpecs remain immutable until
+// session until release; downstream Wormhole ToolSpecs remain immutable until
 // the daemon restarts.
 func (c *Client) RefreshCatalog(ctx context.Context) error {
 	if ctx == nil {

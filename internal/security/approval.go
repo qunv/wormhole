@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package security
@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"codebridge/internal/state"
+	"wormhole/internal/state"
 )
 
 const (

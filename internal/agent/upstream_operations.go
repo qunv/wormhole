@@ -1,4 +1,4 @@
-// Codebridge
+// Wormhole
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 package agent
@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"codebridge/internal/config"
-	"codebridge/internal/security"
-	"codebridge/internal/upstreammcp"
+	"wormhole/internal/config"
+	"wormhole/internal/security"
+	"wormhole/internal/upstreammcp"
 )
 
 type toolContractSummary struct {
@@ -72,7 +72,7 @@ func (r *Runtime) RefreshUpstreamMCP(ctx context.Context, rawName string) (map[s
 	client := r.shared.upstreamClients[clientKey]
 	r.shared.mu.Unlock()
 	if client == nil {
-		return nil, fmt.Errorf("upstream MCP server %q has no initialized client; restart Codebridge after validating its configuration", name)
+		return nil, fmt.Errorf("upstream MCP server %q has no initialized client; restart Wormhole after validating its configuration", name)
 	}
 	if err := client.RefreshCatalog(ctx); err != nil {
 		return nil, err

@@ -54,7 +54,7 @@ func TestTunnelToolProfileReferencesCustomProfile(t *testing.T) {
 	cfg := Default()
 	cfg.ToolProfiles = map[string]ToolProfileConfig{"review": {OutputMode: "both"}}
 	cfg.Tunnels = map[string]TunnelConfig{
-		"review": {TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "codebridge-review"},
+		"review": {TunnelID: "tunnel_review", Mode: "full", ToolProfile: "review", Profile: "wormhole-review"},
 	}
 	prepared, err := Prepare(cfg)
 	if err != nil {
