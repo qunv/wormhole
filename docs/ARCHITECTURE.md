@@ -24,7 +24,8 @@ CLI command
    │
    ├── start/stop/restart/status/doctor
    │      ├── one daemon process state
-   │      ├── N named tunnel-client process states
+   │      ├── N named OpenAI tunnel-client process states
+   │      ├── N remote-ingress provider process states
    │      ├── config ID
    │      └── health checks
    │
@@ -67,7 +68,7 @@ selected agent.Runtime.HandleSession
 |---|---|
 | `cmd/wormhole` | Process entrypoint and exit codes |
 | `internal/app` | Version/tier metadata and composition root |
-| `internal/cli` | CLI grammar, setup, process lifecycle, tunnel installation, and profile generation |
+| `internal/cli` | CLI grammar, setup, process lifecycle, OpenAI tunnel installation/profile generation, and remote-ingress provider supervision |
 | `internal/workspaceregistry` | Named workspace registry, schema migration, atomic persistence, and daemon fingerprint input |
 | `internal/server` | HTTP composition, MCP routing, health, authentication, Origin/CORS, and body limits |
 | `internal/adminauth` | Owner-only local Admin credential hashing, bounded browser sessions, login throttling, and reset-driven session invalidation |
@@ -191,7 +192,7 @@ named runtime
   primary effective config
     → recursive JSON object merge from workspaces/<id>/config.json
     → registry-owned workspace root
-    → daemon-owned listener, authentication, Origin, and tunnel fields
+    → daemon-owned listener, authentication, Origin, tunnel, and remote-ingress fields
     → normalize + validate
 ```
 
@@ -220,7 +221,7 @@ browser on this machine
 
 The SPA assets and authentication-status/login endpoints remain readable from the loopback-only Admin origin so the sign-in screen can render. A create-only first-account endpoint is also available while `admin-auth.json` does not exist; it uses same-origin CSRF protection and exclusive file creation, then creates the initial bounded browser session. Every other Admin API route requires a valid in-memory session. Session tokens are random, stored only as digests in a bounded process-local map, and delivered in an HttpOnly SameSite cookie. Validation re-reads the persisted credential version, so `wormhole admin set-password` or `reset-password` immediately invalidates all sessions. Failed login attempts use a bounded throttle. There is no browser password change, reset, or recovery endpoint.
 
-Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by the legacy `runtimeKeyEnv`, named `tunnels.*.runtimeKeyEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
+Configuration responses exclude runtime-only bearer and approval tokens. Dotenv values are never read through the API; the server returns only referenced variable names and presence state. Secret writes are limited to variable names referenced by the legacy `runtimeKeyEnv`, named `tunnels.*.runtimeKeyEnv`, `remoteIngresses.*.authTokenEnv`, `remoteIngresses.*.providerTokenEnv`, `memory.secretEnv`, `mcpServers.*.envRefs`, or `mcpServers.*.headerRefs`.
 
 The authenticated Admin Operations surface reads bounded runtime/module metrics, router and pooled-resource summaries, exact approval records, and at most a 2 MiB tail of each active workspace's current redacted audit file. Approval decisions call a tokenless `DecideLocal` entrypoint only after the Admin handler has enforced loopback, login, same-origin, and CSRF checks; the MCP operator token is never returned to or accepted from the browser. Audit queries return at most 200 newest matching JSONL records and never read rotated history implicitly.
 
@@ -248,6 +249,7 @@ All persistent Wormhole files use one canonical root on every operating system:
     server.log
     tunnel.log
     tunnel-<name>.log
+    remote-ingress-<name>.log
     profiles/
     instances/<id>/...
     workspaces/<workspace-path-hash>/...
@@ -288,7 +290,7 @@ Workspace runtime construction validates every primary and extra root. It never 
 
 ### Configuration identity and process reuse
 
-The supervisor creates `ConfigID` from the complete normalized effective configuration, including workspace roots, listener security, policy, audit settings, request/process limits, memory, upstream MCP, tool exposure, tunnel/profile metadata, binary hash, and widget hash. Raw bearer, approval, memory, upstream, and Runtime API credentials are never serialized into identity material; one-way shortened fingerprints are used instead. Binary and widget hashes are computed once and reused for every named runtime during one reconciliation.
+The supervisor creates `ConfigID` from the complete normalized effective configuration, including workspace roots, listener security, policy, audit settings, request/process limits, memory, upstream MCP, tool exposure, tunnel/profile metadata, remote-ingress metadata, binary hash, and widget hash. Raw bearer, approval, memory, upstream, Runtime API, remote MCP bearer, and remote provider credentials are never serialized into identity material; one-way shortened fingerprints are used instead. Binary and widget hashes are computed once and reused for every named runtime during one reconciliation.
 
 When the health endpoint reports the same `ConfigID`, the supervisor reuses the existing server and compatible tunnel. The supervisor passes its precomputed aggregate ID to the child server, so runtime-only tunnel/profile overrides and secret fingerprints cannot diverge between the launcher and health response. A direct foreground `serve` still computes the identity locally. Changing a listener rule, token, limit, memory/upstream setting, package argument, tool policy, environment reference, referenced secret value, tunnel ID, or Runtime API key changes the identity and forces reconciliation.
 
@@ -341,6 +343,10 @@ Wormhole exposes:
 ```
 
 A non-loopback `host` requires an MCP bearer token. A browser Origin is accepted only when it is loopback or included in the explicit allowlist. The listener security policy is global. Fixed endpoints use their runtime body limit. Because the session endpoint must parse the JSON-RPC envelope before resolving its binding, it conservatively uses the smallest configured runtime body limit, then applies the selected runtime's tool policy and handler behavior.
+
+Remote MCP ingresses are a separate downstream boundary. Each enabled ingress is daemon-owned, binds only to `127.0.0.1:<localPort>`, mounts only `/mcp`, requires its own bearer token, resolves one workspace at startup, and constructs one immutable fixed tool-profile server. It does not mount Admin, `/healthz`, `/internal/healthz`, session routing, workspace selection, or another workspace endpoint. All ingress sockets are bound before the main listener begins serving, so an invalid workspace/profile, missing bearer, or occupied ingress port fails startup before the supervisor health endpoint becomes ready.
+
+The provider process is independent from the MCP listener. The initial `cloudflare` provider launches `cloudflared tunnel --no-autoupdate run` and supplies the remotely managed tunnel credential through `TUNNEL_TOKEN` in the child environment rather than argv. Public-hostname routing remains provider-owned and must target the dedicated loopback port, never the main Admin/MCP listener. Provider and MCP bearer credentials use different environment references and participate in daemon ConfigID only through one-way fingerprints.
 
 Each module's `Specs()` output is the source of truth for its tools, and `runtime.Tools()` is the assembled server contract:
 
@@ -404,7 +410,7 @@ beginToolCall (correlation ID + in-flight counters)
 
 The tracker stores only registered tool/module names, timestamps, counts, durations, outcome classes, and generated call IDs. It never stores session IDs, arguments, results, or error text. Unknown names collapse into one `_unknown` metric key, and the recent-call ring is capped at 64 entries. Each workspace runtime has a `maxConcurrentToolCalls` semaphore (default 16); calls waiting for a slot remain context-cancellable and are still finalized in audit and metrics. Module panics are recovered at the runtime boundary and returned as the stable sanitized error `tool call panicked`. `runtime_metrics` can omit per-tool and recent data, while `workspace_info`, `session_report`, `workspace_doctor`, and loopback `/internal/healthz` expose progressively richer bounded views.
 
-Detached server and tunnel processes run behind an internal output wrapper. The wrapper owns their stdout/stderr pipes, writes separate `server.log` and `tunnel.log` files, rotates each at 32 MiB, and retains four previous generations. Because children write to pipes rather than directly opened log files, rotation can close, rename, and reopen files without leaving a long-running child attached to a stale inode.
+Detached server, OpenAI tunnel, and remote-ingress provider processes run behind an internal output wrapper. The wrapper owns their stdout/stderr pipes, writes separate `server.log`, `tunnel[-<name>].log`, and `remote-ingress-<name>.log` files, rotates each at 32 MiB, and retains four previous generations. Because children write to pipes rather than directly opened log files, rotation can close, rename, and reopen files without leaving a long-running child attached to a stale inode.
 
 Audit records include the same `call_id`, tool module, outcome status, execution duration, and a coarse `error_kind`. Runtime dispatch redacts and bounds unstructured error text in addition to key-aware argument redaction, then encodes the bounded record and enqueues it to the shared audit writer instead of opening the file on the tool-call critical path. The writer drains bounded batches, rotates `audit.log` at 64 MiB with five retained generations, and falls back to a synchronous append when its queue is saturated so records are not silently dropped. `FlushAudit` provides an explicit persistence barrier for tests and controlled shutdown. Audit write failures do not change the tool result, but synchronous/enqueue failures and background writer failures are reported separately in runtime health and make the audit check in `workspace_doctor` warn. State operations use a bounded striped path-lock table, so unrelated notes, task, index, approval, and audit files do not share one workspace-wide mutex while writes to the same path remain serialized.
 

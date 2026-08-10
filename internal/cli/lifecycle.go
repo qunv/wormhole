@@ -36,15 +36,16 @@ type tunnelProcessState struct {
 }
 
 type processState struct {
-	ServerPID      int                           `json:"serverPid,omitempty"`
-	ServerIdentity string                        `json:"serverIdentity,omitempty"`
-	TunnelPID      int                           `json:"tunnelPid,omitempty"`
-	TunnelIdentity string                        `json:"tunnelIdentity,omitempty"`
-	Tunnels        map[string]tunnelProcessState `json:"tunnels,omitempty"`
-	UpdatedAt      time.Time                     `json:"updatedAt"`
-	ConfigID       string                        `json:"configId"`
-	Port           int                           `json:"port"`
-	Workspace      string                        `json:"workspace"`
+	ServerPID       int                           `json:"serverPid,omitempty"`
+	ServerIdentity  string                        `json:"serverIdentity,omitempty"`
+	TunnelPID       int                           `json:"tunnelPid,omitempty"`
+	TunnelIdentity  string                        `json:"tunnelIdentity,omitempty"`
+	Tunnels         map[string]tunnelProcessState `json:"tunnels,omitempty"`
+	RemoteIngresses map[string]tunnelProcessState `json:"remoteIngresses,omitempty"`
+	UpdatedAt       time.Time                     `json:"updatedAt"`
+	ConfigID        string                        `json:"configId"`
+	Port            int                           `json:"port"`
+	Workspace       string                        `json:"workspace"`
 }
 
 type startupLogFollower struct {
@@ -173,14 +174,27 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 		}
 		return err
 	}
+	remoteIngressCmds, err := a.reconcileRemoteIngresses(cfg, &state, configID, true, opts.Background)
+	if err != nil {
+		if serverCmd != nil {
+			_ = a.stopAllRemoteIngresses(&state, true)
+			_ = a.stopAllTunnels(&state, true)
+			_ = stopPID(serverCmd.Process.Pid)
+		} else {
+			_ = cleanupTunnelCommands(&state, tunnelCmds)
+		}
+		return err
+	}
 	state.UpdatedAt, state.ConfigID, state.Port, state.Workspace = time.Now().UTC(), configID, cfg.Port, cfg.Workspace
 	if err := writeState(state); err != nil {
 		// If this invocation owns a new daemon, stop every tunnel that points at
 		// it. Otherwise only stop tunnel processes created by this invocation.
 		if serverCmd != nil {
+			_ = a.stopAllRemoteIngresses(&state, true)
 			_ = a.stopAllTunnels(&state, true)
 			_ = stopPID(serverCmd.Process.Pid)
 		} else {
+			_ = cleanupRemoteIngressCommands(&state, remoteIngressCmds)
 			_ = cleanupTunnelCommands(&state, tunnelCmds)
 		}
 		return fmt.Errorf("persist process state: %w", err)
@@ -189,38 +203,50 @@ func (a App) startUnlocked(ctx context.Context, cfg config.Config, opts options)
 		fmt.Fprintln(a.Stdout, "Running in background.")
 		return nil
 	}
-	wait := make(chan error, len(tunnelCmds)+1)
+	wait := make(chan error, len(tunnelCmds)+len(remoteIngressCmds)+1)
 	for _, name := range tunnelNames(tunnelCmds) {
 		cmd := tunnelCmds[name]
+		go func() { wait <- cmd.Wait() }()
+	}
+	for _, name := range remoteIngressNames(remoteIngressCmds) {
+		cmd := remoteIngressCmds[name]
 		go func() { wait <- cmd.Wait() }()
 	}
 	if serverCmd != nil {
 		go func() { wait <- <-serverExit }()
 	}
-	if serverCmd == nil && len(tunnelCmds) == 0 {
+	if serverCmd == nil && len(tunnelCmds) == 0 && len(remoteIngressCmds) == 0 {
 		<-ctx.Done()
 		return nil
 	}
 	select {
 	case <-ctx.Done():
-		return a.cleanupStartedProcesses(state, serverCmd, tunnelCmds)
+		return a.cleanupStartedProcesses(state, serverCmd, tunnelCmds, remoteIngressCmds)
 	case err := <-wait:
 		if err == nil {
-			err = errors.New("server or tunnel process exited unexpectedly")
+			err = errors.New("server, tunnel, or remote ingress process exited unexpectedly")
 		}
-		return errors.Join(err, a.cleanupStartedProcesses(state, serverCmd, tunnelCmds))
+		return errors.Join(err, a.cleanupStartedProcesses(state, serverCmd, tunnelCmds, remoteIngressCmds))
 	}
 }
 
-func (a App) cleanupStartedProcesses(state processState, serverCmd *exec.Cmd, tunnelCmds map[string]*exec.Cmd) error {
+func (a App) cleanupStartedProcesses(state processState, serverCmd *exec.Cmd, tunnelCmds, remoteIngressCmds map[string]*exec.Cmd) error {
 	migrateTunnelProcessState(&state)
 	var errs []error
 	if serverCmd != nil {
+		if err := a.stopAllRemoteIngresses(&state, true); err != nil {
+			errs = append(errs, err)
+		}
 		if err := a.stopAllTunnels(&state, true); err != nil {
 			errs = append(errs, err)
 		}
-	} else if err := cleanupTunnelCommands(&state, tunnelCmds); err != nil {
-		errs = append(errs, err)
+	} else {
+		if err := cleanupRemoteIngressCommands(&state, remoteIngressCmds); err != nil {
+			errs = append(errs, err)
+		}
+		if err := cleanupTunnelCommands(&state, tunnelCmds); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if serverCmd != nil {
 		if processStillMatches(state.ServerPID, state.ServerIdentity) {
@@ -235,7 +261,7 @@ func (a App) cleanupStartedProcesses(state processState, serverCmd *exec.Cmd, tu
 		}
 	}
 	state.UpdatedAt = time.Now().UTC()
-	if state.ServerPID == 0 && tunnelStateEmpty(state) {
+	if state.ServerPID == 0 && tunnelStateEmpty(state) && remoteIngressStateEmpty(state) {
 		if err := os.Remove(config.PIDPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("remove stopped process state: %w", err))
 		}
@@ -356,6 +382,9 @@ func (a App) stopUnlocked(cfg config.Config, _ options) error {
 	if health != nil && !healthOwned {
 		return fmt.Errorf("MCP server on port %d is healthy but is not owned by the current Wormhole process state; refusing to stop PID %d", cfg.Port, numberValue(healthValue(health, "pid")))
 	}
+	if err := a.stopAllRemoteIngresses(&state, healthOwned || serverStateValid); err != nil {
+		return err
+	}
 	if err := a.stopAllTunnels(&state, healthOwned || serverStateValid); err != nil {
 		return err
 	}
@@ -417,16 +446,52 @@ func (a App) status(cfg config.Config, opts options) error {
 		}
 		tunnels[name] = item
 	}
+	configuredIngresses := map[string]config.NamedRemoteIngress{}
+	for _, ingress := range cfg.EffectiveRemoteIngresses() {
+		configuredIngresses[ingress.Name] = ingress
+	}
+	ingressNames := map[string]bool{}
+	for name := range configuredIngresses {
+		ingressNames[name] = true
+	}
+	for name := range state.RemoteIngresses {
+		ingressNames[name] = true
+	}
+	remoteIngresses := map[string]any{}
+	for _, name := range sortedBoolKeys(ingressNames) {
+		process := state.RemoteIngresses[name]
+		_, _, alive := ownedRemoteIngressProcess(name, process, serverOwned || serverStateValid)
+		item := map[string]any{"pid": process.PID, "alive": alive, "log_path": config.RemoteIngressLogPathFor(name)}
+		logs["remote-ingress:"+name] = config.RemoteIngressLogPathFor(name)
+		if ingress, exists := configuredIngresses[name]; exists {
+			item["configured"] = true
+			item["enabled"] = ingress.Config.IsEnabled()
+			item["provider"] = ingress.Config.Provider
+			item["managed_provider"] = ingress.Config.Provider == "cloudflare"
+			item["workspace_id"] = ingress.Config.WorkspaceID
+			item["tool_profile"] = ingress.Config.ToolProfile
+			item["local_url"] = fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)
+			item["listener_reachable"] = serverOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
+			item["public_url"] = ingress.Config.PublicURL
+			item["auth_token_env"] = ingress.Config.AuthTokenEnv
+			if ingress.Config.ProviderTokenEnv != "" {
+				item["provider_token_env"] = ingress.Config.ProviderTokenEnv
+			}
+		} else {
+			item["configured"] = false
+		}
+		remoteIngresses[name] = item
+	}
 	value := map[string]any{
 		"workspace": cfg.Workspace, "config_path": config.ConfigPath(), "pid_path": config.PIDPath(),
 		"log_path": config.ServerLogPath(), "log_paths": logs,
 		"mcp_url":              fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
 		"session_mcp_url":      fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionEndpoint),
 		"session_fast_mcp_url": fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, mcpserver.SessionFastEndpoint),
-		"server":               health, "server_owned": serverOwned, "tunnels": tunnels,
+		"server":               health, "server_owned": serverOwned, "tunnels": tunnels, "remote_ingresses": remoteIngresses,
 		"pids": map[string]any{
 			"server": state.ServerPID, "server_alive": health != nil || processMatches(state.ServerPID, state.ServerIdentity),
-			"tunnels": tunnelPIDMap(state.Tunnels),
+			"tunnels": tunnelPIDMap(state.Tunnels), "remote_ingresses": remoteIngressPIDMap(state.RemoteIngresses),
 		},
 	}
 	if opts.JSON {
@@ -455,6 +520,25 @@ func (a App) status(cfg config.Config, opts options) error {
 		}
 		fmt.Fprintf(a.Stdout, "Tunnel %-12s %-10s %s\n", name, mode, ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline"))
 	}
+	if len(ingressNames) == 0 {
+		fmt.Fprintln(a.Stdout, "Remote ingresses: none configured")
+	}
+	for _, name := range sortedBoolKeys(ingressNames) {
+		process := state.RemoteIngresses[name]
+		_, _, alive := ownedRemoteIngressProcess(name, process, serverOwned || serverStateValid)
+		detail := "unconfigured"
+		if ingress, exists := configuredIngresses[name]; exists {
+			detail = fmt.Sprintf("%s workspace=%s profile=%s local=127.0.0.1:%d", ingress.Config.Provider, ternary(ingress.Config.WorkspaceID != "", ingress.Config.WorkspaceID, "primary"), ingress.Config.ToolProfile, ingress.Config.LocalPort)
+			if !ingress.Config.IsEnabled() {
+				detail += " disabled"
+			}
+		}
+		processStatus := ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline")
+		if ingress, exists := configuredIngresses[name]; exists && ingress.Config.Provider == "external" {
+			processStatus = ternary(serverOwned && remoteIngressPortReachable(ingress.Config.LocalPort), "listener-ready (external publisher)", "listener-offline")
+		}
+		fmt.Fprintf(a.Stdout, "Remote ingress %-12s %s %s\n", name, detail, processStatus)
+	}
 	return nil
 }
 
@@ -473,6 +557,8 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	checks = append(checks, check{"ripgrep", rgErr == nil, ternary(rgErr == nil, "available", "optional; Go fallback will be used")})
 	serverHealth := readHealth(cfg.Port)
 	checks = append(checks, check{"server", serverHealth != nil, fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)})
+	state := readState()
+	migrateTunnelProcessState(&state)
 	if serverHealth != nil {
 		deepHealth := readDeepHealth(cfg.Port)
 		modules, _ := deepHealth["modules"].(map[string]any)
@@ -496,8 +582,6 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	if !cfg.NoTunnel {
 		_, tunnelErr := os.Stat(cfg.TunnelBin)
 		checks = append(checks, check{"tunnel-client", tunnelErr == nil, cfg.TunnelBin})
-		state := readState()
-		migrateTunnelProcessState(&state)
 		for _, tunnel := range cfg.EnabledTunnels() {
 			process := state.Tunnels[tunnel.Name]
 			_, _, alive := ownedNamedTunnelProcess(tunnel.Name, process, serverHealth != nil)
@@ -509,6 +593,31 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 		}
 		if len(cfg.EnabledTunnels()) == 0 {
 			checks = append(checks, check{"tunnels", false, "no enabled tunnel configured"})
+		}
+	}
+	for _, ingress := range cfg.EnabledRemoteIngresses() {
+		process := state.RemoteIngresses[ingress.Name]
+		_, _, alive := ownedRemoteIngressProcess(ingress.Name, process, serverHealth != nil)
+		checks = append(checks,
+			check{"remote-auth:" + ingress.Name, os.Getenv(ingress.Config.AuthTokenEnv) != "", ingress.Config.AuthTokenEnv},
+			check{"remote-listener:" + ingress.Name, serverHealth != nil && remoteIngressPortReachable(ingress.Config.LocalPort), fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)},
+		)
+		if ingress.Config.Provider == "cloudflare" {
+			binaryOK := false
+			binaryDetail := ingress.Config.Binary
+			if filepath.IsAbs(ingress.Config.Binary) {
+				_, binaryErr := os.Stat(ingress.Config.Binary)
+				binaryOK = binaryErr == nil
+			} else if resolved, binaryErr := exec.LookPath(ingress.Config.Binary); binaryErr == nil {
+				binaryOK, binaryDetail = true, resolved
+			}
+			checks = append(checks,
+				check{"remote-binary:" + ingress.Name, binaryOK, binaryDetail},
+				check{"remote-provider-key:" + ingress.Name, os.Getenv(ingress.Config.ProviderTokenEnv) != "", ingress.Config.ProviderTokenEnv},
+				check{"remote-process:" + ingress.Name, alive, ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline")},
+			)
+		} else {
+			checks = append(checks, check{"remote-provider:" + ingress.Name, true, "external publisher managed outside Wormhole"})
 		}
 	}
 	if cfg.Memory.Enabled {
@@ -663,9 +772,19 @@ func (a App) logs(cfg config.Config) error {
 	for name := range state.Tunnels {
 		names[name] = true
 	}
+	ingressNames := map[string]bool{}
+	for _, ingress := range cfg.EffectiveRemoteIngresses() {
+		ingressNames[ingress.Name] = true
+	}
+	for name := range state.RemoteIngresses {
+		ingressNames[name] = true
+	}
 	paths := []string{config.ServerLogPath()}
 	for _, name := range sortedBoolKeys(names) {
 		paths = append(paths, config.TunnelLogPathFor(name))
+	}
+	for _, name := range sortedBoolKeys(ingressNames) {
+		paths = append(paths, config.RemoteIngressLogPathFor(name))
 	}
 	paths = append(paths, config.LogPath())
 	printed := false

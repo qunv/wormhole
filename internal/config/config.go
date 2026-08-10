@@ -130,14 +130,15 @@ type Config struct {
 	ApprovalToken  string   `json:"approvalToken,omitempty"`
 	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
 
-	NoTunnel      bool                    `json:"noTunnel,omitempty"`
-	TunnelBin     string                  `json:"tunnelBin,omitempty"`
-	TunnelID      string                  `json:"tunnelId,omitempty"`
-	Organization  string                  `json:"organizationId,omitempty"`
-	Profile       string                  `json:"profile,omitempty"`
-	ProfileDir    string                  `json:"profileDir,omitempty"`
-	RuntimeKeyEnv string                  `json:"runtimeKeyEnv,omitempty"`
-	Tunnels       map[string]TunnelConfig `json:"tunnels,omitempty"`
+	NoTunnel        bool                           `json:"noTunnel,omitempty"`
+	TunnelBin       string                         `json:"tunnelBin,omitempty"`
+	TunnelID        string                         `json:"tunnelId,omitempty"`
+	Organization    string                         `json:"organizationId,omitempty"`
+	Profile         string                         `json:"profile,omitempty"`
+	ProfileDir      string                         `json:"profileDir,omitempty"`
+	RuntimeKeyEnv   string                         `json:"runtimeKeyEnv,omitempty"`
+	Tunnels         map[string]TunnelConfig        `json:"tunnels,omitempty"`
+	RemoteIngresses map[string]RemoteIngressConfig `json:"remoteIngresses,omitempty"`
 
 	Memory       MemoryConfig                 `json:"memory,omitempty"`
 	MCPServers   map[string]MCPServerConfig   `json:"mcpServers,omitempty"`
@@ -503,6 +504,9 @@ func loadFile(path string, useEnvironment bool) (Config, error) {
 	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
 		return cfg, err
 	}
+	if err := validateRemoteIngressMapKeys(cfg.RemoteIngresses); err != nil {
+		return cfg, err
+	}
 	if err := validateToolProfileMapKeys(cfg.ToolProfiles); err != nil {
 		return cfg, err
 	}
@@ -527,6 +531,9 @@ func Save(cfg Config) error {
 
 func SaveFile(path string, cfg Config) error {
 	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
+		return err
+	}
+	if err := validateRemoteIngressMapKeys(cfg.RemoteIngresses); err != nil {
 		return err
 	}
 	if err := validateToolProfileMapKeys(cfg.ToolProfiles); err != nil {
@@ -614,6 +621,9 @@ func (c Config) Validate(requireWorkspace bool) error {
 	if err := validateToolProfiles(c.ToolProfiles); err != nil {
 		return err
 	}
+	if err := validateRemoteIngresses(c); err != nil {
+		return err
+	}
 	if err := validateTunnelProfileName("profile", c.Profile); err != nil {
 		return err
 	}
@@ -625,7 +635,7 @@ func (c Config) Validate(requireWorkspace bool) error {
 			return fmt.Errorf("tunnels.%s.mode must be fast or full", name)
 		}
 		toolProfile := tunnel.EffectiveToolProfile()
-		if toolProfile != "fast" && toolProfile != "full" {
+		if toolProfile != "fast" && toolProfile != "full" && toolProfile != "remote-read" {
 			if _, exists := c.ToolProfiles[toolProfile]; !exists {
 				return fmt.Errorf("tunnels.%s.toolProfile references unknown tool profile %q", name, toolProfile)
 			}
@@ -678,8 +688,8 @@ func validateToolProfileMapKeys(profiles map[string]ToolProfileConfig) error {
 	seen := map[string]string{}
 	for rawID := range profiles {
 		id := strings.ToLower(strings.TrimSpace(rawID))
-		if !toolProfilePattern.MatchString(id) || id == "fast" || id == "full" {
-			return fmt.Errorf("toolProfiles name %q must match %s and must not be fast or full", rawID, toolProfilePattern.String())
+		if !toolProfilePattern.MatchString(id) || id == "fast" || id == "full" || id == "remote-read" {
+			return fmt.Errorf("toolProfiles name %q must match %s and must not override a built-in profile", rawID, toolProfilePattern.String())
 		}
 		if previous := seen[id]; previous != "" {
 			return fmt.Errorf("tool profile names %q and %q normalize to the same value %q", previous, rawID, id)
@@ -693,8 +703,8 @@ func validateToolProfiles(profiles map[string]ToolProfileConfig) error {
 	seen := map[string]string{}
 	for rawID, profile := range profiles {
 		id := strings.ToLower(strings.TrimSpace(rawID))
-		if !toolProfilePattern.MatchString(id) || id == "fast" || id == "full" {
-			return fmt.Errorf("toolProfiles name %q must match %s and must not be fast or full", rawID, toolProfilePattern.String())
+		if !toolProfilePattern.MatchString(id) || id == "fast" || id == "full" || id == "remote-read" {
+			return fmt.Errorf("toolProfiles name %q must match %s and must not override a built-in profile", rawID, toolProfilePattern.String())
 		}
 		if previous := seen[id]; previous != "" {
 			return fmt.Errorf("tool profile names %q and %q normalize to the same value %q", previous, rawID, id)
@@ -834,14 +844,15 @@ func (c Config) ConfigIDWithInputs(inputs IdentityInputs) string {
 	}
 
 	material, _ := json.Marshal(map[string]any{
-		"config":                      identityConfig,
-		"authTokenFingerprint":        authFingerprint,
-		"approvalTokenFingerprint":    approvalFingerprint,
-		"memorySecretFingerprint":     memorySecretFingerprint,
-		"mcpServerSecretFingerprints": MCPServerSecretFingerprints(identityConfig.MCPServers),
-		"binaryHash":                  inputs.BinaryHash,
-		"widgetHash":                  inputs.WidgetHash,
-		"runtimeKeyFingerprint":       inputs.RuntimeKeyFingerprint,
+		"config":                          identityConfig,
+		"authTokenFingerprint":            authFingerprint,
+		"approvalTokenFingerprint":        approvalFingerprint,
+		"memorySecretFingerprint":         memorySecretFingerprint,
+		"mcpServerSecretFingerprints":     MCPServerSecretFingerprints(identityConfig.MCPServers),
+		"remoteIngressSecretFingerprints": RemoteIngressSecretFingerprints(identityConfig.RemoteIngresses),
+		"binaryHash":                      inputs.BinaryHash,
+		"widgetHash":                      inputs.WidgetHash,
+		"runtimeKeyFingerprint":           inputs.RuntimeKeyFingerprint,
 	})
 	sum := sha256.Sum256(material)
 	return hex.EncodeToString(sum[:8])
@@ -1091,6 +1102,7 @@ func normalize(c *Config) {
 		c.TunnelBin = filepath.Join(AppDataDir(), tunnelExecutable())
 	}
 	normalizeTunnels(c)
+	normalizeRemoteIngresses(c)
 	if c.Memory.Provider == "" {
 		c.Memory.Provider = "none"
 	}

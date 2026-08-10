@@ -64,6 +64,18 @@ export interface TunnelConfig {
   organizationId?: string;
 }
 
+export interface RemoteIngressConfig {
+  enabled?: boolean;
+  provider?: "external" | "cloudflare" | string;
+  workspaceId?: string;
+  toolProfile?: string;
+  localPort: number;
+  publicUrl?: string;
+  authTokenEnv: string;
+  providerTokenEnv?: string;
+  binary?: string;
+}
+
 export interface ToolExposureConfig {
   allowedGroups?: string[];
   allowedTools?: string[];
@@ -96,6 +108,7 @@ export interface WormholeConfig {
   profileDir?: string;
   runtimeKeyEnv?: string;
   tunnels?: Record<string, TunnelConfig>;
+  remoteIngresses?: Record<string, RemoteIngressConfig>;
   memory: MemoryConfig;
   mcpServers?: Record<string, MCPServerConfig>;
   tools?: ToolExposureConfig;
@@ -134,7 +147,7 @@ export interface ProfileTunnel {
 }
 
 export interface ToolProfile {
-  id: "fast" | "full" | string;
+  id: "remote-read" | "fast" | "full" | string;
   name: string;
   endpoint: string;
   description: string;

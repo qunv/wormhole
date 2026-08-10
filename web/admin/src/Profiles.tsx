@@ -123,7 +123,7 @@ export function Profiles() {
         <TextInput value={newID} onChange={(event) => setNewID(event.target.value.toLowerCase())} placeholder="review" />
         <Button onClick={create} disabled={!validProfileID(newID) || profiles.some((profile) => profile.id === newID.trim().toLowerCase()) || saveConfig.isPending}><CopyPlus size={15} /> Create</Button>
       </div>
-      <small className="muted">Use lowercase letters, numbers, underscore, or hyphen. The reserved IDs fast and full cannot be replaced.</small>
+      <small className="muted">Use lowercase letters, numbers, underscore, or hyphen. The built-in IDs remote-read, fast and full cannot be replaced.</small>
     </Card>
     <div className="profile-selector">
       {profiles.map((profile) => <ProfileButton key={profile.id} profile={profile} active={profile.id === selected.id} onClick={() => setSelectedId(profile.id)} />)}
@@ -216,7 +216,7 @@ function effectiveTunnelProfile(mode?: string, toolProfile?: string): string {
 
 function validProfileID(value: string): boolean {
   const id = value.trim().toLowerCase();
-  return /^[a-z][a-z0-9_-]{0,31}$/.test(id) && id !== "fast" && id !== "full";
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(id) && id !== "remote-read" && id !== "fast" && id !== "full";
 }
 
 const errorMessage = (error: unknown) => error instanceof APIError ? error.message : error instanceof Error ? error.message : error ? String(error) : "";

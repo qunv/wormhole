@@ -49,7 +49,7 @@ var workspaceOwnedFields = map[string]bool{
 	"approvalToken": true, "allowedOrigins": true, "noTunnel": true,
 	"tunnelBin": true, "tunnelId": true, "organizationId": true,
 	"profile": true, "profileDir": true, "runtimeKeyEnv": true, "tunnels": true,
-	"toolProfiles": true,
+	"remoteIngresses": true, "toolProfiles": true,
 }
 
 // Handler serves a local-only administration application and versioned API.
@@ -811,6 +811,7 @@ func effectiveWorkspaceConfig(base config.Config, entry workspaceregistry.Regist
 	effective.NoTunnel = true
 	effective.TunnelID = ""
 	effective.Tunnels = nil
+	effective.RemoteIngresses = nil
 	if err := effective.Validate(true); err != nil {
 		return effective, err
 	}
@@ -954,6 +955,10 @@ func (h *Handler) secretReferences() (map[string][]string, error) {
 	}
 	for _, tunnel := range cfg.EffectiveTunnels() {
 		add(tunnel.Config.RuntimeKeyEnv, "tunnels."+tunnel.Name+".runtimeKeyEnv")
+	}
+	for _, ingress := range cfg.EffectiveRemoteIngresses() {
+		add(ingress.Config.AuthTokenEnv, "remoteIngresses."+ingress.Name+".authTokenEnv")
+		add(ingress.Config.ProviderTokenEnv, "remoteIngresses."+ingress.Name+".providerTokenEnv")
 	}
 	add(cfg.Memory.SecretEnv, "memory.secretEnv")
 	for serverName, server := range cfg.MCPServers {

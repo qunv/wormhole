@@ -26,10 +26,12 @@ import (
 )
 
 type HTTP struct {
-	Runtime       *agent.Runtime
-	Runtimes      map[string]*agent.Runtime
-	SessionRouter *mcpserver.SessionRouter
-	Server        *http.Server
+	Runtime            *agent.Runtime
+	Runtimes           map[string]*agent.Runtime
+	SessionRouter      *mcpserver.SessionRouter
+	Server             *http.Server
+	RemoteIngresses    map[string]*http.Server
+	RemoteIngressError error
 }
 
 func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request) {
@@ -46,6 +48,7 @@ func (h *HTTP) internalHealth(writer http.ResponseWriter, request *http.Request)
 		"startup_warnings":  h.allStartupWarnings(),
 		"workspaces":        h.workspaceSummaries(),
 		"runtime":           h.Runtime.RuntimeMetrics(false, 0),
+		"remote_ingresses":  h.remoteIngressSummaries(),
 		"workspace_runtime": h.workspaceRuntimeMetrics(),
 		"shared_resources":  h.Runtime.SharedResourceStats(),
 		"session_router":    h.SessionRouter.Stats(),
@@ -70,7 +73,7 @@ func New(runtime *agent.Runtime) *HTTP {
 // NewMulti creates one HTTP daemon with a compatibility endpoint for the
 // primary workspace and one fixed endpoint for every named workspace runtime.
 func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
-	instance := &HTTP{Runtime: runtime, Runtimes: map[string]*agent.Runtime{}}
+	instance := &HTTP{Runtime: runtime, Runtimes: map[string]*agent.Runtime{}, RemoteIngresses: map[string]*http.Server{}}
 	primaryID := strings.ToLower(strings.TrimSpace(runtime.WorkspaceID))
 	for id, child := range named {
 		id = strings.ToLower(strings.TrimSpace(id))
@@ -100,7 +103,7 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 	mux.Handle("/mcp", instance.guardMCP(runtime, streamableHandler(runtime, primaryID)))
 	mux.Handle("/mcp/fast", instance.guardMCP(runtime, streamableProfileHandler(runtime, primaryID, mcpserver.ToolProfileFast)))
 	for _, profile := range instance.SessionRouter.Profiles() {
-		if profile.BuiltIn {
+		if profile.ID == "fast" || profile.ID == "full" {
 			continue
 		}
 		mux.Handle(
@@ -118,7 +121,7 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 		mux.Handle(endpoint, instance.guardMCP(child, streamableHandler(child, id)))
 		mux.Handle(endpoint+"/fast", instance.guardMCP(child, streamableProfileHandler(child, id, mcpserver.ToolProfileFast)))
 		for _, profile := range instance.SessionRouter.Profiles() {
-			if profile.BuiltIn {
+			if profile.ID == "fast" || profile.ID == "full" {
 				continue
 			}
 			mux.Handle(
@@ -136,6 +139,7 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	instance.RemoteIngressError = instance.configureRemoteIngresses(primaryID)
 	return instance
 }
 
@@ -180,22 +184,69 @@ func sessionStreamableDefinitionHandler(router *mcpserver.SessionRouter, profile
 }
 
 func (h *HTTP) ListenAndServe(ctx context.Context) error {
-	errs := make(chan error, 1)
-	go func() {
-		fmt.Printf("Wormhole v%s listening on http://%s\n", h.Runtime.Version, h.Server.Addr)
-		fmt.Printf("Mode: %s  Policy: %s  Auth: %s\n", h.Runtime.Config.Mode, h.Runtime.Config.Policy, ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"))
-		fmt.Printf("Workspace: %s\nMCP endpoint: http://%s/mcp\nFast MCP endpoint: http://%s/mcp/fast\n", h.Runtime.Workspace.Primary, h.Server.Addr, h.Server.Addr)
-		errs <- h.Server.ListenAndServe()
-	}()
-	select {
-	case <-ctx.Done():
+	if h.RemoteIngressError != nil {
+		return h.RemoteIngressError
+	}
+	type boundServer struct {
+		name     string
+		server   *http.Server
+		listener net.Listener
+	}
+	bound := make([]boundServer, 0, len(h.RemoteIngresses)+1)
+	closeBound := func() {
+		for _, item := range bound {
+			_ = item.listener.Close()
+		}
+	}
+	for _, name := range sortedHTTPServerNames(h.RemoteIngresses) {
+		server := h.RemoteIngresses[name]
+		listener, err := net.Listen("tcp", server.Addr)
+		if err != nil {
+			closeBound()
+			return fmt.Errorf("bind remote ingress %q on %s: %w", name, server.Addr, err)
+		}
+		bound = append(bound, boundServer{name: "remote-ingress:" + name, server: server, listener: listener})
+	}
+	mainListener, err := net.Listen("tcp", h.Server.Addr)
+	if err != nil {
+		closeBound()
+		return err
+	}
+	bound = append(bound, boundServer{name: "server", server: h.Server, listener: mainListener})
+
+	errs := make(chan error, len(bound))
+	for _, item := range bound {
+		item := item
+		go func() {
+			err := item.server.Serve(item.listener)
+			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+				err = nil
+			}
+			errs <- err
+		}()
+	}
+	fmt.Printf("Wormhole v%s listening on http://%s\n", h.Runtime.Version, h.Server.Addr)
+	fmt.Printf("Mode: %s  Policy: %s  Auth: %s\n", h.Runtime.Config.Mode, h.Runtime.Config.Policy, ternary(h.Runtime.Config.AuthToken != "", "bearer", "none"))
+	fmt.Printf("Workspace: %s\nMCP endpoint: http://%s/mcp\nFast MCP endpoint: http://%s/mcp/fast\n", h.Runtime.Workspace.Primary, h.Server.Addr, h.Server.Addr)
+	for _, name := range sortedHTTPServerNames(h.RemoteIngresses) {
+		fmt.Printf("Remote ingress %s: http://%s/mcp\n", name, h.RemoteIngresses[name].Addr)
+	}
+
+	shutdown := func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		_ = h.Server.Shutdown(shutdownCtx)
+		for _, item := range bound {
+			_ = item.server.Shutdown(shutdownCtx)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		shutdown()
 		return nil
 	case err := <-errs:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+		shutdown()
+		if err == nil {
+			return errors.New("HTTP listener exited unexpectedly")
 		}
 		return err
 	}

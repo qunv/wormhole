@@ -304,6 +304,100 @@ http://127.0.0.1:8132/internal/healthz
 http://127.0.0.1:8132/admin/
 ```
 
+## Remote MCP ingress (Notion and other hosted MCP clients)
+
+OpenAI Secure MCP Tunnel is intentionally specific to supported OpenAI clients. For a hosted MCP client that needs a normal public HTTPS URL, Wormhole can run one or more **remote MCP ingresses** alongside the OpenAI tunnels.
+
+A remote ingress does **not** publish the main `:8132` listener. Instead, the daemon opens a dedicated loopback-only port that serves exactly one fixed workspace/profile contract at `/mcp`:
+
+```text
+Notion / hosted MCP client
+        │
+        │ HTTPS + Authorization: Bearer <MCP token>
+        ▼
+Cloudflare Tunnel
+        │
+        ▼
+127.0.0.1:18133/mcp       dedicated remote ingress
+        │
+        └── fixed workspace + fixed tool profile
+
+127.0.0.1:8132            normal Wormhole listener
+        ├── /admin/        local only; not mounted on the remote ingress
+        ├── /mcp/session   workspace-routing client surface
+        └── /mcp/...       local/OpenAI-tunnel surfaces
+```
+
+The first managed provider is a remotely managed **Cloudflare Tunnel**. Wormhole starts one `cloudflared` child per enabled ingress using `TUNNEL_TOKEN` in the child environment; the provider token is never placed in command-line arguments. The MCP bearer token is a separate secret and is checked by the dedicated listener before any MCP request reaches the selected runtime.
+
+For Notion, create a deliberately narrow custom profile instead of exposing `full`. For example, a read-oriented profile plus one fixed ingress:
+
+```json
+{
+  "toolProfiles": {
+    "notion-read": {
+      "name": "Notion read access",
+      "description": "Read-only repository context for a Notion Custom Agent.",
+      "allowedTools": [
+        "workspace_info",
+        "workspace_snapshot",
+        "task_context",
+        "codegraph_explore",
+        "search_text",
+        "read_file",
+        "read_many",
+        "git_status",
+        "git_diff"
+      ],
+      "outputMode": "structured",
+      "compactDefaults": true
+    }
+  },
+  "remoteIngresses": {
+    "notion": {
+      "enabled": true,
+      "provider": "cloudflare",
+      "workspaceId": "wormhole",
+      "toolProfile": "notion-read",
+      "localPort": 18133,
+      "publicUrl": "https://wormhole.example.com/mcp",
+      "authTokenEnv": "WORMHOLE_REMOTE_NOTION_AUTH_TOKEN",
+      "providerTokenEnv": "WORMHOLE_REMOTE_NOTION_TUNNEL_TOKEN",
+      "binary": "cloudflared"
+    }
+  }
+}
+```
+
+`workspaceId` may be omitted to bind the primary runtime. `toolProfile` defaults to `fast`, but a restricted custom profile is recommended for Internet-reachable integrations. Enabled ingress ports must be unique and must differ from the main Wormhole port. `publicUrl`, when recorded, must be an HTTPS URL whose path is exactly `/mcp`.
+
+Store both referenced values from **Admin → Secrets**, or with the write-only CLI helper:
+
+```bash
+wormhole key set --runtime-key-env WORMHOLE_REMOTE_NOTION_AUTH_TOKEN
+wormhole key set --runtime-key-env WORMHOLE_REMOTE_NOTION_TUNNEL_TOKEN
+```
+
+In Cloudflare, configure the remotely managed tunnel's public hostname to forward to the exact local origin for this ingress, for example:
+
+```text
+https://wormhole.example.com  →  http://127.0.0.1:18133
+```
+
+Then configure the hosted MCP client with:
+
+```text
+MCP URL:        https://wormhole.example.com/mcp
+Authorization:  Bearer <value of WORMHOLE_REMOTE_NOTION_AUTH_TOKEN>
+```
+
+Restart Wormhole after changing ingress definitions or either referenced secret. Use `wormhole status`, `wormhole doctor`, and `wormhole logs` to inspect the dedicated listener and provider child process. The Admin diagnostic bundle includes ingress metadata and bounded ingress logs while redacting the currently referenced secret values.
+
+Official setup references:
+
+- [Notion MCP connections for Custom Agents](https://www.notion.com/help/mcp-connections-for-custom-agents)
+- [Cloudflare Tunnel run parameters](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/tunnel-run-parameters/)
+
 ## Admin UI
 
 Wormhole includes a local administration console for the complete non-secret configuration, named-workspace registration and removal, directory browsing, workspace overrides, upstream MCP servers, memory, tool exposure, resource limits, referenced secrets, live operations, exact approvals, and bounded audit exploration.

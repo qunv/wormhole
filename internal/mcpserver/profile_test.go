@@ -7,6 +7,36 @@ import (
 	"wormhole/internal/config"
 )
 
+func TestRemoteReadProfileIsReadOnlyAndNarrow(t *testing.T) {
+	cfg := config.Default()
+	cfg.Workspace = t.TempDir()
+	cfg.Audit = false
+	cfg.Memory.Enabled = false
+	runtime, err := agent.New(cfg, "test", "pro", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	definition := BuiltInProfile(ToolProfileRemoteRead)
+	if definition.ID != "remote-read" || definition.OutputMode != agent.ToolOutputStructured || !definition.CompactDefaults {
+		t.Fatalf("unexpected remote-read profile: %#v", definition)
+	}
+	if got := ProfileToolCount(runtime, ToolProfileRemoteRead); got != 9 {
+		t.Fatalf("remote-read profile tool count = %d, want 9", got)
+	}
+	for _, denied := range []string{"apply_patch", "run_commands", "quality_gate", "git"} {
+		if profileToolEnabled(runtime, ToolProfileRemoteRead, denied) {
+			t.Fatalf("remote-read unexpectedly exposed %s", denied)
+		}
+	}
+	for _, allowed := range []string{"workspace_info", "read_file", "git_diff"} {
+		if !profileToolEnabled(runtime, ToolProfileRemoteRead, allowed) {
+			t.Fatalf("remote-read unexpectedly hid %s", allowed)
+		}
+	}
+}
+
 func TestFastProfileExposesCompactCodingTools(t *testing.T) {
 	cfg := config.Default()
 	cfg.Workspace = t.TempDir()

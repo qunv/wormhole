@@ -43,9 +43,22 @@ In balanced policy, risky delete, install, network, mutating git, and upstream m
 type ToolProfile string
 
 const (
-	ToolProfileFull ToolProfile = "full"
-	ToolProfileFast ToolProfile = "fast"
+	ToolProfileFull       ToolProfile = "full"
+	ToolProfileFast       ToolProfile = "fast"
+	ToolProfileRemoteRead ToolProfile = "remote-read"
 )
+
+var remoteReadTools = map[string]bool{
+	"workspace_info":     true,
+	"workspace_snapshot": true,
+	"task_context":       true,
+	"codegraph_explore":  true,
+	"search_text":        true,
+	"read_file":          true,
+	"read_many":          true,
+	"git_status":         true,
+	"git_diff":           true,
+}
 
 var fastCodingTools = map[string]bool{
 	"workspace_snapshot": true,

@@ -87,6 +87,9 @@ func (h *Handler) getDiagnostics(writer http.ResponseWriter, request *http.Reque
 	for _, tunnel := range cfg.EffectiveTunnels() {
 		logPaths["tunnel:"+tunnel.Name] = config.TunnelLogPathFor(tunnel.Name)
 	}
+	for _, ingress := range cfg.EffectiveRemoteIngresses() {
+		logPaths["remote-ingress:"+ingress.Name] = config.RemoteIngressLogPathFor(ingress.Name)
+	}
 	for name, path := range logPaths {
 		text, truncated, readErr := readDiagnosticTextTail(path, knownSecrets)
 		if errors.Is(readErr, os.ErrNotExist) {

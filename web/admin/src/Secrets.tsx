@@ -33,7 +33,7 @@ export function Secrets() {
       <Card title="Referenced variables" description={secrets.data?.path}>
         <div className="secret-list">
           {items.map((item) => <button key={item.name} className={(current?.name === item.name) ? "active" : ""} onClick={() => { setSelected(item.name); setValue(""); setMessage(null); }}><KeyRound size={17} /><span><strong>{item.name}</strong><small>{item.referencedBy.length} reference{item.referencedBy.length === 1 ? "" : "s"}</small></span><Badge tone={item.managed ? "success" : item.configured ? "info" : "warning"}>{item.managed ? "Managed" : item.configured ? "External" : "Missing"}</Badge></button>)}
-          {!items.length && <EmptyState title="No referenced secrets" description="Set memory.secretEnv, runtimeKeyEnv, envRefs or headerRefs in configuration first." />}
+          {!items.length && <EmptyState title="No referenced secrets" description="Set memory.secretEnv, runtimeKeyEnv, remote ingress token refs, envRefs or headerRefs in configuration first." />}
         </div>
       </Card>
       <div>{current && <Card title={current.name} description="Entering a new value replaces the existing value; it cannot be viewed again.">

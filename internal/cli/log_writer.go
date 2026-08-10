@@ -182,6 +182,8 @@ func childLogPath(label string) string {
 		return config.TunnelLogPath()
 	case strings.HasPrefix(label, "tunnel-"):
 		return config.TunnelLogPathFor(strings.TrimPrefix(label, "tunnel-"))
+	case strings.HasPrefix(label, "remote-ingress-"):
+		return config.RemoteIngressLogPathFor(strings.TrimPrefix(label, "remote-ingress-"))
 	default:
 		return config.LogPath()
 	}
@@ -191,8 +193,13 @@ func validChildLabel(label string) bool {
 	if label == "server" || label == "tunnel" {
 		return true
 	}
-	name := strings.TrimPrefix(label, "tunnel-")
-	return name != label && name != "" && !strings.ContainsAny(name, `/\\`)
+	for _, prefix := range []string{"tunnel-", "remote-ingress-"} {
+		name := strings.TrimPrefix(label, prefix)
+		if name != label {
+			return name != "" && !strings.ContainsAny(name, `/\\`)
+		}
+	}
+	return false
 }
 
 func commandText(command string, args []string) string {

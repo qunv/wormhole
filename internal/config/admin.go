@@ -19,6 +19,9 @@ func Prepare(cfg Config) (Config, error) {
 	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
 		return cfg, err
 	}
+	if err := validateRemoteIngressMapKeys(cfg.RemoteIngresses); err != nil {
+		return cfg, err
+	}
 	if err := validateToolProfileMapKeys(cfg.ToolProfiles); err != nil {
 		return cfg, err
 	}
@@ -85,6 +88,9 @@ func parseAdminConfigJSON(raw []byte, source string) (Config, error) {
 	}
 	migrateLegacyConfigPaths(&cfg)
 	if err := validateTunnelMapKeys(cfg.Tunnels); err != nil {
+		return Config{}, err
+	}
+	if err := validateRemoteIngressMapKeys(cfg.RemoteIngresses); err != nil {
 		return Config{}, err
 	}
 	if err := validateToolProfileMapKeys(cfg.ToolProfiles); err != nil {

@@ -29,7 +29,8 @@ const CONFIG_HELP: Record<string, string> = {
   "Profile": "Named tunnel profile used to resolve tunnel credentials and settings.",
   "Profile directory": "Directory containing tunnel profile files when they are not stored in the default location.",
   "Runtime key environment": "Environment variable name containing the runtime API key. The secret value is managed on the Secrets page.",
-  "Tunnel definitions": "Named independently managed tunnels. Each tunnel exposes either the fast or full session endpoint as its main ChatGPT channel.",
+  "Tunnel definitions": "Named independently managed OpenAI Secure MCP Tunnels. Each tunnel exposes a selected session profile as its main ChatGPT channel.",
+  "Remote MCP ingresses": "Dedicated loopback-only hosted-MCP listeners for Notion and other remote clients. External publishers are the generic default; Cloudflare can optionally be managed by Wormhole.",
   "Audit tool calls": "Records bounded local audit events for tool calls, outcomes, and approvals without storing full results.",
   "Include redacted argument metadata": "Adds reduced and redacted argument metadata to audit records for better diagnostics.",
   "HTTP access log": "Logs Admin and MCP HTTP requests locally. Useful for troubleshooting but can add noise.",
@@ -196,6 +197,10 @@ function GeneralEditor({ value, onChange }: EditorProps) {
         <Field label="Runtime key environment"><TextInput value={value.runtimeKeyEnv ?? ""} onChange={(e) => set("runtimeKeyEnv", e.target.value)} /></Field>
       </div>
       <JSONField label="Tunnel definitions" value={value.tunnels ?? {}} onChange={(tunnels) => set("tunnels", tunnels as WormholeConfig["tunnels"])} hint="Example: fast/full entries with tunnelId, mode, profile and runtimeKeyEnv." />
+    </Card>
+    <Card title="Remote MCP ingress" description="Publish a narrowly scoped hosted-MCP contract without exposing the Admin server or workspace-switching session endpoints.">
+      <Notice tone="info">Each ingress binds only to 127.0.0.1, serves only <code>/mcp</code>, requires its own bearer token, and is fixed to one workspace/profile. Use <code>provider: "external"</code> behind your own HTTPS proxy or tunnel; use <code>cloudflare</code> only when Wormhole should manage the cloudflared child. The safe default profile is <code>remote-read</code>.</Notice>
+      <JSONField label="Remote MCP ingresses" value={value.remoteIngresses ?? {}} onChange={(remoteIngresses) => set("remoteIngresses", remoteIngresses as WormholeConfig["remoteIngresses"])} hint={'Minimal example: {"notion":{"provider":"external","localPort":18133,"workspaceId":"wormhole","toolProfile":"remote-read","publicUrl":"https://wormhole.example.com/mcp","authTokenEnv":"WORMHOLE_REMOTE_NOTION_AUTH_TOKEN"}}. Cloudflare additionally accepts providerTokenEnv and binary.'} />
     </Card>
     <Card title="Observability" description="Audit records are local, bounded and redacted by the runtime.">
       <div className="toggle-stack">

@@ -860,7 +860,7 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.WorkspaceCount != 1 || len(payload.Profiles) != 3 {
+	if payload.WorkspaceCount != 1 || len(payload.Profiles) != 4 {
 		t.Fatalf("unexpected profile payload: %#v", payload)
 	}
 	profiles := map[string]struct {
@@ -890,6 +890,15 @@ func TestAdminProfilesExposeEffectiveFastAndFullToolContracts(t *testing.T) {
 			item.Tunnels[tunnel.Name] = tunnel.Enabled
 		}
 		profiles[profile.ID] = item
+	}
+	remoteRead := profiles["remote-read"]
+	if remoteRead.Endpoint != "/mcp/session/profiles/remote-read" || !remoteRead.BuiltIn || remoteRead.OutputMode != "structured" || len(remoteRead.Tools) != 13 || remoteRead.Tools["read_file"] != "workspace" {
+		t.Fatalf("unexpected remote-read profile: %#v", remoteRead)
+	}
+	for _, denied := range []string{"apply_patch", "run_commands", "quality_gate", "memory_search"} {
+		if _, exposed := remoteRead.Tools[denied]; exposed {
+			t.Fatalf("remote-read admin profile unexpectedly exposed %s", denied)
+		}
 	}
 	fast := profiles["fast"]
 	if fast.Endpoint != "/mcp/session/fast" || len(fast.Tools) != 15 || fast.Tools["workspace_select"] != "session" || fast.Tools["read_file"] != "workspace" {
@@ -933,6 +942,28 @@ func TestAdminSecretsIncludeNamedTunnelRuntimeKeys(t *testing.T) {
 	}
 	if strings.Contains(body, `"name":"CONTROL_PLANE_API_KEY"`) {
 		t.Fatalf("ignored legacy runtime key was exposed with explicit tunnels: %s", body)
+	}
+}
+
+func TestAdminSecretsIncludeRemoteIngressCredentials(t *testing.T) {
+	handler := newAdminHandler(t, func(cfg *config.Config) {
+		cfg.RemoteIngresses = map[string]config.RemoteIngressConfig{
+			"notion": {
+				Provider: "cloudflare", LocalPort: 18133, ToolProfile: "fast", Binary: "cloudflared",
+				AuthTokenEnv: "NOTION_MCP_AUTH", ProviderTokenEnv: "NOTION_CLOUDFLARE_TOKEN",
+			},
+		}
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/secrets", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get remote ingress secrets = %d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{"NOTION_MCP_AUTH", "NOTION_CLOUDFLARE_TOKEN", "remoteIngresses.notion.authTokenEnv", "remoteIngresses.notion.providerTokenEnv"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("remote ingress secret reference %q missing: %s", want, body)
+		}
 	}
 }
 

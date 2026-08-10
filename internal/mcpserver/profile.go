@@ -28,6 +28,13 @@ type ProfileDefinition struct {
 
 func BuiltInProfile(profile ToolProfile) ProfileDefinition {
 	switch profile {
+	case ToolProfileRemoteRead:
+		return ProfileDefinition{
+			ID: "remote-read", Name: "Remote Read",
+			Description:  "Read-only repository context for Internet-reachable hosted MCP clients.",
+			AllowedTools: sortedMapKeys(remoteReadTools), OutputMode: agent.ToolOutputStructured,
+			CompactDefaults: true, BuiltIn: true,
+		}
 	case ToolProfileFast:
 		return ProfileDefinition{
 			ID: "fast", Name: "Fast",
@@ -51,6 +58,8 @@ func ResolveProfile(cfg config.Config, rawID string) (ProfileDefinition, bool) {
 		return BuiltInProfile(ToolProfileFull), true
 	case "fast":
 		return BuiltInProfile(ToolProfileFast), true
+	case "remote-read":
+		return BuiltInProfile(ToolProfileRemoteRead), true
 	}
 	profile, ok := cfg.ToolProfiles[id]
 	if !ok {
@@ -78,7 +87,7 @@ func ResolveProfile(cfg config.Config, rawID string) (ProfileDefinition, bool) {
 }
 
 func ProfileDefinitions(cfg config.Config) []ProfileDefinition {
-	profiles := []ProfileDefinition{BuiltInProfile(ToolProfileFast), BuiltInProfile(ToolProfileFull)}
+	profiles := []ProfileDefinition{BuiltInProfile(ToolProfileRemoteRead), BuiltInProfile(ToolProfileFast), BuiltInProfile(ToolProfileFull)}
 	ids := make([]string, 0, len(cfg.ToolProfiles))
 	for id := range cfg.ToolProfiles {
 		ids = append(ids, id)

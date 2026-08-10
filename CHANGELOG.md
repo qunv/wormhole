@@ -6,6 +6,7 @@ All notable changes to Wormhole are documented in this file.
 
 ### Added
 
+- Added an extensible remote MCP ingress model with dedicated loopback-only fixed workspace/profile listeners, mandatory per-ingress bearer secrets, a managed Cloudflare Tunnel provider, status/doctor/log/diagnostic integration, and Admin configuration/secrets support for hosted MCP clients such as Notion Custom Agents.
 - Added safe Admin Save & Restart, upstream MCP catalog refresh and contract diffs, workspace override provenance/compaction previews, and downloadable sanitized diagnostic bundles.
 - Added persisted custom tool profiles with stable fixed/session endpoints, contract hashes, output modes, compact defaults, tunnel assignment, and an Admin profile editor.
 - Added an Admin Operations center with live runtime/module metrics, local approval decisions, and a bounded redacted audit explorer.

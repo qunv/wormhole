@@ -153,7 +153,7 @@ func (a App) registerWorkspaceUnlocked(defaultConfig config.Config, rawID, rawRo
 	// refreshed so the persisted document converges toward a minimal override.
 	for _, field := range []string{
 		"workspace", "port", "host", "authToken", "approvalToken", "allowedOrigins",
-		"noTunnel", "tunnelBin", "tunnelId", "organizationId", "profile", "profileDir", "runtimeKeyEnv",
+		"noTunnel", "tunnelBin", "tunnelId", "organizationId", "profile", "profileDir", "runtimeKeyEnv", "remoteIngresses",
 	} {
 		delete(override, field)
 	}
@@ -341,7 +341,7 @@ func (a App) workspaceCompactUnlocked(defaultConfig config.Config, rawID string,
 	}
 	for _, field := range []string{
 		"workspace", "port", "host", "authToken", "approvalToken", "allowedOrigins",
-		"noTunnel", "tunnelBin", "tunnelId", "organizationId", "profile", "profileDir", "runtimeKeyEnv",
+		"noTunnel", "tunnelBin", "tunnelId", "organizationId", "profile", "profileDir", "runtimeKeyEnv", "remoteIngresses",
 	} {
 		delete(override, field)
 	}
@@ -551,6 +551,7 @@ func loadNamedWorkspaceConfigs(defaultConfig config.Config) ([]namedWorkspaceCon
 		cfg.AllowedOrigins = append([]string(nil), defaultConfig.AllowedOrigins...)
 		cfg.NoTunnel = true
 		cfg.TunnelID = ""
+		cfg.RemoteIngresses = nil
 		result = append(result, namedWorkspaceConfig{Registration: entry, Config: cfg})
 	}
 	return result, nil

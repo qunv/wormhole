@@ -140,7 +140,7 @@ func NewSessionRouter(primaryRuntime *agent.Runtime, named map[string]*agent.Run
 			router.profiles[profile.ID] = profile
 		}
 	} else {
-		for _, profile := range []ProfileDefinition{BuiltInProfile(ToolProfileFast), BuiltInProfile(ToolProfileFull)} {
+		for _, profile := range []ProfileDefinition{BuiltInProfile(ToolProfileRemoteRead), BuiltInProfile(ToolProfileFast), BuiltInProfile(ToolProfileFull)} {
 			router.profiles[profile.ID] = profile
 		}
 	}
