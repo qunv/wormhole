@@ -64,6 +64,7 @@ type Handler struct {
 	lifecycleMu         sync.Mutex
 	restartPendingUntil time.Time
 	scheduleRestart     func(oldPort int) error
+	remoteIngressStatus RemoteIngressStatusProvider
 }
 
 // New creates an admin handler. Every route remains loopback-only regardless
@@ -316,6 +317,8 @@ func (h *Handler) serveAPI(writer http.ResponseWriter, request *http.Request) {
 		h.getDiagnostics(writer, request)
 	case suffix == "/upstream" && request.Method == http.MethodGet:
 		h.getUpstreamMCP(writer, request)
+	case suffix == "/remote-ingresses" && request.Method == http.MethodGet:
+		h.getRemoteIngressStatus(writer, request)
 	case strings.HasPrefix(suffix, "/upstream/"):
 		h.upstreamMCPAction(writer, request, strings.TrimPrefix(suffix, "/upstream/"))
 	case suffix == "/config" && request.Method == http.MethodGet:

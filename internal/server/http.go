@@ -140,6 +140,7 @@ func NewMulti(runtime *agent.Runtime, named map[string]*agent.Runtime) *HTTP {
 		MaxHeaderBytes:    1 << 20,
 	}
 	instance.RemoteIngressError = instance.configureRemoteIngresses(primaryID)
+	adminHandler.SetRemoteIngressStatusProvider(instance.remoteIngressRuntimeStatus)
 	return instance
 }
 

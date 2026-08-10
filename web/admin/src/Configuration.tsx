@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Braces, Cpu, Database, Gauge, Network, Plus, RefreshCw, Save, Shield, Trash2, Waypoints } from "lucide-react";
+import { Braces, Cpu, Database, Gauge, Globe2, Network, Plus, RefreshCw, Save, Trash2, Waypoints } from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, Field as BaseField, LoadingPage, MultiSelect, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
-import type { WormholeConfig, MCPServerConfig, ToolCatalogResponse, UpstreamMCPStatus } from "./types";
+import type {
+  WormholeConfig,
+  MCPServerConfig,
+  ProfilesResponse,
+  RemoteIngressConfig,
+  RemoteIngressStatusResponse,
+  SecretsResponse,
+  ToolCatalogResponse,
+  UpstreamMCPStatus,
+  WorkspacesResponse,
+} from "./types";
 
 type Tab = "general" | "memory" | "mcp" | "tools" | "advanced";
 const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -90,6 +100,10 @@ export function Configuration() {
   const queryClient = useQueryClient();
   const snapshot = useQuery({ queryKey: ["config"], queryFn: api.config });
   const toolCatalog = useQuery({ queryKey: ["tool-catalog"], queryFn: api.toolCatalog });
+  const profiles = useQuery({ queryKey: ["profiles"], queryFn: api.profiles });
+  const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: api.workspaces });
+  const secrets = useQuery({ queryKey: ["secrets"], queryFn: api.secrets });
+  const remoteIngressStatus = useQuery({ queryKey: ["remote-ingresses"], queryFn: api.remoteIngresses, refetchInterval: 15_000 });
   const [tab, setTab] = useState<Tab>("general");
   const [draft, setDraft] = useState<WormholeConfig | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -161,7 +175,16 @@ export function Configuration() {
           {tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>{item.icon}<span>{item.label}</span></button>)}
         </nav>
         <div className="config-content">
-          {tab === "general" && <GeneralEditor value={draft} onChange={update} />}
+          {tab === "general" && <GeneralEditor
+            value={draft}
+            onChange={update}
+            profiles={profiles.data}
+            workspaces={workspaces.data}
+            secrets={secrets.data}
+            remoteStatus={remoteIngressStatus.data}
+            remoteStatusLoading={remoteIngressStatus.isFetching}
+            onRefreshRemoteStatus={() => void remoteIngressStatus.refetch()}
+          />}
           {tab === "memory" && <MemoryEditor value={draft} onChange={update} />}
           {tab === "mcp" && <MCPServersEditor value={draft} onChange={update} />}
           {tab === "tools" && <ToolsEditor value={draft} onChange={update} catalog={toolCatalog.data} catalogLoading={toolCatalog.isLoading} />}
@@ -172,7 +195,16 @@ export function Configuration() {
   );
 }
 
-function GeneralEditor({ value, onChange }: EditorProps) {
+interface GeneralEditorProps extends EditorProps {
+  profiles?: ProfilesResponse;
+  workspaces?: WorkspacesResponse;
+  secrets?: SecretsResponse;
+  remoteStatus?: RemoteIngressStatusResponse;
+  remoteStatusLoading: boolean;
+  onRefreshRemoteStatus: () => void;
+}
+
+function GeneralEditor({ value, onChange, profiles, workspaces, secrets, remoteStatus, remoteStatusLoading, onRefreshRemoteStatus }: GeneralEditorProps) {
   const set = <K extends keyof WormholeConfig>(key: K, next: WormholeConfig[K]) => onChange({ ...value, [key]: next });
   return <div className="stack">
     <Card title="Runtime and access" description="Safe defaults are recommended for daily development.">
@@ -198,10 +230,16 @@ function GeneralEditor({ value, onChange }: EditorProps) {
       </div>
       <JSONField label="Tunnel definitions" value={value.tunnels ?? {}} onChange={(tunnels) => set("tunnels", tunnels as WormholeConfig["tunnels"])} hint="Example: fast/full entries with tunnelId, mode, profile and runtimeKeyEnv." />
     </Card>
-    <Card title="Remote MCP ingress" description="Publish a narrowly scoped hosted-MCP contract without exposing the Admin server or workspace-switching session endpoints.">
-      <Notice tone="info">Each ingress binds only to 127.0.0.1, serves only <code>/mcp</code>, requires its own bearer token, and is fixed to one workspace/profile. Use <code>provider: "external"</code> behind your own HTTPS proxy or tunnel; use <code>cloudflare</code> only when Wormhole should manage the cloudflared child. The safe default profile is <code>remote-read</code>.</Notice>
-      <JSONField label="Remote MCP ingresses" value={value.remoteIngresses ?? {}} onChange={(remoteIngresses) => set("remoteIngresses", remoteIngresses as WormholeConfig["remoteIngresses"])} hint={'Minimal example: {"notion":{"provider":"external","localPort":18133,"workspaceId":"wormhole","toolProfile":"remote-read","publicUrl":"https://wormhole.example.com/mcp","authTokenEnv":"WORMHOLE_REMOTE_NOTION_AUTH_TOKEN"}}. Cloudflare additionally accepts providerTokenEnv and binary.'} />
-    </Card>
+    <RemoteIngressEditor
+      value={value}
+      onChange={onChange}
+      profiles={profiles}
+      workspaces={workspaces}
+      secrets={secrets}
+      runtimeStatus={remoteStatus}
+      runtimeStatusLoading={remoteStatusLoading}
+      onRefreshRuntimeStatus={onRefreshRemoteStatus}
+    />
     <Card title="Observability" description="Audit records are local, bounded and redacted by the runtime.">
       <div className="toggle-stack">
         <Toggle checked={value.audit} onChange={(next) => set("audit", next)} label="Audit tool calls" description="Recommended for traceability." />
@@ -210,6 +248,187 @@ function GeneralEditor({ value, onChange }: EditorProps) {
       </div>
     </Card>
   </div>;
+}
+
+function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, runtimeStatus, runtimeStatusLoading, onRefreshRuntimeStatus }: {
+  value: WormholeConfig;
+  onChange: (value: WormholeConfig) => void;
+  profiles?: ProfilesResponse;
+  workspaces?: WorkspacesResponse;
+  secrets?: SecretsResponse;
+  runtimeStatus?: RemoteIngressStatusResponse;
+  runtimeStatusLoading: boolean;
+  onRefreshRuntimeStatus: () => void;
+}) {
+  const ingresses = value.remoteIngresses ?? {};
+  const names = Object.keys(ingresses).sort();
+  const [selected, setSelected] = useState(names[0] ?? "");
+  const [newName, setNewName] = useState("");
+  const current = selected ? ingresses[selected] : undefined;
+  const normalizedNewName = newName.trim().toLowerCase();
+  const validNewName = validRemoteIngressName(normalizedNewName) && !ingresses[normalizedNewName];
+
+  useEffect(() => {
+    if (selected && !ingresses[selected]) setSelected(names[0] ?? "");
+    if (!selected && names.length) setSelected(names[0]);
+  }, [names.join("|"), selected, ingresses]);
+
+  const updateIngress = (next: RemoteIngressConfig) => {
+    if (!selected) return;
+    onChange({ ...value, remoteIngresses: { ...ingresses, [selected]: next } });
+  };
+  const addIngress = () => {
+    if (!validNewName) return;
+    const localPort = nextRemoteIngressPort(value);
+    if (!localPort) return;
+    const next: RemoteIngressConfig = {
+      enabled: true,
+      provider: "external",
+      localPort,
+      toolProfile: "remote-read",
+      authTokenEnv: derivedRemoteIngressEnv(normalizedNewName, "AUTH_TOKEN"),
+    };
+    onChange({ ...value, remoteIngresses: { ...ingresses, [normalizedNewName]: next } });
+    setSelected(normalizedNewName);
+    setNewName("");
+  };
+  const removeIngress = () => {
+    if (!selected) return;
+    const next = { ...ingresses };
+    delete next[selected];
+    onChange({ ...value, remoteIngresses: next });
+    setSelected(Object.keys(next).sort()[0] ?? "");
+  };
+  const changeProvider = (provider: "external" | "cloudflare") => {
+    if (!current) return;
+    const next: RemoteIngressConfig = { ...current, provider };
+    if (provider === "cloudflare") {
+      next.providerTokenEnv = current.providerTokenEnv?.trim() || derivedRemoteIngressEnv(selected, "TUNNEL_TOKEN");
+      next.binary = current.binary?.trim() || "cloudflared";
+    } else {
+      delete next.providerTokenEnv;
+      delete next.binary;
+    }
+    updateIngress(next);
+  };
+
+  const primaryID = workspaces?.primary.id ?? "default";
+  const namedWorkspaces = workspaces?.workspaces ?? [];
+  const profileItems = profiles?.profiles ?? [];
+  const secretMap = new Map((secrets?.secrets ?? []).map((secret) => [secret.name, secret]));
+  const activeStatus = runtimeStatus?.ingresses.find((item) => item.name === selected);
+  const activeWorkspaceID = current?.workspaceId?.trim() || primaryID;
+  const activeProfileID = current?.toolProfile?.trim() || "remote-read";
+  const configuredWorkspaceKnown = activeWorkspaceID === primaryID || namedWorkspaces.some((workspace) => workspace.id === activeWorkspaceID);
+  const configuredProfileKnown = profileItems.some((profile) => profile.id === activeProfileID);
+  const authSecret = current?.authTokenEnv ? secretMap.get(current.authTokenEnv) : undefined;
+  const providerSecret = current?.providerTokenEnv ? secretMap.get(current.providerTokenEnv) : undefined;
+  const provider = current?.provider ?? "external";
+  const runtimeMatchesDraft = !!activeStatus && !!current
+    && current.enabled !== false
+    && activeStatus.provider === provider
+    && activeStatus.workspaceId === activeWorkspaceID
+    && activeStatus.toolProfile === activeProfileID
+    && activeStatus.localPort === current.localPort
+    && (activeStatus.publicUrl ?? "") === (current.publicUrl?.trim() ?? "");
+
+  return <Card title="Remote MCP ingress" description="Publish a fixed hosted-MCP contract without exposing Admin or workspace-switching endpoints.">
+    <Notice tone="info">Each ingress binds only to <code>127.0.0.1</code>, serves only <code>/mcp</code>, and requires a dedicated bearer secret. <code>external</code> leaves HTTPS publishing to your proxy or tunnel; <code>cloudflare</code> lets Wormhole supervise cloudflared. The safe default profile is <code>remote-read</code>.</Notice>
+    {runtimeStatus?.truncated && <Notice tone="warning">Only the first bounded set of active remote ingresses is included in live status.</Notice>}
+    <div className="mcp-layout remote-ingress-layout">
+      <aside className="mcp-list">
+        <div className="inline-add">
+          <TextInput value={newName} onChange={(event) => setNewName(event.target.value.toLowerCase())} onKeyDown={(event) => { if (event.key === "Enter") addIngress(); }} placeholder="notion" />
+          <Button variant="secondary" onClick={addIngress} disabled={!validNewName}><Plus size={15} /></Button>
+        </div>
+        {names.map((name) => {
+          const ingress = ingresses[name];
+          const live = runtimeStatus?.ingresses.find((item) => item.name === name);
+          const enabled = ingress.enabled !== false;
+          return <button key={name} className={selected === name ? "active" : ""} onClick={() => setSelected(name)}>
+            <span>{name}</span>
+            <Badge tone={!enabled ? "neutral" : live?.mcpReady ? "success" : live ? "danger" : "warning"}>{!enabled ? "Off" : live?.mcpReady ? "Ready" : live ? "Issue" : "Restart"}</Badge>
+          </button>;
+        })}
+        {!names.length && <p className="muted">No remote MCP ingress configured.</p>}
+      </aside>
+
+      <div className="mcp-editor">
+        {current ? <>
+          <div className="mcp-editor-head">
+            <div><h3>{selected}</h3><p>Fixed workspace/profile boundary for one hosted MCP consumer.</p></div>
+            <Button variant="danger" onClick={removeIngress}><Trash2 size={15} /> Remove</Button>
+          </div>
+          <div className="toggle-stack"><Toggle checked={current.enabled !== false} onChange={(enabled) => updateIngress({ ...current, enabled })} label="Ingress enabled" description="Disabled definitions remain in config but do not bind a listener or start a managed publisher." /></div>
+          <div className="form-grid top-gap">
+            <Field label="Provider" help="External means Wormhole owns only the loopback MCP listener. Cloudflare also starts a managed cloudflared child.">
+              <Select value={provider} onChange={(event) => changeProvider(event.target.value as "external" | "cloudflare")}>
+                {provider !== "external" && provider !== "cloudflare" && <option value={provider}>{provider} (configured)</option>}
+                <option value="external">external</option>
+                <option value="cloudflare">cloudflare</option>
+              </Select>
+            </Field>
+            <Field label="Local port" hint="Must differ from the main MCP port and every other enabled ingress."><TextInput type="number" min={1} max={65535} value={current.localPort} onChange={(event) => updateIngress({ ...current, localPort: number(event.target.value) })} /></Field>
+            <Field label="Workspace" hint="The ingress cannot switch workspace after connecting.">
+              <Select value={current.workspaceId ?? ""} onChange={(event) => updateIngress({ ...current, workspaceId: event.target.value })}>
+                <option value="">Primary · {primaryID}</option>
+                {current.workspaceId === primaryID && <option value={primaryID}>Primary · {primaryID} (explicit)</option>}
+                {!configuredWorkspaceKnown && current.workspaceId && <option value={current.workspaceId}>{current.workspaceId} (not registered)</option>}
+                {namedWorkspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.id}{workspace.active ? "" : " · restart pending"}</option>)}
+              </Select>
+            </Field>
+            <Field label="Tool profile" hint="Use remote-read unless this client genuinely requires a broader contract.">
+              <Select value={activeProfileID} onChange={(event) => updateIngress({ ...current, toolProfile: event.target.value })}>
+                {!configuredProfileKnown && <option value={activeProfileID}>{activeProfileID} (not available)</option>}
+                {profileItems.map((profile) => <option key={profile.id} value={profile.id}>{profile.id}{profile.restartRequired ? " · restart pending" : ""}</option>)}
+                {!profileItems.length && <><option value="remote-read">remote-read</option><option value="fast">fast</option><option value="full">full</option></>}
+              </Select>
+            </Field>
+            <Field label="Public HTTPS URL" wide hint="Optional for server-to-server clients. Required to validate browser Origin headers; when set, the path must be exactly /mcp."><TextInput value={current.publicUrl ?? ""} onChange={(event) => updateIngress({ ...current, publicUrl: event.target.value })} placeholder="https://wormhole.example.com/mcp" /></Field>
+            <Field label="MCP bearer environment" wide hint={authSecret?.configured ? `Configured via ${authSecret.source}.` : "Save this reference, then store its value on Secrets. Values are never shown here."}><TextInput value={current.authTokenEnv ?? ""} onChange={(event) => updateIngress({ ...current, authTokenEnv: event.target.value })} /></Field>
+            {provider === "cloudflare" && <>
+              <Field label="Cloudflare tunnel token environment" wide hint={providerSecret?.configured ? `Configured via ${providerSecret.source}.` : "Write-only provider credential used only by the managed cloudflared child."}><TextInput value={current.providerTokenEnv ?? ""} onChange={(event) => updateIngress({ ...current, providerTokenEnv: event.target.value })} /></Field>
+              <Field label="cloudflared binary" wide><TextInput value={current.binary ?? ""} onChange={(event) => updateIngress({ ...current, binary: event.target.value })} placeholder="cloudflared" /></Field>
+            </>}
+          </div>
+
+          <div className="upstream-control-panel remote-ingress-status-panel">
+            <div className="upstream-control-head">
+              <div><h4>Active runtime readiness</h4><p>Checks only the currently running loopback listener. External publisher availability remains owned by your proxy/tunnel provider.</p></div>
+              <Button variant="secondary" onClick={onRefreshRuntimeStatus} loading={runtimeStatusLoading}><RefreshCw size={14} /> Refresh status</Button>
+            </div>
+            {!activeStatus ? <Notice tone={current.enabled === false ? "info" : "warning"}>{current.enabled === false ? "This ingress is disabled in the draft." : "No active listener with this name exists in the running daemon. Save and restart to reconcile it."}</Notice> : <>
+              {!runtimeMatchesDraft && <Notice tone="warning">The running listener uses a different definition. Save and restart before relying on these edits.</Notice>}
+              {activeStatus.issue && <Notice tone="warning">{activeStatus.issue}</Notice>}
+              <div className="upstream-contract-grid remote-ingress-runtime-grid">
+                <div><small>Local MCP</small><strong>{activeStatus.mcpReady ? "Ready" : activeStatus.listenerReachable ? "Unhealthy" : "Offline"}</strong><span>{activeStatus.listenerReachable ? `127.0.0.1:${activeStatus.localPort}` : "listener unavailable"}</span></div>
+                <div><small>Bearer</small><strong>{activeStatus.authConfigured ? "Present" : "Missing"}</strong><span>{current.authTokenEnv || "environment missing"}</span></div>
+                <div><small>Contract</small><strong>{activeStatus.toolCount}</strong><span>{activeStatus.protocolVersion ? `${activeStatus.protocolVersion} · tools` : "not negotiated"}</span></div>
+                <div><small>Publisher</small><strong>{activeStatus.provider === "external" ? "External" : activeStatus.providerTokenConfigured ? "Configured" : "Missing token"}</strong><span>{activeStatus.publicUrl || "public URL not recorded"}</span></div>
+              </div>
+            </>}
+          </div>
+
+          <JSONField label="Complete ingress JSON" value={current as unknown as Record<string, unknown>} onChange={(next) => updateIngress(next as unknown as RemoteIngressConfig)} hint="Advanced escape hatch for this ingress. Server-side validation still enforces provider, port, workspace/profile, URL, and secret-reference rules." />
+        </> : <div className="empty"><Globe2 size={30} /><strong>Add a remote MCP ingress</strong><p>Create one fixed, bearer-protected contract for Notion or another hosted MCP client.</p></div>}
+      </div>
+    </div>
+  </Card>;
+}
+
+function validRemoteIngressName(value: string): boolean {
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(value.trim().toLowerCase());
+}
+
+function derivedRemoteIngressEnv(name: string, suffix: "AUTH_TOKEN" | "TUNNEL_TOKEN"): string {
+  return `WORMHOLE_REMOTE_${name.trim().toUpperCase().replace(/[-.]/g, "_")}_${suffix}`;
+}
+
+function nextRemoteIngressPort(value: WormholeConfig): number {
+  const used = new Set<number>([value.port, ...Object.values(value.remoteIngresses ?? {}).map((ingress) => ingress.localPort)]);
+  for (let port = 18133; port <= 65535; port++) if (!used.has(port)) return port;
+  for (let port = 1024; port < 18133; port++) if (!used.has(port)) return port;
+  return 0;
 }
 
 function MemoryEditor({ value, onChange }: EditorProps) {

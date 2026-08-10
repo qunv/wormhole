@@ -945,6 +945,43 @@ func TestAdminSecretsIncludeNamedTunnelRuntimeKeys(t *testing.T) {
 	}
 }
 
+func TestAdminRemoteIngressStatusIsBoundedAndSecretFree(t *testing.T) {
+	handler := newAdminHandler(t, nil)
+	calledLimit := 0
+	handler.SetRemoteIngressStatusProvider(func(_ context.Context, limit int) RemoteIngressStatusResponse {
+		calledLimit = limit
+		providerConfigured := true
+		return RemoteIngressStatusResponse{
+			GeneratedAt: time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC),
+			Ingresses: []RemoteIngressRuntimeStatus{{
+				Name: "notion", Provider: "cloudflare", WorkspaceID: "default", ToolProfile: "remote-read",
+				LocalPort: 18133, PublicURL: "https://wormhole.example.com/mcp",
+				AuthConfigured: true, ProviderTokenConfigured: &providerConfigured,
+				ListenerReachable: true, MCPReady: true, ProtocolVersion: "2026-07-28", ToolCount: 13,
+			}},
+		}
+	})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, localRequest(http.MethodGet, apiPrefix+"/remote-ingresses", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("get remote ingress status = %d %s", response.Code, response.Body.String())
+	}
+	if calledLimit != maxRemoteIngressStatuses {
+		t.Fatalf("status provider limit = %d, want %d", calledLimit, maxRemoteIngressStatuses)
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"name":"notion"`, `"mcpReady":true`, `"protocolVersion":"2026-07-28"`, `"toolCount":13`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("remote ingress status missing %s: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"AUTH_TOKEN", "TUNNEL_TOKEN", "Bearer ", "secret-value"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("remote ingress status leaked credential material %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestAdminSecretsIncludeRemoteIngressCredentials(t *testing.T) {
 	handler := newAdminHandler(t, func(cfg *config.Config) {
 		cfg.RemoteIngresses = map[string]config.RemoteIngressConfig{

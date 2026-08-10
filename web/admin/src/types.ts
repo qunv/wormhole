@@ -76,6 +76,28 @@ export interface RemoteIngressConfig {
   binary?: string;
 }
 
+export interface RemoteIngressRuntimeStatus {
+  name: string;
+  provider: string;
+  workspaceId: string;
+  toolProfile: string;
+  localPort: number;
+  publicUrl?: string;
+  authConfigured: boolean;
+  providerTokenConfigured?: boolean;
+  listenerReachable: boolean;
+  mcpReady: boolean;
+  protocolVersion?: string;
+  toolCount: number;
+  issue?: string;
+}
+
+export interface RemoteIngressStatusResponse {
+  generatedAt: string;
+  ingresses: RemoteIngressRuntimeStatus[];
+  truncated: boolean;
+}
+
 export interface ToolExposureConfig {
   allowedGroups?: string[];
   allowedTools?: string[];

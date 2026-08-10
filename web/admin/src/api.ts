@@ -8,6 +8,7 @@ import type {
   ConfigSnapshot,
   OperationsResponse,
   ProfilesResponse,
+  RemoteIngressStatusResponse,
   SecretsResponse,
   ToolCatalogResponse,
   UpstreamMCPResponse,
@@ -93,6 +94,7 @@ export const api = {
       body: JSON.stringify({ decision }),
     }),
   upstream: () => request<UpstreamMCPResponse>("/upstream"),
+  remoteIngresses: () => request<RemoteIngressStatusResponse>("/remote-ingresses"),
   refreshUpstream: (workspaceId: string, serverName: string) =>
     request<{ workspaceId: string; server: UpstreamMCPStatus; restartRequired: boolean }>(`/upstream/${encodeURIComponent(workspaceId)}/${encodeURIComponent(serverName)}/refresh`, {
       method: "POST",

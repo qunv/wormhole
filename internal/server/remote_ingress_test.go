@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -98,7 +99,7 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 		t.Fatalf("remote ingress accepted invalid Origin: %d", response.Code)
 	}
 	request = httptest.NewRequest(http.MethodGet, "/mcp", nil)
-	request.Header.Set("Authorization", "Bearer bearer-test-value")
+	request.Header.Set("Authorization", "Bearer "+os.Getenv("REMOTE_NOTION_AUTH"))
 	response = httptest.NewRecorder()
 	remote.Handler.ServeHTTP(response, request)
 	if response.Code != http.StatusMethodNotAllowed {
@@ -129,6 +130,42 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 	result := callTool(t, context.Background(), session, "read_file", map[string]any{"path": "sample.txt"})
 	if !strings.Contains(toolText(result), "Structured result") || result.StructuredContent == nil {
 		t.Fatalf("remote read did not use fixed profile/output: %s %#v", toolText(result), result.StructuredContent)
+	}
+}
+
+func TestRemoteIngressRuntimeStatusPerformsAuthenticatedMCPProbe(t *testing.T) {
+	t.Setenv("REMOTE_STATUS_AUTH", "status-test-value")
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "status-test", Version: "1"}, nil)
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+os.Getenv("REMOTE_STATUS_AUTH") {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(writer, request)
+	}))
+	defer httpServer.Close()
+	_, rawPort, err := net.SplitHostPort(strings.TrimPrefix(httpServer.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel = t.TempDir(), true
+	runtime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "default", t.TempDir(), cfg, "test", "pro", "default", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	instance := New(runtime)
+	status := instance.probeRemoteIngressRuntime(context.Background(), config.NamedRemoteIngress{Name: "notion", Config: config.RemoteIngressConfig{
+		Provider: "external", LocalPort: port, ToolProfile: "remote-read", AuthTokenEnv: "REMOTE_STATUS_AUTH",
+	}})
+	if !status.AuthConfigured || !status.ListenerReachable || !status.MCPReady || status.ProtocolVersion != "2026-07-28" || status.ToolCount != 0 || status.Issue != "" {
+		t.Fatalf("unexpected remote ingress runtime status: %#v", status)
 	}
 }
 

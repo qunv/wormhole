@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"wormhole/internal/admin"
 	"wormhole/internal/agent"
 	"wormhole/internal/config"
 	"wormhole/internal/mcpserver"
@@ -110,6 +112,100 @@ func sortedHTTPServerNames(values map[string]*http.Server) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+type remoteIngressStatusTransport struct {
+	token string
+}
+
+func (t remoteIngressStatusTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header = request.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return http.DefaultTransport.RoundTrip(clone)
+}
+
+func (h *HTTP) remoteIngressRuntimeStatus(ctx context.Context, limit int) admin.RemoteIngressStatusResponse {
+	ingresses := h.Runtime.Config.EnabledRemoteIngresses()
+	if limit <= 0 {
+		limit = 1
+	}
+	truncated := len(ingresses) > limit
+	if truncated {
+		ingresses = ingresses[:limit]
+	}
+	response := admin.RemoteIngressStatusResponse{
+		GeneratedAt: time.Now().UTC(),
+		Ingresses:   make([]admin.RemoteIngressRuntimeStatus, 0, len(ingresses)),
+		Truncated:   truncated,
+	}
+	for _, ingress := range ingresses {
+		status := h.probeRemoteIngressRuntime(ctx, ingress)
+		response.Ingresses = append(response.Ingresses, status)
+		if ctx.Err() != nil {
+			response.Truncated = response.Truncated || len(response.Ingresses) < len(ingresses)
+			break
+		}
+	}
+	return response
+}
+
+func (h *HTTP) probeRemoteIngressRuntime(ctx context.Context, ingress config.NamedRemoteIngress) admin.RemoteIngressRuntimeStatus {
+	workspaceID := strings.TrimSpace(ingress.Config.WorkspaceID)
+	if workspaceID == "" {
+		workspaceID = h.Runtime.WorkspaceID
+	}
+	status := admin.RemoteIngressRuntimeStatus{
+		Name: ingress.Name, Provider: ingress.Config.Provider,
+		WorkspaceID: workspaceID, ToolProfile: ingress.Config.ToolProfile,
+		LocalPort: ingress.Config.LocalPort, PublicURL: ingress.Config.PublicURL,
+	}
+	authToken := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv))
+	status.AuthConfigured = authToken != ""
+	if ingress.Config.Provider == "cloudflare" {
+		providerConfigured := strings.TrimSpace(os.Getenv(ingress.Config.ProviderTokenEnv)) != ""
+		status.ProviderTokenConfigured = &providerConfigured
+	}
+	if !status.AuthConfigured {
+		status.Issue = "MCP bearer secret is missing"
+		return status
+	}
+
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(ingress.Config.LocalPort))
+	dialer := net.Dialer{Timeout: 400 * time.Millisecond}
+	connection, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		status.Issue = "loopback MCP listener is unavailable"
+		return status
+	}
+	status.ListenerReachable = true
+	_ = connection.Close()
+
+	probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-admin", Version: h.Runtime.Version}, nil)
+	session, err := client.Connect(probeCtx, &mcp.StreamableClientTransport{
+		Endpoint:             "http://" + address + "/mcp",
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+		HTTPClient:           &http.Client{Transport: remoteIngressStatusTransport{token: authToken}},
+	}, nil)
+	if err != nil {
+		status.Issue = "MCP handshake failed"
+		return status
+	}
+	defer session.Close()
+	tools, err := session.ListTools(probeCtx, &mcp.ListToolsParams{})
+	if err != nil {
+		status.Issue = "MCP tool discovery failed"
+		return status
+	}
+	status.MCPReady = true
+	status.ToolCount = len(tools.Tools)
+	if initialized := session.InitializeResult(); initialized != nil {
+		status.ProtocolVersion = initialized.ProtocolVersion
+	}
+	return status
 }
 
 func (h *HTTP) remoteIngressSummaries() []map[string]any {
