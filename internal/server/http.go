@@ -294,11 +294,20 @@ func (h *HTTP) guardMCP(runtime *agent.Runtime, next http.Handler) http.Handler 
 }
 
 func (h *HTTP) guardMCPValues(authToken string, maxBodyBytes int, next http.Handler) http.Handler {
+	return h.guardMCPMethods(authToken, maxBodyBytes, false, next)
+}
+
+// guardMCPMethods keeps the existing local/OpenAI MCP surfaces POST-only while
+// allowing dedicated hosted-MCP ingresses to pass authenticated GET requests
+// through to the Streamable HTTP handler. Stateless handlers may answer GET
+// with 405, which is explicitly valid when standalone SSE is unsupported.
+func (h *HTTP) guardMCPMethods(authToken string, maxBodyBytes int, allowGet bool, next http.Handler) http.Handler {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = h.Runtime.Config.MaxBodyBytes
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
+		methodAllowed := request.Method == http.MethodPost || (allowGet && request.Method == http.MethodGet)
+		if !methodAllowed {
 			h.sendJSON(writer, http.StatusMethodNotAllowed, map[string]any{
 				"jsonrpc": "2.0", "error": map[string]any{"code": -32000, "message": "Method not allowed."}, "id": nil,
 			})

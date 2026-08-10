@@ -21,13 +21,17 @@ import (
 )
 
 type testBearerTransport struct {
-	token string
+	token  string
+	origin string
 }
 
 func (t testBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	clone := request.Clone(request.Context())
 	clone.Header = request.Header.Clone()
 	clone.Header.Set("Authorization", "Bearer "+t.token)
+	if t.origin != "" {
+		clone.Header.Set("Origin", t.origin)
+	}
 	return http.DefaultTransport.RoundTrip(clone)
 }
 
@@ -36,7 +40,7 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(apiRoot, "sample.txt"), []byte("api-only"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("REMOTE_NOTION_AUTH", "notion-secret")
+	t.Setenv("REMOTE_NOTION_AUTH", "bearer-test-value")
 
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = defaultRoot, true, "full"
@@ -46,6 +50,7 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 	cfg.RemoteIngresses = map[string]config.RemoteIngressConfig{
 		"notion": {
 			Provider: "cloudflare", WorkspaceID: "api", ToolProfile: "notion-read", LocalPort: 18133,
+			PublicURL:    "https://wormhole.example.com/mcp",
 			AuthTokenEnv: "REMOTE_NOTION_AUTH", ProviderTokenEnv: "REMOTE_NOTION_TUNNEL", Binary: "cloudflared",
 		},
 	}
@@ -84,18 +89,36 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("remote ingress accepted missing bearer: %d", response.Code)
 	}
+	request = httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+os.Getenv("REMOTE_NOTION_AUTH"))
+	request.Header.Set("Origin", "https://evil.example")
+	response = httptest.NewRecorder()
+	remote.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("remote ingress accepted invalid Origin: %d", response.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	request.Header.Set("Authorization", "Bearer bearer-test-value")
+	response = httptest.NewRecorder()
+	remote.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("stateless remote ingress GET = %d, want 405 from MCP handler", response.Code)
+	}
 
 	httpServer := httptest.NewServer(remote.Handler)
 	defer httpServer.Close()
 	client := mcp.NewClient(&mcp.Implementation{Name: "remote-ingress-test", Version: "1"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
 		Endpoint: httpServer.URL + "/mcp", DisableStandaloneSSE: true, MaxRetries: -1,
-		HTTPClient: &http.Client{Transport: testBearerTransport{token: "notion-secret"}},
+		HTTPClient: &http.Client{Transport: testBearerTransport{token: os.Getenv("REMOTE_NOTION_AUTH"), origin: "https://wormhole.example.com"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
+	if initialized := session.InitializeResult(); initialized == nil || initialized.ProtocolVersion != "2026-07-28" {
+		t.Fatalf("unexpected negotiated protocol after SDK upgrade: %#v", initialized)
+	}
 	tools, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
 	if err != nil {
 		t.Fatal(err)

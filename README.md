@@ -315,7 +315,9 @@ Notion / hosted MCP client
         │
         │ HTTPS + Authorization: Bearer <MCP token>
         ▼
-Cloudflare Tunnel
+HTTPS publisher
+  ├── external: Caddy / Nginx / Tailscale / Cloudflare you manage
+  └── cloudflare: cloudflared child managed by Wormhole
         │
         ▼
 127.0.0.1:18133/mcp       dedicated remote ingress
@@ -328,9 +330,9 @@ Cloudflare Tunnel
         └── /mcp/...       local/OpenAI-tunnel surfaces
 ```
 
-The first managed provider is a remotely managed **Cloudflare Tunnel**. Wormhole starts one `cloudflared` child per enabled ingress using `TUNNEL_TOKEN` in the child environment; the provider token is never placed in command-line arguments. The MCP bearer token is a separate secret and is checked by the dedicated listener before any MCP request reaches the selected runtime.
+`provider: "external"` is the generic default: Wormhole owns only the loopback MCP listener while you publish it through an HTTPS reverse proxy or tunnel of your choice. `provider: "cloudflare"` is the first managed publisher: Wormhole starts one `cloudflared` child per enabled ingress using `TUNNEL_TOKEN` in the child environment; the provider token is never placed in command-line arguments. In both modes, the MCP bearer token is a separate secret and is checked by the dedicated listener before any MCP request reaches the selected runtime.
 
-For Notion, create a deliberately narrow custom profile instead of exposing `full`. For example, a read-oriented profile plus one fixed ingress:
+The built-in `remote-read` profile is the safe default for an Internet-reachable ingress. It exposes bounded workspace/context, code navigation, file reads, and Git read operations, but not patching, commands, quality-gate execution, or mutating Git actions. Create a custom profile only when a hosted client needs a different contract. For example, a Notion-specific read profile plus one fixed ingress:
 
 ```json
 {
@@ -369,16 +371,17 @@ For Notion, create a deliberately narrow custom profile instead of exposing `ful
 }
 ```
 
-`workspaceId` may be omitted to bind the primary runtime. `toolProfile` defaults to `fast`, but a restricted custom profile is recommended for Internet-reachable integrations. Enabled ingress ports must be unique and must differ from the main Wormhole port. `publicUrl`, when recorded, must be an HTTPS URL whose path is exactly `/mcp`.
+`workspaceId` may be omitted to bind the primary runtime. `toolProfile` defaults to `remote-read`. Enabled ingress ports must be unique and must differ from the main Wormhole port. `publicUrl`, when recorded, must be an HTTPS URL whose path is exactly `/mcp`. If a client sends an HTTP `Origin` header, Wormhole validates it against the origin of `publicUrl` and rejects a mismatch with `403`; when `publicUrl` is omitted, requests that carry `Origin` fail closed while server-to-server requests without `Origin` remain valid.
 
-Store both referenced values from **Admin → Secrets**, or with the write-only CLI helper:
+For `provider: "cloudflare"`, store both referenced values from **Admin → Secrets**, or with the write-only CLI helper. For `external`, only the MCP bearer is owned by Wormhole:
 
 ```bash
 wormhole key set --runtime-key-env WORMHOLE_REMOTE_NOTION_AUTH_TOKEN
+# cloudflare managed mode only:
 wormhole key set --runtime-key-env WORMHOLE_REMOTE_NOTION_TUNNEL_TOKEN
 ```
 
-In Cloudflare, configure the remotely managed tunnel's public hostname to forward to the exact local origin for this ingress, for example:
+With managed Cloudflare, configure the remotely managed tunnel's public hostname to forward to the exact local origin for this ingress, for example:
 
 ```text
 https://wormhole.example.com  →  http://127.0.0.1:18133
@@ -391,7 +394,9 @@ MCP URL:        https://wormhole.example.com/mcp
 Authorization:  Bearer <value of WORMHOLE_REMOTE_NOTION_AUTH_TOKEN>
 ```
 
-Restart Wormhole after changing ingress definitions or either referenced secret. Use `wormhole status`, `wormhole doctor`, and `wormhole logs` to inspect the dedicated listener and provider child process. The Admin diagnostic bundle includes ingress metadata and bounded ingress logs while redacting the currently referenced secret values.
+Restart Wormhole after changing ingress definitions or referenced secrets. `wormhole status` reports listener/provider ownership and secret presence without exposing values. `wormhole doctor` goes further: after checking the loopback socket and bearer reference, it performs a real MCP connection and `tools/list`, reporting the negotiated protocol and tool count. This catches cases where a port is open but authentication or the MCP contract is broken. The Admin diagnostic bundle includes ingress metadata and bounded ingress logs while redacting the currently referenced secret values.
+
+Wormhole pins the stable official Go SDK with MCP `2026-07-28` support. The dedicated ingress is stateless, which is required for that protocol generation, and remains compatible with older Streamable HTTP clients through the SDK's negotiation path. Authenticated `GET /mcp` is allowed to reach the transport; a stateless server may correctly answer `405 Method Not Allowed` when the client requests the optional standalone SSE stream.
 
 Official setup references:
 

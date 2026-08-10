@@ -25,6 +25,9 @@ All notable changes to Wormhole are documented in this file.
 
 ### Changed
 
+- Upgraded the official MCP Go SDK to v1.7.0, enabling MCP `2026-07-28` negotiation on stateless remote ingresses while preserving older Streamable HTTP compatibility; upstream health now uses a protocol-compatible read probe after `ping` removal, and caller-cancelled 2026 sessions are transparently repaired before the next upstream call without consuming mutation retries.
+- Hardened remote MCP ingresses with exact public-Origin validation, authenticated GET transport handling, ownership-aware status reporting, and an active `doctor` probe that negotiates MCP and lists the fixed tool contract instead of treating an open TCP port as readiness.
+
 - Reworked the Operations runtime view into a compact workspace master-detail layout with a bounded overview list, one selected workspace detail panel, top-tool expansion, separate daemon metrics, clearer parent/child tab hierarchy, and larger Operations-specific typography.
 - Daemon identity now fingerprints the complete effective config and all referenced secrets while hashing binary/widget inputs only once per reconciliation.
 - Explicit test/build/lint overrides require full mode and exact approval; all quality commands invalidate repository caches after execution.

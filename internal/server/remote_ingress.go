@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -43,7 +44,8 @@ func (h *HTTP) configureRemoteIngresses(primaryID string) error {
 			&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
 		)
 		mux := http.NewServeMux()
-		mux.Handle("/mcp", h.guardMCPValues(authToken, runtime.Config.MaxBodyBytes, mcpHandler))
+		guarded := h.guardMCPMethods(authToken, runtime.Config.MaxBodyBytes, true, mcpHandler)
+		mux.Handle("/mcp", h.remoteIngressOriginMiddleware(ingress.Config.PublicURL, guarded))
 		server := &http.Server{
 			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(ingress.Config.LocalPort)),
 			Handler:           mux,
@@ -66,6 +68,39 @@ func (h *HTTP) remoteIngressRuntime(primaryID string, ingress config.NamedRemote
 		return nil, "", fmt.Errorf("remote ingress %q references unknown or disabled workspace %q", ingress.Name, workspaceID)
 	}
 	return runtime, workspaceID, nil
+}
+
+func (h *HTTP) remoteIngressOriginMiddleware(publicURL string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		origin := strings.TrimSpace(request.Header.Get("Origin"))
+		if origin != "" && !remoteIngressOriginAllowed(publicURL, origin) {
+			h.sendJSON(writer, http.StatusForbidden, map[string]any{
+				"jsonrpc": "2.0", "error": map[string]any{"code": -32000, "message": "Origin not allowed."}, "id": nil,
+			})
+			return
+		}
+		if origin != "" {
+			writer.Header().Add("Vary", "Origin")
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func remoteIngressOriginAllowed(publicURL, origin string) bool {
+	public, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || public.Scheme == "" || public.Host == "" {
+		return false
+	}
+	parsedOrigin, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || parsedOrigin.Scheme == "" || parsedOrigin.Host == "" || parsedOrigin.User != nil || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+		return false
+	}
+	if parsedOrigin.Path != "" && parsedOrigin.Path != "/" {
+		return false
+	}
+	expected := strings.ToLower(public.Scheme + "://" + public.Host)
+	actual := strings.ToLower(parsedOrigin.Scheme + "://" + parsedOrigin.Host)
+	return actual == expected
 }
 
 func sortedHTTPServerNames(values map[string]*http.Server) []string {

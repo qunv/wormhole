@@ -755,7 +755,7 @@ func TestCallDeadlineDoesNotInvalidateSharedSession(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("slow call error = %v, want deadline exceeded", err)
 	}
-	result, err := client.Call(context.Background(), "fast.read", nil, true)
+	result, err := client.Call(context.Background(), "fast.read", nil, false)
 	if err != nil || result.IsError {
 		t.Fatalf("session was not usable after call deadline: err=%v result=%#v", err, result)
 	}

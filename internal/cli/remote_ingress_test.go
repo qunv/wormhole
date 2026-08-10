@@ -4,11 +4,18 @@
 package cli
 
 import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
 	"wormhole/internal/config"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestRemoteIngressCommandKeepsSecretsOutOfArgv(t *testing.T) {
@@ -71,6 +78,40 @@ func TestRemoteIngressChildUsesDedicatedLogAndValidLabel(t *testing.T) {
 	}
 	if got, want := childLogPath(label), config.RemoteIngressLogPathFor("notion"); got != want {
 		t.Fatalf("remote ingress log path = %s, want %s", got, want)
+	}
+}
+
+func TestProbeRemoteIngressAuthenticatesAndNegotiatesCurrentMCP(t *testing.T) {
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "probe-test", Version: "1"}, nil)
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{
+		Stateless: true, JSONResponse: true,
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+os.Getenv("REMOTE_PROBE_AUTH") {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(writer, request)
+	}))
+	defer httpServer.Close()
+	_, rawPort, err := net.SplitHostPort(strings.TrimPrefix(httpServer.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REMOTE_PROBE_AUTH", "bearer-test-value")
+	ingress := config.NamedRemoteIngress{Name: "probe", Config: config.RemoteIngressConfig{
+		Provider: "external", LocalPort: port, ToolProfile: "remote-read", AuthTokenEnv: "REMOTE_PROBE_AUTH",
+	}}
+	result, err := probeRemoteIngress(context.Background(), ingress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProtocolVersion != "2026-07-28" || result.ToolCount != 0 {
+		t.Fatalf("unexpected probe result: %#v", result)
 	}
 }
 

@@ -417,6 +417,7 @@ func (a App) status(cfg config.Config, opts options) error {
 	migrateTunnelProcessState(&state)
 	_, _, serverOwned := ownedHealthProcess(state, health, cfg.Port)
 	serverStateValid := health == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
+	serverKnownOwned := serverOwned || serverStateValid
 	configured := map[string]config.NamedTunnel{}
 	for _, tunnel := range cfg.EffectiveTunnels() {
 		configured[tunnel.Name] = tunnel
@@ -432,7 +433,7 @@ func (a App) status(cfg config.Config, opts options) error {
 	logs := map[string]string{"server": config.ServerLogPath()}
 	for _, name := range sortedBoolKeys(names) {
 		process := state.Tunnels[name]
-		_, _, alive := ownedNamedTunnelProcess(name, process, serverOwned || serverStateValid)
+		_, _, alive := ownedNamedTunnelProcess(name, process, serverKnownOwned)
 		item := map[string]any{"pid": process.PID, "alive": alive, "log_path": config.TunnelLogPathFor(name)}
 		logs["tunnel:"+name] = config.TunnelLogPathFor(name)
 		if tunnel, exists := configured[name]; exists {
@@ -460,7 +461,7 @@ func (a App) status(cfg config.Config, opts options) error {
 	remoteIngresses := map[string]any{}
 	for _, name := range sortedBoolKeys(ingressNames) {
 		process := state.RemoteIngresses[name]
-		_, _, alive := ownedRemoteIngressProcess(name, process, serverOwned || serverStateValid)
+		_, _, alive := ownedRemoteIngressProcess(name, process, serverKnownOwned)
 		item := map[string]any{"pid": process.PID, "alive": alive, "log_path": config.RemoteIngressLogPathFor(name)}
 		logs["remote-ingress:"+name] = config.RemoteIngressLogPathFor(name)
 		if ingress, exists := configuredIngresses[name]; exists {
@@ -471,11 +472,13 @@ func (a App) status(cfg config.Config, opts options) error {
 			item["workspace_id"] = ingress.Config.WorkspaceID
 			item["tool_profile"] = ingress.Config.ToolProfile
 			item["local_url"] = fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)
-			item["listener_reachable"] = serverOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
+			item["listener_reachable"] = serverKnownOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
 			item["public_url"] = ingress.Config.PublicURL
 			item["auth_token_env"] = ingress.Config.AuthTokenEnv
+			item["auth_configured"] = strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv)) != ""
 			if ingress.Config.ProviderTokenEnv != "" {
 				item["provider_token_env"] = ingress.Config.ProviderTokenEnv
+				item["provider_token_configured"] = strings.TrimSpace(os.Getenv(ingress.Config.ProviderTokenEnv)) != ""
 			}
 		} else {
 			item["configured"] = false
@@ -510,7 +513,7 @@ func (a App) status(cfg config.Config, opts options) error {
 	}
 	for _, name := range sortedBoolKeys(names) {
 		process := state.Tunnels[name]
-		_, _, alive := ownedNamedTunnelProcess(name, process, serverOwned || serverStateValid)
+		_, _, alive := ownedNamedTunnelProcess(name, process, serverKnownOwned)
 		mode := "unconfigured"
 		if tunnel, exists := configured[name]; exists {
 			mode = tunnel.Config.Mode
@@ -525,7 +528,7 @@ func (a App) status(cfg config.Config, opts options) error {
 	}
 	for _, name := range sortedBoolKeys(ingressNames) {
 		process := state.RemoteIngresses[name]
-		_, _, alive := ownedRemoteIngressProcess(name, process, serverOwned || serverStateValid)
+		_, _, alive := ownedRemoteIngressProcess(name, process, serverKnownOwned)
 		detail := "unconfigured"
 		if ingress, exists := configuredIngresses[name]; exists {
 			detail = fmt.Sprintf("%s workspace=%s profile=%s local=127.0.0.1:%d", ingress.Config.Provider, ternary(ingress.Config.WorkspaceID != "", ingress.Config.WorkspaceID, "primary"), ingress.Config.ToolProfile, ingress.Config.LocalPort)
@@ -535,7 +538,7 @@ func (a App) status(cfg config.Config, opts options) error {
 		}
 		processStatus := ternary(alive, fmt.Sprintf("running pid=%d", process.PID), "offline")
 		if ingress, exists := configuredIngresses[name]; exists && ingress.Config.Provider == "external" {
-			processStatus = ternary(serverOwned && remoteIngressPortReachable(ingress.Config.LocalPort), "listener-ready (external publisher)", "listener-offline")
+			processStatus = ternary(serverKnownOwned && remoteIngressPortReachable(ingress.Config.LocalPort), "listener-ready (external publisher)", "listener-offline")
 		}
 		fmt.Fprintf(a.Stdout, "Remote ingress %-12s %s %s\n", name, detail, processStatus)
 	}
@@ -555,11 +558,20 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	checks = append(checks, check{"git", gitErr == nil, ternary(gitErr == nil, "available", "not found")})
 	_, rgErr := exec.LookPath("rg")
 	checks = append(checks, check{"ripgrep", rgErr == nil, ternary(rgErr == nil, "available", "optional; Go fallback will be used")})
-	serverHealth := readHealth(cfg.Port)
-	checks = append(checks, check{"server", serverHealth != nil, fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)})
 	state := readState()
 	migrateTunnelProcessState(&state)
-	if serverHealth != nil {
+	serverHealth := readHealth(cfg.Port)
+	_, _, serverOwned := ownedHealthProcess(state, serverHealth, cfg.Port)
+	serverStateValid := serverHealth == nil && state.Port == cfg.Port && processMatches(state.ServerPID, state.ServerIdentity)
+	serverKnownOwned := serverOwned || serverStateValid
+	serverDetail := fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)
+	if serverHealth != nil && !serverOwned {
+		serverDetail += " (healthy endpoint is not owned by current Wormhole state)"
+	} else if serverHealth == nil && serverStateValid {
+		serverDetail += " (owned process is alive but health is unavailable)"
+	}
+	checks = append(checks, check{"server", serverOwned, serverDetail})
+	if serverOwned {
 		deepHealth := readDeepHealth(cfg.Port)
 		modules, _ := deepHealth["modules"].(map[string]any)
 		for _, name := range config.SortedMCPServerNames(cfg.MCPServers) {
@@ -584,7 +596,7 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 		checks = append(checks, check{"tunnel-client", tunnelErr == nil, cfg.TunnelBin})
 		for _, tunnel := range cfg.EnabledTunnels() {
 			process := state.Tunnels[tunnel.Name]
-			_, _, alive := ownedNamedTunnelProcess(tunnel.Name, process, serverHealth != nil)
+			_, _, alive := ownedNamedTunnelProcess(tunnel.Name, process, serverKnownOwned)
 			checks = append(checks,
 				check{"tunnel-id:" + tunnel.Name, tunnel.Config.TunnelID != "", ternary(tunnel.Config.TunnelID != "", tunnel.Config.Mode+" configured", "missing")},
 				check{"runtime-key:" + tunnel.Name, os.Getenv(tunnel.Config.RuntimeKeyEnv) != "", tunnel.Config.RuntimeKeyEnv},
@@ -597,11 +609,25 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	}
 	for _, ingress := range cfg.EnabledRemoteIngresses() {
 		process := state.RemoteIngresses[ingress.Name]
-		_, _, alive := ownedRemoteIngressProcess(ingress.Name, process, serverHealth != nil)
+		_, _, alive := ownedRemoteIngressProcess(ingress.Name, process, serverKnownOwned)
+		authConfigured := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv)) != ""
+		listenerReady := serverKnownOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
 		checks = append(checks,
-			check{"remote-auth:" + ingress.Name, os.Getenv(ingress.Config.AuthTokenEnv) != "", ingress.Config.AuthTokenEnv},
-			check{"remote-listener:" + ingress.Name, serverHealth != nil && remoteIngressPortReachable(ingress.Config.LocalPort), fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)},
+			check{"remote-auth:" + ingress.Name, authConfigured, ingress.Config.AuthTokenEnv},
+			check{"remote-listener:" + ingress.Name, listenerReady, fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)},
 		)
+		if authConfigured && listenerReady {
+			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			probe, probeErr := probeRemoteIngress(probeCtx, ingress)
+			cancel()
+			probeDetail := "MCP handshake failed"
+			if probeErr == nil {
+				probeDetail = fmt.Sprintf("protocol=%s tools=%d", probe.ProtocolVersion, probe.ToolCount)
+			} else if text := strings.TrimSpace(probeErr.Error()); text != "" {
+				probeDetail += ": " + text
+			}
+			checks = append(checks, check{"remote-mcp:" + ingress.Name, probeErr == nil, probeDetail})
+		}
 		if ingress.Config.Provider == "cloudflare" {
 			binaryOK := false
 			binaryDetail := ingress.Config.Binary

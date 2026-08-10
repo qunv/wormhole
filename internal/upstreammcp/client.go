@@ -32,9 +32,10 @@ const (
 )
 
 type clientSessionState struct {
-	session *mcp.ClientSession
-	refs    int
-	retired bool
+	session             *mcp.ClientSession
+	refs                int
+	retired             bool
+	cancellationTainted bool
 }
 
 type healthCacheEntry struct {
@@ -216,6 +217,9 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any, ret
 		return nil, err
 	}
 	result, callErr := c.callSession(ctx, state.session, tool, args)
+	if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
+		c.markCancellationTainted(state)
+	}
 	c.releaseSession(state)
 	if callErr == nil {
 		c.clearErrorFor(state)
@@ -269,7 +273,7 @@ func (c *Client) Health(ctx context.Context) map[string]any {
 	entry.session = state
 	timeout := time.Duration(c.cfg.HealthTimeoutMS) * time.Millisecond
 	healthCtx, cancel := context.WithTimeout(ctx, timeout)
-	err = state.session.Ping(healthCtx, nil)
+	err = checkSessionHealth(healthCtx, state.session)
 	healthContextErr := healthCtx.Err()
 	cancel()
 	c.releaseSession(state)
@@ -289,6 +293,23 @@ func (c *Client) Health(ctx context.Context) map[string]any {
 	}
 	c.storeHealth(entry, state)
 	return c.healthStatus(entry, false)
+}
+
+func checkSessionHealth(ctx context.Context, session *mcp.ClientSession) error {
+	if session == nil {
+		return errors.New("upstream MCP session is disconnected")
+	}
+	initialized := session.InitializeResult()
+	if initialized != nil && initialized.ProtocolVersion >= "2026-07-28" {
+		// Ping was removed from the 2026-07-28 protocol. Every upstream managed
+		// by Wormhole has a tools capability, so a single tools/list page is the
+		// smallest portable read-only liveness check across the new sessionless
+		// protocol. The result is intentionally discarded; catalog mutation stays
+		// owned by connect/refresh paths and health remains cached separately.
+		_, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+		return err
+	}
+	return session.Ping(ctx, nil)
 }
 
 func (c *Client) Close() error {
@@ -494,6 +515,7 @@ func (c *Client) ensureConnectedAttempt(ctx context.Context, discover bool) erro
 	c.mu.RLock()
 	wasConnected := !c.connectedAt.IsZero()
 	wasDeferred := c.deferred
+	wasCancellationRepair := c.session != nil && c.session.cancellationTainted
 	catalogKey := c.catalogKey
 	c.mu.RUnlock()
 	discover = discover || wasDeferred
@@ -502,7 +524,7 @@ func (c *Client) ensureConnectedAttempt(ctx context.Context, discover bool) erro
 	if err := c.connectLocked(timeoutCtx, discover); err != nil {
 		return err
 	}
-	if wasConnected {
+	if wasConnected && !wasCancellationRepair {
 		c.mu.Lock()
 		c.reconnects++
 		c.mu.Unlock()
@@ -530,11 +552,32 @@ func (c *Client) borrowCurrentSession() (*clientSessionState, error) {
 		return nil, errors.New("upstream MCP client is closed")
 	}
 	state := c.session
-	if state == nil || state.retired || state.session == nil {
+	if state == nil || state.retired || state.session == nil || state.cancellationTainted {
 		return nil, errors.New("upstream MCP session is disconnected")
 	}
 	state.refs++
 	return state, nil
+}
+
+func (c *Client) markCancellationTainted(state *clientSessionState) {
+	if state == nil || state.session == nil {
+		return
+	}
+	initialized := state.session.InitializeResult()
+	if initialized == nil || initialized.ProtocolVersion < "2026-07-28" {
+		return
+	}
+	// The v1.7 SDK's 2026-07-28 Streamable HTTP connection retires a
+	// cancelled outgoing call and may leave the process-local ClientSession
+	// unusable even though the protocol is sessionless and the server remains
+	// healthy. Mark it for a transparent replacement before the next call so a
+	// subsequent mutation is never sacrificed merely to discover that state.
+	c.mu.Lock()
+	if c.session == state && !state.retired {
+		state.cancellationTainted = true
+		c.healthCache = healthCacheEntry{}
+	}
+	c.mu.Unlock()
 }
 
 func (c *Client) releaseSession(state *clientSessionState) {

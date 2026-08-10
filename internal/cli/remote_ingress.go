@@ -4,9 +4,11 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,8 @@ import (
 	"time"
 
 	"wormhole/internal/config"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func remoteIngressNames[T any](items map[string]T) []string {
@@ -256,4 +260,51 @@ func remoteIngressPortReachable(port int) bool {
 	}
 	_ = connection.Close()
 	return true
+}
+
+type remoteIngressProbeResult struct {
+	ProtocolVersion string
+	ToolCount       int
+}
+
+type remoteIngressProbeTransport struct {
+	token string
+}
+
+func (t remoteIngressProbeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header = request.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return http.DefaultTransport.RoundTrip(clone)
+}
+
+// probeRemoteIngress proves that the dedicated listener is more than a live
+// TCP socket: it authenticates, negotiates MCP, and retrieves the fixed tool
+// catalog. It intentionally probes the loopback listener rather than the public
+// publisher so doctor remains deterministic and does not create Internet I/O.
+func probeRemoteIngress(ctx context.Context, ingress config.NamedRemoteIngress) (remoteIngressProbeResult, error) {
+	token := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv))
+	if token == "" {
+		return remoteIngressProbeResult{}, fmt.Errorf("missing MCP bearer token in %s", ingress.Config.AuthTokenEnv)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-doctor", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort),
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+		HTTPClient:           &http.Client{Transport: remoteIngressProbeTransport{token: token}},
+	}, nil)
+	if err != nil {
+		return remoteIngressProbeResult{}, err
+	}
+	defer session.Close()
+	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		return remoteIngressProbeResult{}, err
+	}
+	protocol := "unknown"
+	if initialized := session.InitializeResult(); initialized != nil && strings.TrimSpace(initialized.ProtocolVersion) != "" {
+		protocol = initialized.ProtocolVersion
+	}
+	return remoteIngressProbeResult{ProtocolVersion: protocol, ToolCount: len(tools.Tools)}, nil
 }
