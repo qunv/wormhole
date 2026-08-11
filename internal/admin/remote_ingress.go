@@ -16,6 +16,7 @@ const maxRemoteIngressStatuses = 32
 type RemoteIngressRuntimeStatus struct {
 	Name                    string `json:"name"`
 	Provider                string `json:"provider"`
+	Mode                    string `json:"mode"`
 	WorkspaceID             string `json:"workspaceId"`
 	ToolProfile             string `json:"toolProfile"`
 	LocalPort               int    `json:"localPort"`

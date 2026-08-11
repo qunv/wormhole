@@ -19,6 +19,7 @@ type remoteIngressListItem struct {
 	Name                    string `json:"name"`
 	Enabled                 bool   `json:"enabled"`
 	Provider                string `json:"provider"`
+	Mode                    string `json:"mode"`
 	WorkspaceID             string `json:"workspaceId"`
 	ToolProfile             string `json:"toolProfile"`
 	LocalURL                string `json:"localUrl"`
@@ -44,6 +45,7 @@ type remoteEndpointVerification struct {
 type remoteIngressVerification struct {
 	Name        string                     `json:"name"`
 	Provider    string                     `json:"provider"`
+	Mode        string                     `json:"mode"`
 	WorkspaceID string                     `json:"workspaceId"`
 	ToolProfile string                     `json:"toolProfile"`
 	Local       remoteEndpointVerification `json:"local"`
@@ -75,13 +77,11 @@ func (a App) remoteList(cfg config.Config, opts options) error {
 	ingresses := cfg.EffectiveRemoteIngresses()
 	items := make([]remoteIngressListItem, 0, len(ingresses))
 	for _, ingress := range ingresses {
-		workspaceID := ingress.Config.WorkspaceID
-		if workspaceID == "" {
-			workspaceID = "primary"
-		}
+		mode := ingress.Config.EffectiveMode()
+		workspaceID := remoteIngressWorkspaceLabel(ingress.Config)
 		_, primaryConfigured, fallbackConfigured := remoteIngressAuthToken(ingress.Config)
 		item := remoteIngressListItem{
-			Name: ingress.Name, Enabled: ingress.Config.IsEnabled(), Provider: ingress.Config.Provider,
+			Name: ingress.Name, Enabled: ingress.Config.IsEnabled(), Provider: ingress.Config.Provider, Mode: mode,
 			WorkspaceID: workspaceID, ToolProfile: ingress.Config.ToolProfile,
 			LocalURL: fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort), PublicURL: ingress.Config.PublicURL,
 			AuthTokenEnv: ingress.Config.AuthTokenEnv, AuthTokenFallbackEnv: ingress.Config.AuthTokenFallbackEnv,
@@ -115,8 +115,8 @@ func (a App) remoteList(cfg config.Config, opts options) error {
 		if public == "" {
 			public = "not-recorded"
 		}
-		fmt.Fprintf(a.Stdout, "%s %-8s provider=%s workspace=%s profile=%s local=%s public=%s auth=%s\n",
-			item.Name, state, item.Provider, item.WorkspaceID, item.ToolProfile, item.LocalURL, public, ternary(item.AuthConfigured, "set", "missing"))
+		fmt.Fprintf(a.Stdout, "%s %-8s provider=%s mode=%s workspace=%s profile=%s local=%s public=%s auth=%s\n",
+			item.Name, state, item.Provider, item.Mode, item.WorkspaceID, item.ToolProfile, item.LocalURL, public, ternary(item.AuthConfigured, "set", "missing"))
 	}
 	return nil
 }
@@ -126,12 +126,10 @@ func (a App) remoteVerify(ctx context.Context, cfg config.Config, name string, o
 	if !ok {
 		return fmt.Errorf("remote ingress %q is not configured", name)
 	}
-	workspaceID := ingress.Config.WorkspaceID
-	if workspaceID == "" {
-		workspaceID = "primary"
-	}
+	mode := ingress.Config.EffectiveMode()
+	workspaceID := remoteIngressWorkspaceLabel(ingress.Config)
 	result := remoteIngressVerification{
-		Name: ingress.Name, Provider: ingress.Config.Provider,
+		Name: ingress.Name, Provider: ingress.Config.Provider, Mode: mode,
 		WorkspaceID: workspaceID, ToolProfile: ingress.Config.ToolProfile,
 		Local:  remoteEndpointVerification{URL: fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)},
 		Public: remoteEndpointVerification{URL: ingress.Config.PublicURL},
@@ -188,12 +186,22 @@ func applyRemoteProbe(target *remoteEndpointVerification, probe remoteIngressPro
 	target.ContractHash = probe.ContractHash
 }
 
+func remoteIngressWorkspaceLabel(cfg config.RemoteIngressConfig) string {
+	if cfg.EffectiveMode() == "session" {
+		return "dynamic"
+	}
+	if workspaceID := strings.TrimSpace(cfg.WorkspaceID); workspaceID != "" {
+		return workspaceID
+	}
+	return "primary"
+}
+
 func (a App) writeRemoteVerification(result remoteIngressVerification, opts options) error {
 	if opts.JSON {
 		raw, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Fprintln(a.Stdout, string(raw))
 	} else {
-		fmt.Fprintf(a.Stdout, "Remote ingress: %s (%s, workspace=%s, profile=%s)\n", result.Name, result.Provider, result.WorkspaceID, result.ToolProfile)
+		fmt.Fprintf(a.Stdout, "Remote ingress: %s (%s, mode=%s, workspace=%s, profile=%s)\n", result.Name, result.Provider, result.Mode, result.WorkspaceID, result.ToolProfile)
 		printRemoteEndpointVerification(a.Stdout, "Local", result.Local)
 		printRemoteEndpointVerification(a.Stdout, "Public", result.Public)
 		if result.Local.OK && result.Public.OK {

@@ -308,7 +308,7 @@ http://127.0.0.1:8132/admin/
 
 OpenAI Secure MCP Tunnel is intentionally specific to supported OpenAI clients. For a hosted MCP client that needs a normal public HTTPS URL, Wormhole can run one or more **remote MCP ingresses** alongside the OpenAI tunnels.
 
-A remote ingress does **not** publish the main `:8132` listener. Instead, the daemon opens a dedicated loopback-only port that serves exactly one fixed workspace/profile contract at `/mcp`:
+A remote ingress does **not** publish the main `:8132` listener. Instead, the daemon opens a dedicated loopback-only port and mounts only `/mcp`. The ingress can either bind one fixed workspace/profile (the backward-compatible default) or expose the existing session router with the built-in `remote-read` profile:
 
 ```text
 Notion / hosted MCP client
@@ -320,19 +320,45 @@ HTTPS publisher
   └── cloudflare: cloudflared child managed by Wormhole
         │
         ▼
-127.0.0.1:18133/mcp       dedicated remote ingress
+127.0.0.1:18133/mcp       dedicated remote ingress; only /mcp is mounted
         │
-        └── fixed workspace + fixed tool profile
+        ├── mode=fixed   → one workspace + selected tool profile
+        └── mode=session → SessionRouter → any registered workspace
+                              └── remote-read only
 
 127.0.0.1:8132            normal Wormhole listener
         ├── /admin/        local only; not mounted on the remote ingress
-        ├── /mcp/session   workspace-routing client surface
-        └── /mcp/...       local/OpenAI-tunnel surfaces
+        ├── /mcp/session   local/OpenAI workspace-routing surface
+        └── /mcp/...       local/OpenAI compatibility surfaces
 ```
 
 `provider: "external"` is the generic default: Wormhole owns only the loopback MCP listener while you publish it through an HTTPS reverse proxy or tunnel of your choice. `provider: "cloudflare"` is the first managed publisher: Wormhole starts one `cloudflared` child per enabled ingress using `TUNNEL_TOKEN` in the child environment; the provider token is never placed in command-line arguments. In both modes, the MCP bearer token is a separate secret and is checked by the dedicated listener before any MCP request reaches the selected runtime.
 
-The built-in `remote-read` profile is the safe default for an Internet-reachable ingress. It exposes bounded workspace/context, code navigation, file reads, and Git read operations, but not patching, commands, quality-gate execution, or mutating Git actions. Create a custom profile only when a hosted client needs a different contract. For example, a Notion-specific read profile plus one fixed ingress:
+The built-in `remote-read` profile is the safe default for an Internet-reachable ingress. It exposes bounded workspace/context, code navigation, file reads, and Git read operations, but not patching, commands, quality-gate execution, or mutating Git actions. In `mode: "session"`, Wormhole also exposes `workspace_list`, `workspace_select`, `workspace_current`, and `workspace_clear`; the hosted client may switch among all currently registered runtimes, while the coding-tool contract remains locked to `remote-read`.
+
+A multi-workspace Notion ingress therefore needs no `workspaceId`:
+
+```json
+{
+  "remoteIngresses": {
+    "notion": {
+      "enabled": true,
+      "provider": "cloudflare",
+      "mode": "session",
+      "toolProfile": "remote-read",
+      "localPort": 18133,
+      "publicUrl": "https://wormhole.example.com/mcp",
+      "authTokenEnv": "WORMHOLE_REMOTE_NOTION_AUTH_TOKEN",
+      "providerTokenEnv": "WORMHOLE_REMOTE_NOTION_TUNNEL_TOKEN",
+      "binary": "cloudflared"
+    }
+  }
+}
+```
+
+Session mode rejects a non-empty `workspaceId` and any `toolProfile` other than `remote-read`. The public path is still `/mcp`; the dedicated listener does not expose `/mcp/session`, Admin, health, or fixed-workspace compatibility routes.
+
+For a single-workspace hosted client, `mode: "fixed"` remains the default and custom profiles are still supported. For example, a Notion-specific read profile plus one fixed ingress:
 
 ```json
 {
@@ -359,6 +385,7 @@ The built-in `remote-read` profile is the safe default for an Internet-reachable
     "notion": {
       "enabled": true,
       "provider": "cloudflare",
+      "mode": "fixed",
       "workspaceId": "wormhole",
       "toolProfile": "notion-read",
       "localPort": 18133,
@@ -371,7 +398,7 @@ The built-in `remote-read` profile is the safe default for an Internet-reachable
 }
 ```
 
-`workspaceId` may be omitted to bind the primary runtime. `toolProfile` defaults to `remote-read`. Enabled ingress ports must be unique and must differ from the main Wormhole port. `publicUrl`, when recorded, must be an HTTPS URL whose path is exactly `/mcp`. If a client sends an HTTP `Origin` header, Wormhole validates it against the origin of `publicUrl` and rejects a mismatch with `403`; when `publicUrl` is omitted, requests that carry `Origin` fail closed while server-to-server requests without `Origin` remain valid.
+`mode` defaults to `fixed`, so existing remote-ingress configurations keep their previous behavior. In fixed mode, `workspaceId` may be omitted to bind the primary runtime and `toolProfile` defaults to `remote-read`. In session mode, workspace selection is dynamic and the profile is always `remote-read`. Enabled ingress ports must be unique and must differ from the main Wormhole port. `publicUrl`, when recorded, must be an HTTPS URL whose path is exactly `/mcp`. If a client sends an HTTP `Origin` header, Wormhole validates it against the origin of `publicUrl` and rejects a mismatch with `403`; when `publicUrl` is omitted, requests that carry `Origin` fail closed while server-to-server requests without `Origin` remain valid.
 
 For `provider: "cloudflare"`, store both referenced values from **Admin → Secrets**, or with the write-only CLI helper. For `external`, only the MCP bearer is owned by Wormhole:
 
@@ -398,7 +425,7 @@ MCP URL:        https://wormhole.example.com/mcp
 Authorization:  Bearer <value of WORMHOLE_REMOTE_NOTION_AUTH_TOKEN>
 ```
 
-The Admin **Hosted client connection kit** renders these values from the selected ingress, provides copy actions for the URL/header and a one-time exact bearer value after generation, shows the active workspace/profile/protocol/tool count, and warns when a save/restart or profile rescan is still required. Public Internet reachability remains a separate publisher concern and is not silently probed by the local Admin server.
+The Admin **Hosted client connection kit** renders these values from the selected ingress, provides copy actions for the URL/header and a one-time exact bearer value after generation, shows the routing mode/profile/protocol/tool count, and warns when a save/restart or profile rescan is still required. In session mode it reports dynamic workspace routing rather than pretending the ingress is bound to one repository. Public Internet reachability remains a separate publisher concern and is not silently probed by the local Admin server.
 
 Restart Wormhole after changing ingress definitions or referenced secrets. `wormhole status` reports listener/provider ownership and secret presence without exposing values. `wormhole doctor` goes further: after checking the loopback socket and bearer reference, it performs a real MCP connection and `tools/list`, reporting the negotiated protocol and tool count. This catches cases where a port is open but authentication or the MCP contract is broken. The Admin diagnostic bundle includes ingress metadata and bounded ingress logs while redacting the currently referenced secret values.
 

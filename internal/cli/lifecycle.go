@@ -468,8 +468,9 @@ func (a App) status(cfg config.Config, opts options) error {
 			item["configured"] = true
 			item["enabled"] = ingress.Config.IsEnabled()
 			item["provider"] = ingress.Config.Provider
+			item["mode"] = ingress.Config.EffectiveMode()
 			item["managed_provider"] = ingress.Config.Provider == "cloudflare"
-			item["workspace_id"] = ingress.Config.WorkspaceID
+			item["workspace_id"] = remoteIngressWorkspaceLabel(ingress.Config)
 			item["tool_profile"] = ingress.Config.ToolProfile
 			item["local_url"] = fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)
 			item["listener_reachable"] = serverKnownOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
@@ -537,7 +538,7 @@ func (a App) status(cfg config.Config, opts options) error {
 		_, _, alive := ownedRemoteIngressProcess(name, process, serverKnownOwned)
 		detail := "unconfigured"
 		if ingress, exists := configuredIngresses[name]; exists {
-			detail = fmt.Sprintf("%s workspace=%s profile=%s local=127.0.0.1:%d", ingress.Config.Provider, ternary(ingress.Config.WorkspaceID != "", ingress.Config.WorkspaceID, "primary"), ingress.Config.ToolProfile, ingress.Config.LocalPort)
+			detail = fmt.Sprintf("%s mode=%s workspace=%s profile=%s local=127.0.0.1:%d", ingress.Config.Provider, ingress.Config.EffectiveMode(), remoteIngressWorkspaceLabel(ingress.Config), ingress.Config.ToolProfile, ingress.Config.LocalPort)
 			if !ingress.Config.IsEnabled() {
 				detail += " disabled"
 			}

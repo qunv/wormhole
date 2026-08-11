@@ -15,14 +15,17 @@ import (
 	"strings"
 )
 
-// RemoteIngressConfig publishes one fixed workspace/profile MCP contract
-// through a dedicated loopback listener. Provider credentials and the MCP
-// bearer credentials are referenced by environment variable and are never
-// persisted in config.json. AuthTokenFallbackEnv is optional and exists only
-// to overlap credentials during a staged rotation without a credential cutover gap.
+// RemoteIngressConfig publishes one hosted MCP contract through a dedicated
+// loopback listener. Fixed mode binds one workspace/profile; session mode routes
+// across all registered workspaces and is intentionally restricted to the
+// built-in remote-read profile. Provider credentials and MCP bearer credentials
+// are referenced by environment variable and are never persisted in config.json.
+// AuthTokenFallbackEnv is optional and exists only to overlap credentials during
+// a staged rotation without a credential cutover gap.
 type RemoteIngressConfig struct {
 	Enabled              *bool  `json:"enabled,omitempty"`
 	Provider             string `json:"provider,omitempty"`
+	Mode                 string `json:"mode,omitempty"`
 	WorkspaceID          string `json:"workspaceId,omitempty"`
 	ToolProfile          string `json:"toolProfile,omitempty"`
 	LocalPort            int    `json:"localPort"`
@@ -34,6 +37,14 @@ type RemoteIngressConfig struct {
 }
 
 func (c RemoteIngressConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+func (c RemoteIngressConfig) EffectiveMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "" {
+		return "fixed"
+	}
+	return mode
+}
 
 type NamedRemoteIngress struct {
 	Name   string
@@ -62,6 +73,7 @@ func normalizeRemoteIngresses(c *Config) {
 		if ingress.Provider == "" {
 			ingress.Provider = "external"
 		}
+		ingress.Mode = ingress.EffectiveMode()
 		ingress.WorkspaceID = strings.ToLower(strings.TrimSpace(ingress.WorkspaceID))
 		ingress.ToolProfile = strings.ToLower(strings.TrimSpace(ingress.ToolProfile))
 		if ingress.ToolProfile == "" {
@@ -123,6 +135,10 @@ func validateRemoteIngresses(c Config) error {
 		if ingress.Provider != "cloudflare" && ingress.Provider != "external" {
 			return fmt.Errorf("remoteIngresses.%s.provider must be external or cloudflare", name)
 		}
+		mode := ingress.EffectiveMode()
+		if mode != "fixed" && mode != "session" {
+			return fmt.Errorf("remoteIngresses.%s.mode must be fixed or session", name)
+		}
 		if ingress.LocalPort < 1 || ingress.LocalPort > 65535 {
 			return fmt.Errorf("remoteIngresses.%s.localPort must be between 1 and 65535", name)
 		}
@@ -137,6 +153,14 @@ func validateRemoteIngresses(c Config) error {
 			return fmt.Errorf("remoteIngresses.%s.workspaceId must match [a-z0-9][a-z0-9_-]{0,31}", name)
 		}
 		profile := strings.ToLower(strings.TrimSpace(ingress.ToolProfile))
+		if mode == "session" {
+			if ingress.WorkspaceID != "" {
+				return fmt.Errorf("remoteIngresses.%s.workspaceId must be empty in session mode", name)
+			}
+			if profile != "remote-read" {
+				return fmt.Errorf("remoteIngresses.%s.toolProfile must be remote-read in session mode", name)
+			}
+		}
 		if profile != "fast" && profile != "full" && profile != "remote-read" {
 			if _, exists := c.ToolProfiles[profile]; !exists {
 				return fmt.Errorf("remoteIngresses.%s.toolProfile references unknown tool profile %q", name, profile)

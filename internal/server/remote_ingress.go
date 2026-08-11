@@ -24,17 +24,15 @@ import (
 )
 
 // configureRemoteIngresses creates loopback-only HTTP listeners that expose
-// exactly one fixed workspace/profile contract. They intentionally do not
-// mount Admin, session routing, workspace switching, or the daemon health API.
+// exactly one hosted MCP contract. Fixed mode binds one workspace/profile;
+// session mode exposes the existing multi-workspace router through remote-read.
+// Neither mode mounts Admin, daemon health, or any main-listener compatibility
+// endpoint: the dedicated listener still serves only /mcp.
 func (h *HTTP) configureRemoteIngresses(primaryID string) error {
 	for _, ingress := range h.Runtime.Config.EnabledRemoteIngresses() {
-		runtime, workspaceID, err := h.remoteIngressRuntime(primaryID, ingress)
+		mcpHandler, bodyLimit, err := h.remoteIngressMCPHandler(primaryID, ingress)
 		if err != nil {
 			return err
-		}
-		profile, ok := mcpserver.ResolveProfile(runtime.Config, ingress.Config.ToolProfile)
-		if !ok {
-			return fmt.Errorf("remote ingress %q references unavailable tool profile %q", ingress.Name, ingress.Config.ToolProfile)
 		}
 		authTokens, _, _ := remoteIngressAuthTokens(ingress.Config)
 		if len(authTokens) == 0 {
@@ -43,13 +41,8 @@ func (h *HTTP) configureRemoteIngresses(primaryID string) error {
 			}
 			return fmt.Errorf("remote ingress %q requires an MCP bearer token in %s or %s", ingress.Name, ingress.Config.AuthTokenEnv, ingress.Config.AuthTokenFallbackEnv)
 		}
-		mcpServer := mcpserver.NewWorkspaceProfileDefinition(runtime, workspaceID, profile)
-		mcpHandler := mcp.NewStreamableHTTPHandler(
-			func(*http.Request) *mcp.Server { return mcpServer },
-			&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
-		)
 		mux := http.NewServeMux()
-		guarded := h.guardMCPAnyValues(authTokens, runtime.Config.MaxBodyBytes, true, mcpHandler)
+		guarded := h.guardMCPAnyValues(authTokens, bodyLimit, true, mcpHandler)
 		mux.Handle("/mcp", h.remoteIngressOriginMiddleware(ingress.Config.PublicURL, guarded))
 		server := &http.Server{
 			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(ingress.Config.LocalPort)),
@@ -61,6 +54,25 @@ func (h *HTTP) configureRemoteIngresses(primaryID string) error {
 		h.RemoteIngresses[ingress.Name] = server
 	}
 	return nil
+}
+
+func (h *HTTP) remoteIngressMCPHandler(primaryID string, ingress config.NamedRemoteIngress) (http.Handler, int, error) {
+	if ingress.Config.EffectiveMode() == "session" {
+		profile, ok := h.SessionRouter.ResolveProfile(string(mcpserver.ToolProfileRemoteRead))
+		if !ok {
+			return nil, 0, fmt.Errorf("remote ingress %q cannot resolve remote-read session profile", ingress.Name)
+		}
+		return sessionStreamableDefinitionHandler(h.SessionRouter, profile), h.SessionRouter.BodyLimit(), nil
+	}
+	runtime, workspaceID, err := h.remoteIngressRuntime(primaryID, ingress)
+	if err != nil {
+		return nil, 0, err
+	}
+	profile, ok := mcpserver.ResolveProfile(runtime.Config, ingress.Config.ToolProfile)
+	if !ok {
+		return nil, 0, fmt.Errorf("remote ingress %q references unavailable tool profile %q", ingress.Name, ingress.Config.ToolProfile)
+	}
+	return streamableDefinitionHandler(runtime, workspaceID, profile), runtime.Config.MaxBodyBytes, nil
 }
 
 func (h *HTTP) remoteIngressRuntime(primaryID string, ingress config.NamedRemoteIngress) (*agent.Runtime, string, error) {
@@ -204,8 +216,11 @@ func (h *HTTP) probeRemoteIngressRuntime(ctx context.Context, ingress config.Nam
 	if workspaceID == "" {
 		workspaceID = h.Runtime.WorkspaceID
 	}
+	if ingress.Config.EffectiveMode() == "session" {
+		workspaceID = ""
+	}
 	status := admin.RemoteIngressRuntimeStatus{
-		Name: ingress.Name, Provider: ingress.Config.Provider,
+		Name: ingress.Name, Provider: ingress.Config.Provider, Mode: ingress.Config.EffectiveMode(),
 		WorkspaceID: workspaceID, ToolProfile: ingress.Config.ToolProfile,
 		LocalPort: ingress.Config.LocalPort, PublicURL: ingress.Config.PublicURL,
 		AuthTokenEnv: ingress.Config.AuthTokenEnv, AuthTokenFallbackEnv: ingress.Config.AuthTokenFallbackEnv,
@@ -277,8 +292,11 @@ func (h *HTTP) remoteIngressSummaries() []map[string]any {
 		if strings.TrimSpace(workspaceID) == "" {
 			workspaceID = h.Runtime.WorkspaceID
 		}
+		if ingress.Config.EffectiveMode() == "session" {
+			workspaceID = ""
+		}
 		items = append(items, map[string]any{
-			"name": ingress.Name, "provider": ingress.Config.Provider,
+			"name": ingress.Name, "provider": ingress.Config.Provider, "mode": ingress.Config.EffectiveMode(),
 			"workspace_id": workspaceID, "tool_profile": ingress.Config.ToolProfile,
 			"local_port": ingress.Config.LocalPort, "public_url": ingress.Config.PublicURL,
 		})

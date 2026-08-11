@@ -954,7 +954,7 @@ func TestAdminRemoteIngressStatusIsBoundedAndSecretFree(t *testing.T) {
 		return RemoteIngressStatusResponse{
 			GeneratedAt: time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC),
 			Ingresses: []RemoteIngressRuntimeStatus{{
-				Name: "notion", Provider: "cloudflare", WorkspaceID: "default", ToolProfile: "remote-read",
+				Name: "notion", Provider: "cloudflare", Mode: "fixed", WorkspaceID: "default", ToolProfile: "remote-read",
 				LocalPort: 18133, PublicURL: "https://wormhole.example.com/mcp",
 				AuthConfigured: true, ProviderTokenConfigured: &providerConfigured,
 				ListenerReachable: true, MCPReady: true, ProtocolVersion: "2026-07-28", ToolCount: 13,
@@ -970,7 +970,7 @@ func TestAdminRemoteIngressStatusIsBoundedAndSecretFree(t *testing.T) {
 		t.Fatalf("status provider limit = %d, want %d", calledLimit, maxRemoteIngressStatuses)
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"name":"notion"`, `"mcpReady":true`, `"protocolVersion":"2026-07-28"`, `"toolCount":13`} {
+	for _, want := range []string{`"name":"notion"`, `"mode":"fixed"`, `"mcpReady":true`, `"protocolVersion":"2026-07-28"`, `"toolCount":13`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("remote ingress status missing %s: %s", want, body)
 		}

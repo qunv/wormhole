@@ -177,6 +177,10 @@ func TestRemoteListReportsPresenceWithoutSecretValue(t *testing.T) {
 			PublicURL: "https://wormhole.example/mcp", AuthTokenEnv: "REMOTE_VERIFY_AUTH",
 			AuthTokenFallbackEnv: "REMOTE_VERIFY_FALLBACK",
 		},
+		"notion-session": {
+			Provider: "external", Mode: "session", LocalPort: 18134, ToolProfile: "remote-read",
+			PublicURL: "https://wormhole-session.example/mcp", AuthTokenEnv: "REMOTE_VERIFY_AUTH",
+		},
 	}
 	t.Setenv("REMOTE_VERIFY_FALLBACK", strings.Repeat("r", 24))
 	var stdout bytes.Buffer
@@ -187,7 +191,7 @@ func TestRemoteListReportsPresenceWithoutSecretValue(t *testing.T) {
 	if strings.Contains(stdout.String(), authValue) {
 		t.Fatal("remote list exposed bearer value")
 	}
-	if !strings.Contains(stdout.String(), `"authConfigured": true`) || !strings.Contains(stdout.String(), `"fallbackAuthConfigured": true`) || !strings.Contains(stdout.String(), "REMOTE_VERIFY_AUTH") || !strings.Contains(stdout.String(), "REMOTE_VERIFY_FALLBACK") {
+	if !strings.Contains(stdout.String(), `"mode": "fixed"`) || !strings.Contains(stdout.String(), `"mode": "session"`) || !strings.Contains(stdout.String(), `"workspaceId": "dynamic"`) || !strings.Contains(stdout.String(), `"authConfigured": true`) || !strings.Contains(stdout.String(), `"fallbackAuthConfigured": true`) || !strings.Contains(stdout.String(), "REMOTE_VERIFY_AUTH") || !strings.Contains(stdout.String(), "REMOTE_VERIFY_FALLBACK") {
 		t.Fatalf("remote list omitted secret presence/reference: %s", stdout.String())
 	}
 }

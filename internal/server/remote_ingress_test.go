@@ -142,6 +142,102 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 	}
 }
 
+func TestRemoteReadSessionIngressRoutesRegisteredWorkspaces(t *testing.T) {
+	defaultRoot, apiRoot := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(defaultRoot, "sample.txt"), []byte("default-only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(apiRoot, "sample.txt"), []byte("api-only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REMOTE_SESSION_AUTH", "session-bearer-test-value")
+
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel, cfg.Policy = defaultRoot, true, "full"
+	cfg.RemoteIngresses = map[string]config.RemoteIngressConfig{
+		"notion-session": {
+			Provider: "external", Mode: "session", ToolProfile: "remote-read", LocalPort: 18136,
+			PublicURL: "https://wormhole.example.com/mcp", AuthTokenEnv: "REMOTE_SESSION_AUTH",
+		},
+	}
+	defaultRuntime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "default", t.TempDir(), cfg, "test", "pro", "default", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer defaultRuntime.Close()
+	apiCfg := cfg
+	apiCfg.Workspace = apiRoot
+	apiCfg.RemoteIngresses = nil
+	apiRuntime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "api", t.TempDir(), apiCfg, "test", "pro", "api", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer apiRuntime.Close()
+
+	instance := NewMulti(defaultRuntime, map[string]*agent.Runtime{"api": apiRuntime})
+	if instance.RemoteIngressError != nil {
+		t.Fatal(instance.RemoteIngressError)
+	}
+	remote := instance.RemoteIngresses["notion-session"]
+	if remote == nil || remote.Addr != "127.0.0.1:18136" {
+		t.Fatalf("unexpected remote session ingress: %#v", remote)
+	}
+	for _, path := range []string{"/admin/", "/healthz", "/mcp/session", "/mcp/workspaces/api"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		remote.Handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("remote session ingress exposed %s: %d", path, response.Code)
+		}
+	}
+
+	httpServer := httptest.NewServer(remote.Handler)
+	defer httpServer.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "remote-session-test", Version: "1"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint: httpServer.URL + "/mcp", DisableStandaloneSSE: true, MaxRetries: -1,
+		HTTPClient: &http.Client{Transport: testBearerTransport{token: os.Getenv("REMOTE_SESSION_AUTH"), origin: "https://wormhole.example.com"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	tools, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]bool{}
+	for _, tool := range tools.Tools {
+		byName[tool.Name] = true
+	}
+	for _, required := range []string{"workspace_list", "workspace_select", "workspace_current", "workspace_clear", "read_file"} {
+		if !byName[required] {
+			t.Fatalf("remote session contract missing %s: %#v", required, byName)
+		}
+	}
+	for _, denied := range []string{"apply_patch", "run_commands", "git", "quality_gate"} {
+		if byName[denied] {
+			t.Fatalf("remote-read session exposed mutating tool %s", denied)
+		}
+	}
+
+	listed := callTool(t, context.Background(), session, "workspace_list", map[string]any{})
+	listedText := toolText(listed)
+	if !strings.Contains(listedText, "default") || !strings.Contains(listedText, "api") {
+		t.Fatalf("workspace_list did not expose registered workspaces: %s", listedText)
+	}
+	selected := callTool(t, context.Background(), session, "workspace_select", map[string]any{"id": "api"})
+	binding, _ := toolObject(t, selected)["workspace_binding"].(string)
+	if binding == "" {
+		t.Fatalf("workspace_select returned no binding: %s", toolText(selected))
+	}
+	result := callTool(t, context.Background(), session, "read_file", map[string]any{"path": "sample.txt", "workspace_binding": binding})
+	content, _ := toolObject(t, result)["content"].(string)
+	if !strings.Contains(content, "api-only") {
+		t.Fatalf("session read did not route to selected workspace: content=%q result=%s", content, toolText(result))
+	}
+}
+
 func TestRemoteIngressRuntimeStatusPerformsAuthenticatedMCPProbe(t *testing.T) {
 	t.Setenv("REMOTE_STATUS_AUTH_FALLBACK", "status-fallback-value")
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "status-test", Version: "1"}, nil)

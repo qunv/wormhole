@@ -67,6 +67,7 @@ export interface TunnelConfig {
 export interface RemoteIngressConfig {
   enabled?: boolean;
   provider?: "external" | "cloudflare" | string;
+  mode?: "fixed" | "session" | string;
   workspaceId?: string;
   toolProfile?: string;
   localPort: number;
@@ -80,6 +81,7 @@ export interface RemoteIngressConfig {
 export interface RemoteIngressRuntimeStatus {
   name: string;
   provider: string;
+  mode: string;
   workspaceId: string;
   toolProfile: string;
   localPort: number;

@@ -22,7 +22,7 @@ func TestRemoteIngressNormalizationAndValidation(t *testing.T) {
 	if !ok {
 		t.Fatalf("normalized ingress missing: %#v", cfg.RemoteIngresses)
 	}
-	if ingress.Provider != "external" || ingress.ToolProfile != "remote-read" || ingress.Binary != "" {
+	if ingress.Provider != "external" || ingress.Mode != "fixed" || ingress.ToolProfile != "remote-read" || ingress.Binary != "" {
 		t.Fatalf("unexpected defaults: %#v", ingress)
 	}
 	if ingress.AuthTokenEnv != "WORMHOLE_REMOTE_NOTION_AGENT_AUTH_TOKEN" || ingress.AuthTokenFallbackEnv != "" || ingress.ProviderTokenEnv != "" {
@@ -39,6 +39,40 @@ func TestRemoteIngressNormalizationAndValidation(t *testing.T) {
 	}
 	if _, err := Prepare(collision); err == nil || !strings.Contains(err.Error(), "normalize to the same value") {
 		t.Fatalf("case-colliding ingress names were accepted: %v", err)
+	}
+}
+
+func TestRemoteReadSessionIngressNormalizationAndValidation(t *testing.T) {
+	cfg := Default()
+	cfg.RemoteIngresses = map[string]RemoteIngressConfig{
+		"notion": {
+			Mode: " SESSION ", LocalPort: 18133, ToolProfile: "REMOTE-READ",
+			PublicURL: "https://wormhole.example.com/mcp",
+		},
+	}
+	prepared, err := Prepare(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingress := prepared.RemoteIngresses["notion"]
+	if ingress.Mode != "session" || ingress.ToolProfile != "remote-read" || ingress.WorkspaceID != "" {
+		t.Fatalf("unexpected session normalization: %#v", ingress)
+	}
+
+	for name, mutate := range map[string]func(*RemoteIngressConfig){
+		"workspace": func(ingress *RemoteIngressConfig) { ingress.WorkspaceID = "api" },
+		"profile":   func(ingress *RemoteIngressConfig) { ingress.ToolProfile = "fast" },
+		"mode":      func(ingress *RemoteIngressConfig) { ingress.Mode = "dynamic" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := prepared
+			candidate := ingress
+			mutate(&candidate)
+			invalid.RemoteIngresses = map[string]RemoteIngressConfig{"notion": candidate}
+			if err := invalid.Validate(false); err == nil {
+				t.Fatal("expected session ingress validation error")
+			}
+		})
 	}
 }
 

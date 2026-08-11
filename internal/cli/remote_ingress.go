@@ -295,8 +295,8 @@ func remoteProbeHTTPClient(token string) *http.Client {
 }
 
 // probeRemoteIngress proves that the dedicated listener is more than a live
-// TCP socket: it authenticates, negotiates MCP, and retrieves the fixed tool
-// catalog. It intentionally probes the loopback listener rather than the public
+// TCP socket: it authenticates, negotiates MCP, and retrieves the configured
+// tool catalog. It intentionally probes the loopback listener rather than the public
 // publisher so doctor remains deterministic and does not create Internet I/O.
 func remoteIngressAuthToken(cfg config.RemoteIngressConfig) (string, bool, bool) {
 	primary := strings.TrimSpace(os.Getenv(cfg.AuthTokenEnv))
