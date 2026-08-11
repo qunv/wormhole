@@ -19,7 +19,7 @@ import (
 // through a dedicated loopback listener. Provider credentials and the MCP
 // bearer credentials are referenced by environment variable and are never
 // persisted in config.json. AuthTokenFallbackEnv is optional and exists only
-// to overlap credentials during a staged zero-downtime rotation.
+// to overlap credentials during a staged rotation without a credential cutover gap.
 type RemoteIngressConfig struct {
 	Enabled              *bool  `json:"enabled,omitempty"`
 	Provider             string `json:"provider,omitempty"`
