@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Braces, Cpu, Database, Gauge, Globe2, Network, Plus, RefreshCw, Save, Trash2, Waypoints } from "lucide-react";
+import { Braces, Copy, Cpu, Database, ExternalLink, Gauge, Globe2, KeyRound, Network, Plus, RefreshCw, Save, Trash2, Waypoints } from "lucide-react";
 import { api, APIError } from "./api";
 import { Badge, Button, Card, Field as BaseField, LoadingPage, MultiSelect, Notice, PageHeader, Select, TextArea, TextInput, Toggle as BaseToggle } from "./components";
 import type {
@@ -260,10 +260,14 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
   runtimeStatusLoading: boolean;
   onRefreshRuntimeStatus: () => void;
 }) {
+  const queryClient = useQueryClient();
   const ingresses = value.remoteIngresses ?? {};
   const names = Object.keys(ingresses).sort();
   const [selected, setSelected] = useState(names[0] ?? "");
   const [newName, setNewName] = useState("");
+  const [oneTimeBearer, setOneTimeBearer] = useState("");
+  const [credentialMessage, setCredentialMessage] = useState<{ tone: "success" | "danger" | "info"; text: string } | null>(null);
+  const [copyMessage, setCopyMessage] = useState("");
   const current = selected ? ingresses[selected] : undefined;
   const normalizedNewName = newName.trim().toLowerCase();
   const validNewName = validRemoteIngressName(normalizedNewName) && !ingresses[normalizedNewName];
@@ -272,6 +276,12 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
     if (selected && !ingresses[selected]) setSelected(names[0] ?? "");
     if (!selected && names.length) setSelected(names[0]);
   }, [names.join("|"), selected, ingresses]);
+
+  useEffect(() => {
+    setOneTimeBearer("");
+    setCredentialMessage(null);
+    setCopyMessage("");
+  }, [selected, current?.authTokenEnv]);
 
   const updateIngress = (next: RemoteIngressConfig) => {
     if (!selected) return;
@@ -312,6 +322,38 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
     updateIngress(next);
   };
 
+  const generateBearer = async () => {
+    if (!current?.authTokenEnv?.trim()) {
+      setCredentialMessage({ tone: "danger", text: "Set a valid MCP bearer environment reference first." });
+      return;
+    }
+    if (!authSecret) {
+      setCredentialMessage({ tone: "info", text: "Save the ingress definition first so Wormhole can register this write-only secret reference, then generate the bearer." });
+      return;
+    }
+    const token = generateRemoteBearer();
+    setCredentialMessage({ tone: "info", text: "Storing the new bearer in Wormhole…" });
+    try {
+      await api.setSecret(current.authTokenEnv.trim(), token);
+      setOneTimeBearer(token);
+      setCredentialMessage({ tone: "success", text: "New bearer stored. Copy it now: Wormhole will not return this value again. Restart before switching the hosted client to it." });
+      await queryClient.invalidateQueries({ queryKey: ["secrets"] });
+    } catch (error) {
+      setOneTimeBearer("");
+      setCredentialMessage({ tone: "danger", text: errorMessage(error) });
+    }
+  };
+
+  const copyText = async (label: string, text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyMessage(`${label} copied.`);
+    } catch {
+      setCopyMessage(`Could not copy ${label.toLowerCase()}; select the text manually.`);
+    }
+  };
+
   const primaryID = workspaces?.primary.id ?? "default";
   const namedWorkspaces = workspaces?.workspaces ?? [];
   const profileItems = profiles?.profiles ?? [];
@@ -321,16 +363,22 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
   const activeProfileID = current?.toolProfile?.trim() || "remote-read";
   const configuredWorkspaceKnown = activeWorkspaceID === primaryID || namedWorkspaces.some((workspace) => workspace.id === activeWorkspaceID);
   const configuredProfileKnown = profileItems.some((profile) => profile.id === activeProfileID);
+  const activeProfile = profileItems.find((profile) => profile.id === activeProfileID);
   const authSecret = current?.authTokenEnv ? secretMap.get(current.authTokenEnv) : undefined;
   const providerSecret = current?.providerTokenEnv ? secretMap.get(current.providerTokenEnv) : undefined;
   const provider = current?.provider ?? "external";
+  const publicURL = current?.publicUrl?.trim() ?? "";
+  const bearerStored = !!authSecret?.configured || !!oneTimeBearer;
+  const providerReady = provider !== "cloudflare" || !!providerSecret?.configured;
   const runtimeMatchesDraft = !!activeStatus && !!current
     && current.enabled !== false
     && activeStatus.provider === provider
     && activeStatus.workspaceId === activeWorkspaceID
     && activeStatus.toolProfile === activeProfileID
     && activeStatus.localPort === current.localPort
-    && (activeStatus.publicUrl ?? "") === (current.publicUrl?.trim() ?? "");
+    && (activeStatus.publicUrl ?? "") === publicURL;
+  const localConnectionReady = !!activeStatus?.mcpReady && runtimeMatchesDraft && !activeProfile?.restartRequired;
+  const connectionKitReady = current?.enabled !== false && !!publicURL && bearerStored && providerReady && localConnectionReady;
 
   return <Card title="Remote MCP ingress" description="Publish a fixed hosted-MCP contract without exposing Admin or workspace-switching endpoints.">
     <Notice tone="info">Each ingress binds only to <code>127.0.0.1</code>, serves only <code>/mcp</code>, and requires a dedicated bearer secret. <code>external</code> leaves HTTPS publishing to your proxy or tunnel; <code>cloudflare</code> lets Wormhole supervise cloudflared. The safe default profile is <code>remote-read</code>.</Notice>
@@ -399,6 +447,7 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
             </div>
             {!activeStatus ? <Notice tone={current.enabled === false ? "info" : "warning"}>{current.enabled === false ? "This ingress is disabled in the draft." : "No active listener with this name exists in the running daemon. Save and restart to reconcile it."}</Notice> : <>
               {!runtimeMatchesDraft && <Notice tone="warning">The running listener uses a different definition. Save and restart before relying on these edits.</Notice>}
+              {activeProfile?.restartRequired && <Notice tone="warning">The selected profile contract has pending changes. Restart Wormhole before reconnecting or rescanning the hosted client.</Notice>}
               {activeStatus.issue && <Notice tone="warning">{activeStatus.issue}</Notice>}
               <div className="upstream-contract-grid remote-ingress-runtime-grid">
                 <div><small>Local MCP</small><strong>{activeStatus.mcpReady ? "Ready" : activeStatus.listenerReachable ? "Unhealthy" : "Offline"}</strong><span>{activeStatus.listenerReachable ? `127.0.0.1:${activeStatus.localPort}` : "listener unavailable"}</span></div>
@@ -407,6 +456,46 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
                 <div><small>Publisher</small><strong>{activeStatus.provider === "external" ? "External" : activeStatus.providerTokenConfigured ? "Configured" : "Missing token"}</strong><span>{activeStatus.publicUrl || "public URL not recorded"}</span></div>
               </div>
             </>}
+          </div>
+
+          <div className="remote-credential-panel">
+            <div className="upstream-control-head">
+              <div><h4>Bearer credential handoff</h4><p>Generate a 256-bit bearer in this browser, store it through the existing write-only Secrets API, then copy the one-time value into the hosted MCP client.</p></div>
+              <Button variant="secondary" onClick={() => void generateBearer()} disabled={!current.authTokenEnv?.trim() || !authSecret}><KeyRound size={14} /> {bearerStored ? "Rotate bearer" : "Generate bearer"}</Button>
+            </div>
+            {credentialMessage && <Notice tone={credentialMessage.tone}>{credentialMessage.text}</Notice>}
+            {oneTimeBearer && <div className="remote-one-time-secret">
+              <div><small>One-time bearer value</small><code>{oneTimeBearer}</code><span>Visible only in this browser state. Persisted secret values remain unreadable from Wormhole.</span></div>
+              <Button variant="secondary" onClick={() => void copyText("Bearer token", oneTimeBearer)}><Copy size={14} /> Copy token</Button>
+            </div>}
+          </div>
+
+          <div className="remote-connection-kit">
+            <div className="upstream-control-head">
+              <div><h4>Hosted client connection kit</h4><p>Everything needed to connect this fixed contract to a Notion Custom Agent or another header-authenticated MCP client.</p></div>
+              <a className="button secondary" href="https://www.notion.com/help/mcp-connections-for-custom-agents" target="_blank" rel="noreferrer"><ExternalLink size={14} /> Notion setup guide</a>
+            </div>
+            <div className="remote-readiness-strip">
+              <Badge tone={runtimeMatchesDraft ? "success" : "warning"}>{runtimeMatchesDraft ? "Runtime current" : "Restart needed"}</Badge>
+              <Badge tone={activeStatus?.mcpReady ? "success" : "warning"}>{activeStatus?.mcpReady ? "Local MCP ready" : "Local MCP pending"}</Badge>
+              <Badge tone={publicURL ? "success" : "warning"}>{publicURL ? "Public URL set" : "Public URL missing"}</Badge>
+              <Badge tone={bearerStored ? "success" : "warning"}>{bearerStored ? "Bearer stored" : "Bearer missing"}</Badge>
+              {provider === "cloudflare" && <Badge tone={providerReady ? "success" : "warning"}>{providerReady ? "Cloudflare token set" : "Cloudflare token missing"}</Badge>}
+            </div>
+            <div className="remote-connection-grid">
+              <div><small>MCP URL</small><code>{publicURL || "https://your-host.example/mcp"}</code><Button variant="secondary" onClick={() => void copyText("MCP URL", publicURL)} disabled={!publicURL}><Copy size={13} /> Copy</Button></div>
+              <div><small>Authentication header</small><code>Authorization</code><Button variant="secondary" onClick={() => void copyText("Header name", "Authorization")}><Copy size={13} /> Copy</Button></div>
+              <div><small>Header value</small><code>{oneTimeBearer ? `Bearer ${oneTimeBearer}` : `Bearer <value of ${current.authTokenEnv || "AUTH_TOKEN"}>`}</code><Button variant="secondary" onClick={() => void copyText("Authorization header", oneTimeBearer ? `Bearer ${oneTimeBearer}` : "")} disabled={!oneTimeBearer}><Copy size={13} /> Copy exact value</Button></div>
+              <div><small>Fixed contract</small><code>{activeWorkspaceID} · {activeProfileID}</code><span>{activeStatus?.mcpReady ? `${activeStatus.toolCount} tools · ${activeStatus.protocolVersion || "MCP"}` : "Restart and refresh status to inspect the active contract."}</span></div>
+            </div>
+            {copyMessage && <p className="remote-copy-message">{copyMessage}</p>}
+            <ol className="remote-connection-steps">
+              <li>In Notion workspace settings, enable custom MCP servers and approve this server URL if your workspace restricts connections.</li>
+              <li>Open the Custom Agent → <strong>Settings</strong> → <strong>Tools &amp; Access</strong> → <strong>Add connection</strong> → <strong>Custom MCP server</strong>.</li>
+              <li>Enter the public MCP URL and choose header-based authentication with <code>Authorization: Bearer …</code>.</li>
+              <li>Connect, inspect the discovered tools, and keep read tools automatic only when appropriate. Reconnect or rescan after changing the active tool profile contract.</li>
+            </ol>
+            <Notice tone={connectionKitReady ? "success" : "info"}>{connectionKitReady ? "The Wormhole side is locally ready for hosted-client setup. Public Internet reachability is intentionally not probed from the Admin server; verify the HTTPS publisher separately before connecting Notion." : "Complete the highlighted local prerequisites, save/restart if required, and verify your external HTTPS publisher before connecting the hosted client."}</Notice>
           </div>
 
           <JSONField label="Complete ingress JSON" value={current as unknown as Record<string, unknown>} onChange={(next) => updateIngress(next as unknown as RemoteIngressConfig)} hint="Advanced escape hatch for this ingress. Server-side validation still enforces provider, port, workspace/profile, URL, and secret-reference rules." />
@@ -418,6 +507,15 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
 
 function validRemoteIngressName(value: string): boolean {
   return /^[a-z][a-z0-9_-]{0,31}$/.test(value.trim().toLowerCase());
+}
+
+function generateRemoteBearer(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return `whmcp_${encoded}`;
 }
 
 function derivedRemoteIngressEnv(name: string, suffix: "AUTH_TOKEN" | "TUNNEL_TOKEN"): string {

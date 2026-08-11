@@ -381,6 +381,8 @@ wormhole key set --runtime-key-env WORMHOLE_REMOTE_NOTION_AUTH_TOKEN
 wormhole key set --runtime-key-env WORMHOLE_REMOTE_NOTION_TUNNEL_TOKEN
 ```
 
+The structured Admin ingress editor also provides a safer credential-handoff path for hosted clients. After the ingress definition is saved, **Generate bearer** creates 256 bits of randomness in the browser, writes the value through the existing write-only Secrets API, and shows it only in the current browser state so it can be copied into Notion. Wormhole never adds a secret-read endpoint and cannot display the persisted value again. Rotating the bearer requires a daemon restart before the hosted client should switch to the new value.
+
 With managed Cloudflare, configure the remotely managed tunnel's public hostname to forward to the exact local origin for this ingress, for example:
 
 ```text
@@ -393,6 +395,8 @@ Then configure the hosted MCP client with:
 MCP URL:        https://wormhole.example.com/mcp
 Authorization:  Bearer <value of WORMHOLE_REMOTE_NOTION_AUTH_TOKEN>
 ```
+
+The Admin **Hosted client connection kit** renders these values from the selected ingress, provides copy actions for the URL/header and a one-time exact bearer value after generation, shows the active workspace/profile/protocol/tool count, and warns when a save/restart or profile rescan is still required. Public Internet reachability remains a separate publisher concern and is not silently probed by the local Admin server.
 
 Restart Wormhole after changing ingress definitions or referenced secrets. `wormhole status` reports listener/provider ownership and secret presence without exposing values. `wormhole doctor` goes further: after checking the loopback socket and bearer reference, it performs a real MCP connection and `tools/list`, reporting the negotiated protocol and tool count. This catches cases where a port is open but authentication or the MCP contract is broken. The Admin diagnostic bundle includes ingress metadata and bounded ingress logs while redacting the currently referenced secret values.
 
