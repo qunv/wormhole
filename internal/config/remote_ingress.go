@@ -17,18 +17,20 @@ import (
 
 // RemoteIngressConfig publishes one fixed workspace/profile MCP contract
 // through a dedicated loopback listener. Provider credentials and the MCP
-// bearer credential are referenced by environment variable and are never
-// persisted in config.json.
+// bearer credentials are referenced by environment variable and are never
+// persisted in config.json. AuthTokenFallbackEnv is optional and exists only
+// to overlap credentials during a staged zero-downtime rotation.
 type RemoteIngressConfig struct {
-	Enabled          *bool  `json:"enabled,omitempty"`
-	Provider         string `json:"provider,omitempty"`
-	WorkspaceID      string `json:"workspaceId,omitempty"`
-	ToolProfile      string `json:"toolProfile,omitempty"`
-	LocalPort        int    `json:"localPort"`
-	PublicURL        string `json:"publicUrl,omitempty"`
-	AuthTokenEnv     string `json:"authTokenEnv"`
-	ProviderTokenEnv string `json:"providerTokenEnv,omitempty"`
-	Binary           string `json:"binary,omitempty"`
+	Enabled              *bool  `json:"enabled,omitempty"`
+	Provider             string `json:"provider,omitempty"`
+	WorkspaceID          string `json:"workspaceId,omitempty"`
+	ToolProfile          string `json:"toolProfile,omitempty"`
+	LocalPort            int    `json:"localPort"`
+	PublicURL            string `json:"publicUrl,omitempty"`
+	AuthTokenEnv         string `json:"authTokenEnv"`
+	AuthTokenFallbackEnv string `json:"authTokenFallbackEnv,omitempty"`
+	ProviderTokenEnv     string `json:"providerTokenEnv,omitempty"`
+	Binary               string `json:"binary,omitempty"`
 }
 
 func (c RemoteIngressConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
@@ -70,6 +72,7 @@ func normalizeRemoteIngresses(c *Config) {
 		if ingress.AuthTokenEnv == "" {
 			ingress.AuthTokenEnv = derivedIngressEnv(name, "AUTH_TOKEN")
 		}
+		ingress.AuthTokenFallbackEnv = strings.TrimSpace(ingress.AuthTokenFallbackEnv)
 		ingress.ProviderTokenEnv = strings.TrimSpace(ingress.ProviderTokenEnv)
 		ingress.Binary = strings.TrimSpace(ingress.Binary)
 		if ingress.Provider == "cloudflare" {
@@ -142,20 +145,33 @@ func validateRemoteIngresses(c Config) error {
 		if !envNamePattern.MatchString(ingress.AuthTokenEnv) {
 			return fmt.Errorf("remoteIngresses.%s.authTokenEnv is not a valid environment variable name", name)
 		}
+		if ingress.AuthTokenFallbackEnv != "" {
+			if !envNamePattern.MatchString(ingress.AuthTokenFallbackEnv) {
+				return fmt.Errorf("remoteIngresses.%s.authTokenFallbackEnv is not a valid environment variable name", name)
+			}
+			if ingress.AuthTokenFallbackEnv == ingress.AuthTokenEnv {
+				return fmt.Errorf("remoteIngresses.%s authTokenEnv and authTokenFallbackEnv must be different", name)
+			}
+		}
 		if ingress.Provider == "cloudflare" {
 			if !envNamePattern.MatchString(ingress.ProviderTokenEnv) {
 				return fmt.Errorf("remoteIngresses.%s.providerTokenEnv is not a valid environment variable name", name)
 			}
-			if ingress.AuthTokenEnv == ingress.ProviderTokenEnv {
-				return fmt.Errorf("remoteIngresses.%s authTokenEnv and providerTokenEnv must be different", name)
+			if ingress.AuthTokenEnv == ingress.ProviderTokenEnv || ingress.AuthTokenFallbackEnv == ingress.ProviderTokenEnv {
+				return fmt.Errorf("remoteIngresses.%s MCP auth token refs and providerTokenEnv must be different", name)
 			}
 		} else if ingress.ProviderTokenEnv != "" || ingress.Binary != "" {
 			return fmt.Errorf("remoteIngresses.%s providerTokenEnv and binary are only supported for cloudflare provider", name)
 		}
-		if previous := authRefs[ingress.AuthTokenEnv]; previous != "" {
-			return fmt.Errorf("remoteIngresses.%s.authTokenEnv duplicates remoteIngresses.%s.authTokenEnv", name, previous)
+		for field, envName := range map[string]string{"authTokenEnv": ingress.AuthTokenEnv, "authTokenFallbackEnv": ingress.AuthTokenFallbackEnv} {
+			if envName == "" {
+				continue
+			}
+			if previous := authRefs[envName]; previous != "" {
+				return fmt.Errorf("remoteIngresses.%s.%s duplicates remote ingress auth ref %s", name, field, previous)
+			}
+			authRefs[envName] = name + "." + field
 		}
-		authRefs[ingress.AuthTokenEnv] = name
 		if ingress.ProviderTokenEnv != "" {
 			if previous := providerRefs[ingress.ProviderTokenEnv]; previous != "" {
 				return fmt.Errorf("remoteIngresses.%s.providerTokenEnv duplicates remoteIngresses.%s.providerTokenEnv", name, previous)
@@ -207,7 +223,7 @@ func RemoteIngressSecretFingerprints(ingresses map[string]RemoteIngressConfig) m
 	out := map[string]map[string]string{}
 	for name, ingress := range ingresses {
 		values := map[string]string{}
-		for label, envName := range map[string]string{"auth": ingress.AuthTokenEnv, "provider": ingress.ProviderTokenEnv} {
+		for label, envName := range map[string]string{"auth": ingress.AuthTokenEnv, "auth_fallback": ingress.AuthTokenFallbackEnv, "provider": ingress.ProviderTokenEnv} {
 			if envName == "" {
 				continue
 			}

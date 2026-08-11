@@ -961,6 +961,7 @@ func (h *Handler) secretReferences() (map[string][]string, error) {
 	}
 	for _, ingress := range cfg.EffectiveRemoteIngresses() {
 		add(ingress.Config.AuthTokenEnv, "remoteIngresses."+ingress.Name+".authTokenEnv")
+		add(ingress.Config.AuthTokenFallbackEnv, "remoteIngresses."+ingress.Name+".authTokenFallbackEnv")
 		add(ingress.Config.ProviderTokenEnv, "remoteIngresses."+ingress.Name+".providerTokenEnv")
 	}
 	add(cfg.Memory.SecretEnv, "memory.secretEnv")

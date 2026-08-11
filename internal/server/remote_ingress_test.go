@@ -42,6 +42,7 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("REMOTE_NOTION_AUTH", "bearer-test-value")
+	t.Setenv("REMOTE_NOTION_AUTH_FALLBACK", "fallback-test-value")
 
 	cfg := config.Default()
 	cfg.Workspace, cfg.NoTunnel, cfg.Policy = defaultRoot, true, "full"
@@ -52,7 +53,8 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 		"notion": {
 			Provider: "cloudflare", WorkspaceID: "api", ToolProfile: "notion-read", LocalPort: 18133,
 			PublicURL:    "https://wormhole.example.com/mcp",
-			AuthTokenEnv: "REMOTE_NOTION_AUTH", ProviderTokenEnv: "REMOTE_NOTION_TUNNEL", Binary: "cloudflared",
+			AuthTokenEnv: "REMOTE_NOTION_AUTH", AuthTokenFallbackEnv: "REMOTE_NOTION_AUTH_FALLBACK",
+			ProviderTokenEnv: "REMOTE_NOTION_TUNNEL", Binary: "cloudflared",
 		},
 	}
 	defaultRuntime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "default", t.TempDir(), cfg, "test", "pro", "default", nil)
@@ -105,6 +107,13 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("stateless remote ingress GET = %d, want 405 from MCP handler", response.Code)
 	}
+	request = httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+os.Getenv("REMOTE_NOTION_AUTH_FALLBACK"))
+	response = httptest.NewRecorder()
+	remote.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("fallback bearer GET = %d, want 405 from MCP handler", response.Code)
+	}
 
 	httpServer := httptest.NewServer(remote.Handler)
 	defer httpServer.Close()
@@ -134,11 +143,11 @@ func TestRemoteIngressIsFixedScopedAndBearerProtected(t *testing.T) {
 }
 
 func TestRemoteIngressRuntimeStatusPerformsAuthenticatedMCPProbe(t *testing.T) {
-	t.Setenv("REMOTE_STATUS_AUTH", "status-test-value")
+	t.Setenv("REMOTE_STATUS_AUTH_FALLBACK", "status-fallback-value")
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "status-test", Version: "1"}, nil)
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer "+os.Getenv("REMOTE_STATUS_AUTH") {
+		if request.Header.Get("Authorization") != "Bearer "+os.Getenv("REMOTE_STATUS_AUTH_FALLBACK") {
 			writer.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -162,10 +171,50 @@ func TestRemoteIngressRuntimeStatusPerformsAuthenticatedMCPProbe(t *testing.T) {
 	defer runtime.Close()
 	instance := New(runtime)
 	status := instance.probeRemoteIngressRuntime(context.Background(), config.NamedRemoteIngress{Name: "notion", Config: config.RemoteIngressConfig{
-		Provider: "external", LocalPort: port, ToolProfile: "remote-read", AuthTokenEnv: "REMOTE_STATUS_AUTH",
+		Provider: "external", LocalPort: port, ToolProfile: "remote-read",
+		AuthTokenEnv: "REMOTE_STATUS_AUTH", AuthTokenFallbackEnv: "REMOTE_STATUS_AUTH_FALLBACK",
 	}})
-	if !status.AuthConfigured || !status.ListenerReachable || !status.MCPReady || status.ProtocolVersion != "2026-07-28" || status.ToolCount != 0 || status.Issue != "" {
+	if !status.AuthConfigured || status.PrimaryAuthConfigured || status.PrimaryAuthReady || status.FallbackAuthConfigured == nil || !*status.FallbackAuthConfigured || status.FallbackAuthReady == nil || !*status.FallbackAuthReady || !status.ListenerReachable || !status.MCPReady || status.ProtocolVersion != "2026-07-28" || status.ToolCount != 0 || status.Issue != "" {
 		t.Fatalf("unexpected remote ingress runtime status: %#v", status)
+	}
+}
+
+func TestRemoteIngressRuntimeStatusDetectsStaleStagedBearer(t *testing.T) {
+	t.Setenv("REMOTE_STATUS_PRIMARY", "status-primary-value")
+	t.Setenv("REMOTE_STATUS_FALLBACK", "status-new-fallback-value")
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "status-rotation-test", Version: "1"}, nil)
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		auth := request.Header.Get("Authorization")
+		if auth != "Bearer "+os.Getenv("REMOTE_STATUS_PRIMARY") && auth != "Bearer status-old-fallback-value" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(writer, request)
+	}))
+	defer httpServer.Close()
+	_, rawPort, err := net.SplitHostPort(strings.TrimPrefix(httpServer.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel = t.TempDir(), true
+	runtime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "default", t.TempDir(), cfg, "test", "pro", "default", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	instance := New(runtime)
+	status := instance.probeRemoteIngressRuntime(context.Background(), config.NamedRemoteIngress{Name: "notion", Config: config.RemoteIngressConfig{
+		Provider: "external", LocalPort: port, ToolProfile: "remote-read",
+		AuthTokenEnv: "REMOTE_STATUS_PRIMARY", AuthTokenFallbackEnv: "REMOTE_STATUS_FALLBACK",
+	}})
+	if !status.MCPReady || !status.PrimaryAuthReady || status.FallbackAuthReady == nil || *status.FallbackAuthReady || !strings.Contains(status.Issue, "staged fallback bearer") {
+		t.Fatalf("stale staged bearer was not detected: %#v", status)
 	}
 }
 
@@ -206,6 +255,38 @@ func TestOccupiedRemoteIngressPortFailsBeforeMainListenerStarts(t *testing.T) {
 	if err == nil {
 		_ = connection.Close()
 		t.Fatal("main listener became reachable after remote ingress bind failure")
+	}
+}
+
+func TestRemoteIngressCanStartWithFallbackBearerOnly(t *testing.T) {
+	t.Setenv("REMOTE_FALLBACK_ONLY", "fallback-only-value")
+	cfg := config.Default()
+	cfg.Workspace, cfg.NoTunnel = t.TempDir(), true
+	cfg.RemoteIngresses = map[string]config.RemoteIngressConfig{
+		"notion": {
+			Provider: "external", ToolProfile: "remote-read", LocalPort: 18135,
+			AuthTokenEnv: "REMOTE_PRIMARY_MISSING", AuthTokenFallbackEnv: "REMOTE_FALLBACK_ONLY",
+		},
+	}
+	runtime, err := agent.NewWorkspaceContextWithReporter(context.Background(), "default", t.TempDir(), cfg, "test", "pro", "default", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	instance := New(runtime)
+	if instance.RemoteIngressError != nil {
+		t.Fatalf("fallback-only ingress failed configuration: %v", instance.RemoteIngressError)
+	}
+	remote := instance.RemoteIngresses["notion"]
+	if remote == nil {
+		t.Fatal("fallback-only ingress listener was not configured")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+os.Getenv("REMOTE_FALLBACK_ONLY"))
+	response := httptest.NewRecorder()
+	remote.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("fallback-only bearer GET = %d, want 405 from MCP handler", response.Code)
 	}
 }
 

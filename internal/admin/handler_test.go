@@ -987,7 +987,8 @@ func TestAdminSecretsIncludeRemoteIngressCredentials(t *testing.T) {
 		cfg.RemoteIngresses = map[string]config.RemoteIngressConfig{
 			"notion": {
 				Provider: "cloudflare", LocalPort: 18133, ToolProfile: "fast", Binary: "cloudflared",
-				AuthTokenEnv: "NOTION_MCP_AUTH", ProviderTokenEnv: "NOTION_CLOUDFLARE_TOKEN",
+				AuthTokenEnv: "NOTION_MCP_AUTH", AuthTokenFallbackEnv: "NOTION_MCP_AUTH_ROTATION",
+				ProviderTokenEnv: "NOTION_CLOUDFLARE_TOKEN",
 			},
 		}
 	})
@@ -997,7 +998,7 @@ func TestAdminSecretsIncludeRemoteIngressCredentials(t *testing.T) {
 		t.Fatalf("get remote ingress secrets = %d %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, want := range []string{"NOTION_MCP_AUTH", "NOTION_CLOUDFLARE_TOKEN", "remoteIngresses.notion.authTokenEnv", "remoteIngresses.notion.providerTokenEnv"} {
+	for _, want := range []string{"NOTION_MCP_AUTH", "NOTION_MCP_AUTH_ROTATION", "NOTION_CLOUDFLARE_TOKEN", "remoteIngresses.notion.authTokenEnv", "remoteIngresses.notion.authTokenFallbackEnv", "remoteIngresses.notion.providerTokenEnv"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("remote ingress secret reference %q missing: %s", want, body)
 		}

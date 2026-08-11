@@ -266,6 +266,7 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
   const [selected, setSelected] = useState(names[0] ?? "");
   const [newName, setNewName] = useState("");
   const [oneTimeBearer, setOneTimeBearer] = useState("");
+  const [oneTimeBearerEnv, setOneTimeBearerEnv] = useState("");
   const [credentialMessage, setCredentialMessage] = useState<{ tone: "success" | "danger" | "info"; text: string } | null>(null);
   const [copyMessage, setCopyMessage] = useState("");
   const current = selected ? ingresses[selected] : undefined;
@@ -278,10 +279,14 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
   }, [names.join("|"), selected, ingresses]);
 
   useEffect(() => {
-    setOneTimeBearer("");
     setCredentialMessage(null);
+  }, [selected]);
+
+  useEffect(() => {
+    setOneTimeBearer("");
+    setOneTimeBearerEnv("");
     setCopyMessage("");
-  }, [selected, current?.authTokenEnv]);
+  }, [selected, current?.authTokenEnv, current?.authTokenFallbackEnv]);
 
   const updateIngress = (next: RemoteIngressConfig) => {
     if (!selected) return;
@@ -322,24 +327,79 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
     updateIngress(next);
   };
 
-  const generateBearer = async () => {
-    if (!current?.authTokenEnv?.trim()) {
-      setCredentialMessage({ tone: "danger", text: "Set a valid MCP bearer environment reference first." });
-      return;
-    }
-    if (!authSecret) {
-      setCredentialMessage({ tone: "info", text: "Save the ingress definition first so Wormhole can register this write-only secret reference, then generate the bearer." });
-      return;
-    }
+  const storeGeneratedBearer = async (envName: string, staged: boolean) => {
     const token = generateRemoteBearer();
-    setCredentialMessage({ tone: "info", text: "Storing the new bearer in Wormhole…" });
+    setCredentialMessage({ tone: "info", text: staged ? "Storing the staged rotation bearer…" : "Storing the new bearer in Wormhole…" });
     try {
-      await api.setSecret(current.authTokenEnv.trim(), token);
+      await api.setSecret(envName, token);
       setOneTimeBearer(token);
-      setCredentialMessage({ tone: "success", text: "New bearer stored. Copy it now: Wormhole will not return this value again. Restart before switching the hosted client to it." });
+      setOneTimeBearerEnv(envName);
+      setCredentialMessage({
+        tone: "success",
+        text: staged
+          ? "Staged bearer stored. Copy it now, then Save & Restart so both the current and staged bearers are accepted before switching the hosted client."
+          : "Bearer stored. Copy it now: Wormhole will not return this value again. Save & Restart before connecting the hosted client.",
+      });
       await queryClient.invalidateQueries({ queryKey: ["secrets"] });
     } catch (error) {
       setOneTimeBearer("");
+      setOneTimeBearerEnv("");
+      setCredentialMessage({ tone: "danger", text: errorMessage(error) });
+    }
+  };
+
+  const generateInitialBearer = async () => {
+    if (!current?.authTokenEnv?.trim() || !authSecret) {
+      setCredentialMessage({ tone: "info", text: "Save the ingress definition first so Wormhole can register this write-only secret reference, then generate the bearer." });
+      return;
+    }
+    await storeGeneratedBearer(current.authTokenEnv.trim(), false);
+  };
+
+  const stageBearerRotation = () => {
+    if (!current || current.authTokenFallbackEnv?.trim()) return;
+    updateIngress({ ...current, authTokenFallbackEnv: nextRemoteRotationEnv(selected, current.authTokenEnv) });
+    setCredentialMessage({ tone: "info", text: "Rotation slot added to the draft. Save the configuration first; then generate the staged bearer without replacing the live credential." });
+  };
+
+  const generateStagedBearer = async () => {
+    const envName = current?.authTokenFallbackEnv?.trim() ?? "";
+    if (!envName || !fallbackAuthSecret) {
+      setCredentialMessage({ tone: "info", text: "Save the rotation slot first so Wormhole can register its write-only secret reference." });
+      return;
+    }
+    await storeGeneratedBearer(envName, true);
+  };
+
+  const finalizeBearerRotation = async () => {
+    if (!current?.authTokenFallbackEnv?.trim() || !fallbackAuthSecret?.configured || !activeStatus?.fallbackAuthConfigured || !runtimeMatchesDraft) {
+      setCredentialMessage({ tone: "info", text: "Restart into dual-token mode and switch the hosted client to the staged bearer before finalizing rotation." });
+      return;
+    }
+    const oldEnv = current.authTokenEnv.trim();
+    const newEnv = current.authTokenFallbackEnv.trim();
+    try {
+      if (authSecret?.managed) await api.deleteSecret(oldEnv);
+      updateIngress({ ...current, authTokenEnv: newEnv, authTokenFallbackEnv: undefined });
+      setOneTimeBearer("");
+      setOneTimeBearerEnv("");
+      setCredentialMessage({ tone: "success", text: "Staged bearer promoted in the draft. Save & Restart to retire the old credential from the listener. If the old value came from the process environment, remove it from that external source separately." });
+      await queryClient.invalidateQueries({ queryKey: ["secrets"] });
+    } catch (error) {
+      setCredentialMessage({ tone: "danger", text: errorMessage(error) });
+    }
+  };
+
+  const cancelBearerRotation = async () => {
+    if (!current?.authTokenFallbackEnv?.trim()) return;
+    try {
+      if (fallbackAuthSecret?.managed) await api.deleteSecret(current.authTokenFallbackEnv.trim());
+      updateIngress({ ...current, authTokenFallbackEnv: undefined });
+      setOneTimeBearer("");
+      setOneTimeBearerEnv("");
+      setCredentialMessage({ tone: "info", text: "Rotation removed from the draft. Save & Restart if the running listener had already accepted the staged bearer." });
+      await queryClient.invalidateQueries({ queryKey: ["secrets"] });
+    } catch (error) {
       setCredentialMessage({ tone: "danger", text: errorMessage(error) });
     }
   };
@@ -365,10 +425,15 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
   const configuredProfileKnown = profileItems.some((profile) => profile.id === activeProfileID);
   const activeProfile = profileItems.find((profile) => profile.id === activeProfileID);
   const authSecret = current?.authTokenEnv ? secretMap.get(current.authTokenEnv) : undefined;
+  const fallbackAuthSecret = current?.authTokenFallbackEnv ? secretMap.get(current.authTokenFallbackEnv) : undefined;
   const providerSecret = current?.providerTokenEnv ? secretMap.get(current.providerTokenEnv) : undefined;
   const provider = current?.provider ?? "external";
   const publicURL = current?.publicUrl?.trim() ?? "";
-  const bearerStored = !!authSecret?.configured || !!oneTimeBearer;
+  const primaryBearerStored = !!authSecret?.configured || (!!oneTimeBearer && oneTimeBearerEnv === current?.authTokenEnv);
+  const fallbackBearerStored = !!fallbackAuthSecret?.configured || (!!oneTimeBearer && oneTimeBearerEnv === current?.authTokenFallbackEnv);
+  const bearerStored = primaryBearerStored || fallbackBearerStored;
+  const rotationStaged = !!current?.authTokenFallbackEnv?.trim();
+  const dualTokenRuntimeReady = rotationStaged && !!activeStatus?.primaryAuthReady && !!activeStatus?.fallbackAuthReady && !!activeStatus?.mcpReady;
   const providerReady = provider !== "cloudflare" || !!providerSecret?.configured;
   const runtimeMatchesDraft = !!activeStatus && !!current
     && current.enabled !== false
@@ -376,7 +441,9 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
     && activeStatus.workspaceId === activeWorkspaceID
     && activeStatus.toolProfile === activeProfileID
     && activeStatus.localPort === current.localPort
-    && (activeStatus.publicUrl ?? "") === publicURL;
+    && (activeStatus.publicUrl ?? "") === publicURL
+    && activeStatus.authTokenEnv === current.authTokenEnv
+    && (activeStatus.authTokenFallbackEnv ?? "") === (current.authTokenFallbackEnv?.trim() ?? "");
   const localConnectionReady = !!activeStatus?.mcpReady && runtimeMatchesDraft && !activeProfile?.restartRequired;
   const connectionKitReady = current?.enabled !== false && !!publicURL && bearerStored && providerReady && localConnectionReady;
 
@@ -434,6 +501,7 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
             </Field>
             <Field label="Public HTTPS URL" wide hint="Optional for server-to-server clients. Required to validate browser Origin headers; when set, the path must be exactly /mcp."><TextInput value={current.publicUrl ?? ""} onChange={(event) => updateIngress({ ...current, publicUrl: event.target.value })} placeholder="https://wormhole.example.com/mcp" /></Field>
             <Field label="MCP bearer environment" wide hint={authSecret?.configured ? `Configured via ${authSecret.source}.` : "Save this reference, then store its value on Secrets. Values are never shown here."}><TextInput value={current.authTokenEnv ?? ""} onChange={(event) => updateIngress({ ...current, authTokenEnv: event.target.value })} /></Field>
+            {rotationStaged && <Field label="Staged rotation bearer environment" wide hint={fallbackAuthSecret?.configured ? `Configured via ${fallbackAuthSecret.source}. Keep this distinct from the primary bearer.` : "Save this fallback reference before generating the staged bearer."}><TextInput value={current.authTokenFallbackEnv ?? ""} onChange={(event) => updateIngress({ ...current, authTokenFallbackEnv: event.target.value })} /></Field>}
             {provider === "cloudflare" && <>
               <Field label="Cloudflare tunnel token environment" wide hint={providerSecret?.configured ? `Configured via ${providerSecret.source}.` : "Write-only provider credential used only by the managed cloudflared child."}><TextInput value={current.providerTokenEnv ?? ""} onChange={(event) => updateIngress({ ...current, providerTokenEnv: event.target.value })} /></Field>
               <Field label="cloudflared binary" wide><TextInput value={current.binary ?? ""} onChange={(event) => updateIngress({ ...current, binary: event.target.value })} placeholder="cloudflared" /></Field>
@@ -451,7 +519,7 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
               {activeStatus.issue && <Notice tone="warning">{activeStatus.issue}</Notice>}
               <div className="upstream-contract-grid remote-ingress-runtime-grid">
                 <div><small>Local MCP</small><strong>{activeStatus.mcpReady ? "Ready" : activeStatus.listenerReachable ? "Unhealthy" : "Offline"}</strong><span>{activeStatus.listenerReachable ? `127.0.0.1:${activeStatus.localPort}` : "listener unavailable"}</span></div>
-                <div><small>Bearer</small><strong>{activeStatus.authConfigured ? "Present" : "Missing"}</strong><span>{current.authTokenEnv || "environment missing"}</span></div>
+                <div><small>Bearer</small><strong>{activeStatus.authConfigured ? activeStatus.fallbackAuthConfigured ? "Dual" : "Present" : "Missing"}</strong><span>{activeStatus.fallbackAuthConfigured ? `${activeStatus.primaryAuthConfigured ? "primary + " : ""}fallback active` : activeStatus.primaryAuthConfigured ? "primary active" : "credential missing"}</span></div>
                 <div><small>Contract</small><strong>{activeStatus.toolCount}</strong><span>{activeStatus.protocolVersion ? `${activeStatus.protocolVersion} · tools` : "not negotiated"}</span></div>
                 <div><small>Publisher</small><strong>{activeStatus.provider === "external" ? "External" : activeStatus.providerTokenConfigured ? "Configured" : "Missing token"}</strong><span>{activeStatus.publicUrl || "public URL not recorded"}</span></div>
               </div>
@@ -460,12 +528,30 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
 
           <div className="remote-credential-panel">
             <div className="upstream-control-head">
-              <div><h4>Bearer credential handoff</h4><p>Generate a 256-bit bearer in this browser, store it through the existing write-only Secrets API, then copy the one-time value into the hosted MCP client.</p></div>
-              <Button variant="secondary" onClick={() => void generateBearer()} disabled={!current.authTokenEnv?.trim() || !authSecret}><KeyRound size={14} /> {bearerStored ? "Rotate bearer" : "Generate bearer"}</Button>
+              <div><h4>Bearer credential handoff</h4><p>Initial setup stores one browser-generated 256-bit bearer. Later rotations use a second fallback slot so the old and new credentials overlap instead of breaking the hosted client.</p></div>
+              {!primaryBearerStored
+                ? <Button variant="secondary" onClick={() => void generateInitialBearer()} disabled={!current.authTokenEnv?.trim() || !authSecret}><KeyRound size={14} /> Generate bearer</Button>
+                : !rotationStaged
+                  ? <Button variant="secondary" onClick={stageBearerRotation}><KeyRound size={14} /> Start safe rotation</Button>
+                  : null}
             </div>
             {credentialMessage && <Notice tone={credentialMessage.tone}>{credentialMessage.text}</Notice>}
+            {rotationStaged && <div className="remote-rotation-state">
+              <div className="remote-readiness-strip">
+                <Badge tone={primaryBearerStored ? "success" : "warning"}>1 · Primary {primaryBearerStored ? "stored" : "missing"}</Badge>
+                <Badge tone={fallbackAuthSecret ? "success" : "warning"}>2 · Slot {fallbackAuthSecret ? "saved" : "save config"}</Badge>
+                <Badge tone={fallbackBearerStored ? "success" : "warning"}>3 · Staged {fallbackBearerStored ? "stored" : "missing"}</Badge>
+                <Badge tone={dualTokenRuntimeReady && runtimeMatchesDraft ? "success" : "warning"}>4 · Runtime {dualTokenRuntimeReady && runtimeMatchesDraft ? "dual-token" : "restart needed"}</Badge>
+              </div>
+              <div className="button-row">
+                <Button variant="secondary" onClick={() => void generateStagedBearer()} disabled={!fallbackAuthSecret}><KeyRound size={14} /> {fallbackBearerStored ? "Regenerate staged bearer" : "Generate staged bearer"}</Button>
+                <Button onClick={() => void finalizeBearerRotation()} disabled={!fallbackBearerStored || !dualTokenRuntimeReady || !runtimeMatchesDraft}>Promote staged bearer</Button>
+                <Button variant="danger" onClick={() => void cancelBearerRotation()}>Cancel rotation</Button>
+              </div>
+              <p className="muted">After step 4 becomes dual-token, switch the hosted client to the staged bearer and verify it works. Only then promote it; the final Save &amp; Restart removes the old bearer from the listener.</p>
+            </div>}
             {oneTimeBearer && <div className="remote-one-time-secret">
-              <div><small>One-time bearer value</small><code>{oneTimeBearer}</code><span>Visible only in this browser state. Persisted secret values remain unreadable from Wormhole.</span></div>
+              <div><small>One-time bearer value · {oneTimeBearerEnv}</small><code>{oneTimeBearer}</code><span>Visible only in this browser state. Persisted secret values remain unreadable from Wormhole.</span></div>
               <Button variant="secondary" onClick={() => void copyText("Bearer token", oneTimeBearer)}><Copy size={14} /> Copy token</Button>
             </div>}
           </div>
@@ -480,6 +566,7 @@ function RemoteIngressEditor({ value, onChange, profiles, workspaces, secrets, r
               <Badge tone={activeStatus?.mcpReady ? "success" : "warning"}>{activeStatus?.mcpReady ? "Local MCP ready" : "Local MCP pending"}</Badge>
               <Badge tone={publicURL ? "success" : "warning"}>{publicURL ? "Public URL set" : "Public URL missing"}</Badge>
               <Badge tone={bearerStored ? "success" : "warning"}>{bearerStored ? "Bearer stored" : "Bearer missing"}</Badge>
+              {rotationStaged && <Badge tone={dualTokenRuntimeReady && runtimeMatchesDraft ? "success" : "warning"}>{dualTokenRuntimeReady && runtimeMatchesDraft ? "Safe rotation live" : "Rotation restart pending"}</Badge>}
               {provider === "cloudflare" && <Badge tone={providerReady ? "success" : "warning"}>{providerReady ? "Cloudflare token set" : "Cloudflare token missing"}</Badge>}
             </div>
             <div className="remote-connection-grid">
@@ -518,8 +605,14 @@ function generateRemoteBearer(): string {
   return `whmcp_${encoded}`;
 }
 
-function derivedRemoteIngressEnv(name: string, suffix: "AUTH_TOKEN" | "TUNNEL_TOKEN"): string {
+function derivedRemoteIngressEnv(name: string, suffix: "AUTH_TOKEN" | "AUTH_TOKEN_ROTATION_A" | "AUTH_TOKEN_ROTATION_B" | "TUNNEL_TOKEN"): string {
   return `WORMHOLE_REMOTE_${name.trim().toUpperCase().replace(/[-.]/g, "_")}_${suffix}`;
+}
+
+function nextRemoteRotationEnv(name: string, primaryEnv: string): string {
+  const slotA = derivedRemoteIngressEnv(name, "AUTH_TOKEN_ROTATION_A");
+  const slotB = derivedRemoteIngressEnv(name, "AUTH_TOKEN_ROTATION_B");
+  return primaryEnv.trim() === slotA ? slotB : slotA;
 }
 
 function nextRemoteIngressPort(value: WormholeConfig): number {

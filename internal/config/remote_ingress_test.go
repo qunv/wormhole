@@ -25,7 +25,7 @@ func TestRemoteIngressNormalizationAndValidation(t *testing.T) {
 	if ingress.Provider != "external" || ingress.ToolProfile != "remote-read" || ingress.Binary != "" {
 		t.Fatalf("unexpected defaults: %#v", ingress)
 	}
-	if ingress.AuthTokenEnv != "WORMHOLE_REMOTE_NOTION_AGENT_AUTH_TOKEN" || ingress.ProviderTokenEnv != "" {
+	if ingress.AuthTokenEnv != "WORMHOLE_REMOTE_NOTION_AGENT_AUTH_TOKEN" || ingress.AuthTokenFallbackEnv != "" || ingress.ProviderTokenEnv != "" {
 		t.Fatalf("unexpected secret refs: %#v", ingress)
 	}
 	if err := cfg.Validate(false); err != nil {
@@ -94,6 +94,21 @@ func TestRemoteIngressValidationFailsClosed(t *testing.T) {
 			ingress.ProviderTokenEnv = ingress.AuthTokenEnv
 			cfg.RemoteIngresses["notion"] = ingress
 		},
+		"fallback equals primary": func(cfg *Config) {
+			ingress := cfg.RemoteIngresses["notion"]
+			ingress.AuthTokenFallbackEnv = ingress.AuthTokenEnv
+			cfg.RemoteIngresses["notion"] = ingress
+		},
+		"fallback equals provider": func(cfg *Config) {
+			ingress := cfg.RemoteIngresses["notion"]
+			ingress.AuthTokenFallbackEnv = ingress.ProviderTokenEnv
+			cfg.RemoteIngresses["notion"] = ingress
+		},
+		"invalid fallback env": func(cfg *Config) {
+			ingress := cfg.RemoteIngresses["notion"]
+			ingress.AuthTokenFallbackEnv = "invalid fallback"
+			cfg.RemoteIngresses["notion"] = ingress
+		},
 		"unknown profile": func(cfg *Config) {
 			ingress := cfg.RemoteIngresses["notion"]
 			ingress.ToolProfile = "missing"
@@ -109,6 +124,15 @@ func TestRemoteIngressValidationFailsClosed(t *testing.T) {
 			cfg.RemoteIngresses["other"] = RemoteIngressConfig{
 				Provider: "cloudflare", LocalPort: 8134, ToolProfile: "fast",
 				AuthTokenEnv: "OTHER_AUTH", ProviderTokenEnv: "REMOTE_PROVIDER", Binary: "cloudflared",
+			}
+		},
+		"duplicate fallback auth ref": func(cfg *Config) {
+			ingress := cfg.RemoteIngresses["notion"]
+			ingress.AuthTokenFallbackEnv = "ROTATION_AUTH"
+			cfg.RemoteIngresses["notion"] = ingress
+			cfg.RemoteIngresses["other"] = RemoteIngressConfig{
+				Provider: "external", LocalPort: 8134, ToolProfile: "remote-read",
+				AuthTokenEnv: "ROTATION_AUTH",
 			}
 		},
 	}
@@ -143,6 +167,22 @@ func TestConfigIDTracksRemoteIngressSecretsWithoutEmbeddingThem(t *testing.T) {
 	for _, secret := range []string{"first-auth-secret", "second-auth-secret", "provider-secret"} {
 		if strings.Contains(first, secret) || strings.Contains(second, secret) {
 			t.Fatalf("ConfigID exposed secret %q", secret)
+		}
+	}
+
+	ingress := cfg.RemoteIngresses["notion"]
+	ingress.AuthTokenFallbackEnv = "REMOTE_AUTH_FALLBACK"
+	cfg.RemoteIngresses["notion"] = ingress
+	t.Setenv("REMOTE_AUTH_FALLBACK", "fallback-one")
+	fallbackFirst := cfg.ConfigIDWithInputs(IdentityInputs{BinaryHash: "binary", WidgetHash: "widget"})
+	t.Setenv("REMOTE_AUTH_FALLBACK", "fallback-two")
+	fallbackSecond := cfg.ConfigIDWithInputs(IdentityInputs{BinaryHash: "binary", WidgetHash: "widget"})
+	if fallbackFirst == fallbackSecond {
+		t.Fatal("ConfigID did not change when fallback remote MCP bearer changed")
+	}
+	for _, secret := range []string{"fallback-one", "fallback-two"} {
+		if strings.Contains(fallbackFirst, secret) || strings.Contains(fallbackSecond, secret) {
+			t.Fatalf("ConfigID exposed fallback secret %q", secret)
 		}
 	}
 }

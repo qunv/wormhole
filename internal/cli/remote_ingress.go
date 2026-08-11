@@ -175,8 +175,11 @@ func remoteIngressCommand(ingress config.NamedRemoteIngress) (*exec.Cmd, error) 
 	if providerToken == "" {
 		return nil, fmt.Errorf("missing provider token for remote ingress %q; set %s from the Admin Secrets page or environment", ingress.Name, cfg.ProviderTokenEnv)
 	}
-	if strings.TrimSpace(os.Getenv(cfg.AuthTokenEnv)) == "" {
-		return nil, fmt.Errorf("missing MCP bearer token for remote ingress %q; set %s from the Admin Secrets page or environment", ingress.Name, cfg.AuthTokenEnv)
+	if token, _, _ := remoteIngressAuthToken(cfg); token == "" {
+		if cfg.AuthTokenFallbackEnv == "" {
+			return nil, fmt.Errorf("missing MCP bearer token for remote ingress %q; set %s from the Admin Secrets page or environment", ingress.Name, cfg.AuthTokenEnv)
+		}
+		return nil, fmt.Errorf("missing MCP bearer token for remote ingress %q; set %s or %s from the Admin Secrets page or environment", ingress.Name, cfg.AuthTokenEnv, cfg.AuthTokenFallbackEnv)
 	}
 	binary := cfg.Binary
 	if filepath.IsAbs(binary) {
@@ -295,10 +298,25 @@ func remoteProbeHTTPClient(token string) *http.Client {
 // TCP socket: it authenticates, negotiates MCP, and retrieves the fixed tool
 // catalog. It intentionally probes the loopback listener rather than the public
 // publisher so doctor remains deterministic and does not create Internet I/O.
+func remoteIngressAuthToken(cfg config.RemoteIngressConfig) (string, bool, bool) {
+	primary := strings.TrimSpace(os.Getenv(cfg.AuthTokenEnv))
+	fallback := ""
+	if cfg.AuthTokenFallbackEnv != "" {
+		fallback = strings.TrimSpace(os.Getenv(cfg.AuthTokenFallbackEnv))
+	}
+	if fallback != "" {
+		return fallback, primary != "", true
+	}
+	return primary, primary != "", false
+}
+
 func probeRemoteIngress(ctx context.Context, ingress config.NamedRemoteIngress) (remoteIngressProbeResult, error) {
-	token := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv))
+	token, _, _ := remoteIngressAuthToken(ingress.Config)
 	if token == "" {
-		return remoteIngressProbeResult{}, fmt.Errorf("missing MCP bearer token in %s", ingress.Config.AuthTokenEnv)
+		if ingress.Config.AuthTokenFallbackEnv == "" {
+			return remoteIngressProbeResult{}, fmt.Errorf("missing MCP bearer token in %s", ingress.Config.AuthTokenEnv)
+		}
+		return remoteIngressProbeResult{}, fmt.Errorf("missing MCP bearer token in %s or %s", ingress.Config.AuthTokenEnv, ingress.Config.AuthTokenFallbackEnv)
 	}
 	return probeRemoteMCPURL(ctx, fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort), token)
 }

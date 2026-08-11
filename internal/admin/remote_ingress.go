@@ -20,7 +20,13 @@ type RemoteIngressRuntimeStatus struct {
 	ToolProfile             string `json:"toolProfile"`
 	LocalPort               int    `json:"localPort"`
 	PublicURL               string `json:"publicUrl,omitempty"`
+	AuthTokenEnv            string `json:"authTokenEnv"`
+	AuthTokenFallbackEnv    string `json:"authTokenFallbackEnv,omitempty"`
 	AuthConfigured          bool   `json:"authConfigured"`
+	PrimaryAuthConfigured   bool   `json:"primaryAuthConfigured"`
+	PrimaryAuthReady        bool   `json:"primaryAuthReady"`
+	FallbackAuthConfigured  *bool  `json:"fallbackAuthConfigured,omitempty"`
+	FallbackAuthReady       *bool  `json:"fallbackAuthReady,omitempty"`
 	ProviderTokenConfigured *bool  `json:"providerTokenConfigured,omitempty"`
 	ListenerReachable       bool   `json:"listenerReachable"`
 	MCPReady                bool   `json:"mcpReady"`

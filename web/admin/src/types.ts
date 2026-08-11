@@ -72,6 +72,7 @@ export interface RemoteIngressConfig {
   localPort: number;
   publicUrl?: string;
   authTokenEnv: string;
+  authTokenFallbackEnv?: string;
   providerTokenEnv?: string;
   binary?: string;
 }
@@ -83,7 +84,13 @@ export interface RemoteIngressRuntimeStatus {
   toolProfile: string;
   localPort: number;
   publicUrl?: string;
+  authTokenEnv: string;
+  authTokenFallbackEnv?: string;
   authConfigured: boolean;
+  primaryAuthConfigured: boolean;
+  primaryAuthReady: boolean;
+  fallbackAuthConfigured?: boolean;
+  fallbackAuthReady?: boolean;
   providerTokenConfigured?: boolean;
   listenerReachable: boolean;
   mcpReady: boolean;

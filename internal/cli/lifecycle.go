@@ -474,8 +474,14 @@ func (a App) status(cfg config.Config, opts options) error {
 			item["local_url"] = fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)
 			item["listener_reachable"] = serverKnownOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
 			item["public_url"] = ingress.Config.PublicURL
+			_, primaryAuthConfigured, fallbackAuthConfigured := remoteIngressAuthToken(ingress.Config)
 			item["auth_token_env"] = ingress.Config.AuthTokenEnv
-			item["auth_configured"] = strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv)) != ""
+			item["auth_configured"] = primaryAuthConfigured || fallbackAuthConfigured
+			item["primary_auth_configured"] = primaryAuthConfigured
+			if ingress.Config.AuthTokenFallbackEnv != "" {
+				item["auth_token_fallback_env"] = ingress.Config.AuthTokenFallbackEnv
+				item["fallback_auth_configured"] = fallbackAuthConfigured
+			}
 			if ingress.Config.ProviderTokenEnv != "" {
 				item["provider_token_env"] = ingress.Config.ProviderTokenEnv
 				item["provider_token_configured"] = strings.TrimSpace(os.Getenv(ingress.Config.ProviderTokenEnv)) != ""
@@ -610,10 +616,15 @@ func (a App) doctor(ctx context.Context, cfg config.Config, opts options) error 
 	for _, ingress := range cfg.EnabledRemoteIngresses() {
 		process := state.RemoteIngresses[ingress.Name]
 		_, _, alive := ownedRemoteIngressProcess(ingress.Name, process, serverKnownOwned)
-		authConfigured := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv)) != ""
+		_, primaryAuthConfigured, fallbackAuthConfigured := remoteIngressAuthToken(ingress.Config)
+		authConfigured := primaryAuthConfigured || fallbackAuthConfigured
 		listenerReady := serverKnownOwned && remoteIngressPortReachable(ingress.Config.LocalPort)
+		authDetail := ingress.Config.AuthTokenEnv
+		if ingress.Config.AuthTokenFallbackEnv != "" {
+			authDetail += " fallback=" + ingress.Config.AuthTokenFallbackEnv
+		}
 		checks = append(checks,
-			check{"remote-auth:" + ingress.Name, authConfigured, ingress.Config.AuthTokenEnv},
+			check{"remote-auth:" + ingress.Name, authConfigured, authDetail},
 			check{"remote-listener:" + ingress.Name, listenerReady, fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort)},
 		)
 		if authConfigured && listenerReady {

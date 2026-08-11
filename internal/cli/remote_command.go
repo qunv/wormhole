@@ -24,7 +24,10 @@ type remoteIngressListItem struct {
 	LocalURL                string `json:"localUrl"`
 	PublicURL               string `json:"publicUrl,omitempty"`
 	AuthTokenEnv            string `json:"authTokenEnv"`
+	AuthTokenFallbackEnv    string `json:"authTokenFallbackEnv,omitempty"`
 	AuthConfigured          bool   `json:"authConfigured"`
+	PrimaryAuthConfigured   bool   `json:"primaryAuthConfigured"`
+	FallbackAuthConfigured  *bool  `json:"fallbackAuthConfigured,omitempty"`
 	ProviderTokenEnv        string `json:"providerTokenEnv,omitempty"`
 	ProviderTokenConfigured *bool  `json:"providerTokenConfigured,omitempty"`
 }
@@ -76,12 +79,17 @@ func (a App) remoteList(cfg config.Config, opts options) error {
 		if workspaceID == "" {
 			workspaceID = "primary"
 		}
+		_, primaryConfigured, fallbackConfigured := remoteIngressAuthToken(ingress.Config)
 		item := remoteIngressListItem{
 			Name: ingress.Name, Enabled: ingress.Config.IsEnabled(), Provider: ingress.Config.Provider,
 			WorkspaceID: workspaceID, ToolProfile: ingress.Config.ToolProfile,
 			LocalURL: fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort), PublicURL: ingress.Config.PublicURL,
-			AuthTokenEnv: ingress.Config.AuthTokenEnv, AuthConfigured: strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv)) != "",
+			AuthTokenEnv: ingress.Config.AuthTokenEnv, AuthTokenFallbackEnv: ingress.Config.AuthTokenFallbackEnv,
+			AuthConfigured: primaryConfigured || fallbackConfigured, PrimaryAuthConfigured: primaryConfigured,
 			ProviderTokenEnv: ingress.Config.ProviderTokenEnv,
+		}
+		if ingress.Config.AuthTokenFallbackEnv != "" {
+			item.FallbackAuthConfigured = &fallbackConfigured
 		}
 		if ingress.Config.ProviderTokenEnv != "" {
 			configured := strings.TrimSpace(os.Getenv(ingress.Config.ProviderTokenEnv)) != ""
@@ -132,9 +140,9 @@ func (a App) remoteVerify(ctx context.Context, cfg config.Config, name string, o
 		result.Issue = "remote ingress is disabled"
 		return a.writeRemoteVerification(result, opts)
 	}
-	token := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv))
+	token, _, _ := remoteIngressAuthToken(ingress.Config)
 	if token == "" {
-		result.Issue = "MCP bearer secret is missing"
+		result.Issue = "MCP bearer secrets are missing"
 		result.Local.Error = result.Issue
 		result.Public.Error = result.Issue
 		return a.writeRemoteVerification(result, opts)

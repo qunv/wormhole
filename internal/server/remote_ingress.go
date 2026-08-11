@@ -36,9 +36,12 @@ func (h *HTTP) configureRemoteIngresses(primaryID string) error {
 		if !ok {
 			return fmt.Errorf("remote ingress %q references unavailable tool profile %q", ingress.Name, ingress.Config.ToolProfile)
 		}
-		authToken := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv))
-		if authToken == "" {
-			return fmt.Errorf("remote ingress %q requires MCP bearer token in %s", ingress.Name, ingress.Config.AuthTokenEnv)
+		authTokens, _, _ := remoteIngressAuthTokens(ingress.Config)
+		if len(authTokens) == 0 {
+			if ingress.Config.AuthTokenFallbackEnv == "" {
+				return fmt.Errorf("remote ingress %q requires an MCP bearer token in %s", ingress.Name, ingress.Config.AuthTokenEnv)
+			}
+			return fmt.Errorf("remote ingress %q requires an MCP bearer token in %s or %s", ingress.Name, ingress.Config.AuthTokenEnv, ingress.Config.AuthTokenFallbackEnv)
 		}
 		mcpServer := mcpserver.NewWorkspaceProfileDefinition(runtime, workspaceID, profile)
 		mcpHandler := mcp.NewStreamableHTTPHandler(
@@ -46,7 +49,7 @@ func (h *HTTP) configureRemoteIngresses(primaryID string) error {
 			&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
 		)
 		mux := http.NewServeMux()
-		guarded := h.guardMCPMethods(authToken, runtime.Config.MaxBodyBytes, true, mcpHandler)
+		guarded := h.guardMCPAnyValues(authTokens, runtime.Config.MaxBodyBytes, true, mcpHandler)
 		mux.Handle("/mcp", h.remoteIngressOriginMiddleware(ingress.Config.PublicURL, guarded))
 		server := &http.Server{
 			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(ingress.Config.LocalPort)),
@@ -114,6 +117,27 @@ func sortedHTTPServerNames(values map[string]*http.Server) []string {
 	return names
 }
 
+func remoteIngressAuthValues(cfg config.RemoteIngressConfig) (string, string) {
+	primary := strings.TrimSpace(os.Getenv(cfg.AuthTokenEnv))
+	fallback := ""
+	if cfg.AuthTokenFallbackEnv != "" {
+		fallback = strings.TrimSpace(os.Getenv(cfg.AuthTokenFallbackEnv))
+	}
+	return primary, fallback
+}
+
+func remoteIngressAuthTokens(cfg config.RemoteIngressConfig) ([]string, bool, bool) {
+	primary, fallback := remoteIngressAuthValues(cfg)
+	tokens := make([]string, 0, 2)
+	if primary != "" {
+		tokens = append(tokens, primary)
+	}
+	if fallback != "" && fallback != primary {
+		tokens = append(tokens, fallback)
+	}
+	return tokens, primary != "", fallback != ""
+}
+
 type remoteIngressStatusTransport struct {
 	token string
 }
@@ -123,6 +147,31 @@ func (t remoteIngressStatusTransport) RoundTrip(request *http.Request) (*http.Re
 	clone.Header = request.Header.Clone()
 	clone.Header.Set("Authorization", "Bearer "+t.token)
 	return http.DefaultTransport.RoundTrip(clone)
+}
+
+func (h *HTTP) probeRemoteIngressToken(ctx context.Context, address, token string) (string, int, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-admin", Version: h.Runtime.Version}, nil)
+	session, err := client.Connect(probeCtx, &mcp.StreamableClientTransport{
+		Endpoint:             "http://" + address + "/mcp",
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+		HTTPClient:           &http.Client{Transport: remoteIngressStatusTransport{token: token}},
+	}, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	defer session.Close()
+	tools, err := session.ListTools(probeCtx, &mcp.ListToolsParams{})
+	if err != nil {
+		return "", 0, err
+	}
+	protocol := ""
+	if initialized := session.InitializeResult(); initialized != nil {
+		protocol = initialized.ProtocolVersion
+	}
+	return protocol, len(tools.Tools), nil
 }
 
 func (h *HTTP) remoteIngressRuntimeStatus(ctx context.Context, limit int) admin.RemoteIngressStatusResponse {
@@ -159,15 +208,21 @@ func (h *HTTP) probeRemoteIngressRuntime(ctx context.Context, ingress config.Nam
 		Name: ingress.Name, Provider: ingress.Config.Provider,
 		WorkspaceID: workspaceID, ToolProfile: ingress.Config.ToolProfile,
 		LocalPort: ingress.Config.LocalPort, PublicURL: ingress.Config.PublicURL,
+		AuthTokenEnv: ingress.Config.AuthTokenEnv, AuthTokenFallbackEnv: ingress.Config.AuthTokenFallbackEnv,
 	}
-	authToken := strings.TrimSpace(os.Getenv(ingress.Config.AuthTokenEnv))
-	status.AuthConfigured = authToken != ""
+	primaryToken, fallbackToken := remoteIngressAuthValues(ingress.Config)
+	primaryConfigured, fallbackConfigured := primaryToken != "", fallbackToken != ""
+	status.AuthConfigured = primaryConfigured || fallbackConfigured
+	status.PrimaryAuthConfigured = primaryConfigured
+	if ingress.Config.AuthTokenFallbackEnv != "" {
+		status.FallbackAuthConfigured = &fallbackConfigured
+	}
 	if ingress.Config.Provider == "cloudflare" {
 		providerConfigured := strings.TrimSpace(os.Getenv(ingress.Config.ProviderTokenEnv)) != ""
 		status.ProviderTokenConfigured = &providerConfigured
 	}
 	if !status.AuthConfigured {
-		status.Issue = "MCP bearer secret is missing"
+		status.Issue = "MCP bearer secrets are missing"
 		return status
 	}
 
@@ -181,29 +236,36 @@ func (h *HTTP) probeRemoteIngressRuntime(ctx context.Context, ingress config.Nam
 	status.ListenerReachable = true
 	_ = connection.Close()
 
-	probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-	defer cancel()
-	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-admin", Version: h.Runtime.Version}, nil)
-	session, err := client.Connect(probeCtx, &mcp.StreamableClientTransport{
-		Endpoint:             "http://" + address + "/mcp",
-		DisableStandaloneSSE: true,
-		MaxRetries:           -1,
-		HTTPClient:           &http.Client{Transport: remoteIngressStatusTransport{token: authToken}},
-	}, nil)
-	if err != nil {
-		status.Issue = "MCP handshake failed"
+	if primaryConfigured {
+		protocol, toolCount, probeErr := h.probeRemoteIngressToken(ctx, address, primaryToken)
+		status.PrimaryAuthReady = probeErr == nil
+		if probeErr == nil {
+			status.MCPReady = true
+			status.ProtocolVersion, status.ToolCount = protocol, toolCount
+		}
+	}
+	if ingress.Config.AuthTokenFallbackEnv != "" {
+		fallbackReady := false
+		if fallbackConfigured {
+			protocol, toolCount, probeErr := h.probeRemoteIngressToken(ctx, address, fallbackToken)
+			fallbackReady = probeErr == nil
+			if probeErr == nil && !status.MCPReady {
+				status.MCPReady = true
+				status.ProtocolVersion, status.ToolCount = protocol, toolCount
+			}
+		}
+		status.FallbackAuthReady = &fallbackReady
+	}
+	if !status.MCPReady {
+		status.Issue = "MCP handshake failed for configured bearer credentials"
 		return status
 	}
-	defer session.Close()
-	tools, err := session.ListTools(probeCtx, &mcp.ListToolsParams{})
-	if err != nil {
-		status.Issue = "MCP tool discovery failed"
+	if primaryConfigured && !status.PrimaryAuthReady {
+		status.Issue = "primary bearer does not match the running listener; restart required"
 		return status
 	}
-	status.MCPReady = true
-	status.ToolCount = len(tools.Tools)
-	if initialized := session.InitializeResult(); initialized != nil {
-		status.ProtocolVersion = initialized.ProtocolVersion
+	if status.FallbackAuthConfigured != nil && *status.FallbackAuthConfigured && status.FallbackAuthReady != nil && !*status.FallbackAuthReady {
+		status.Issue = "staged fallback bearer does not match the running listener; restart required"
 	}
 	return status
 }

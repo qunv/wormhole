@@ -50,6 +50,34 @@ func TestRemoteVerifyMatchesLocalAndPublicContract(t *testing.T) {
 	}
 }
 
+func TestRemoteVerifyPrefersStagedFallbackBearer(t *testing.T) {
+	primaryValue := strings.Repeat("p", 24)
+	fallbackValue := strings.Repeat("f", 24)
+	local := newRemoteVerifyMCPServer(t, fallbackValue, "repo.read")
+	defer local.Close()
+	public := newRemoteVerifyMCPServer(t, fallbackValue, "repo.read")
+	defer public.Close()
+	t.Setenv("REMOTE_VERIFY_AUTH", primaryValue)
+	t.Setenv("REMOTE_VERIFY_FALLBACK", fallbackValue)
+
+	cfg := remoteVerifyConfig(t, local.URL, public.URL+"/mcp")
+	ingress := cfg.RemoteIngresses["notion"]
+	ingress.AuthTokenFallbackEnv = "REMOTE_VERIFY_FALLBACK"
+	cfg.RemoteIngresses["notion"] = ingress
+	var stdout bytes.Buffer
+	app := App{Stdout: &stdout, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
+	if err := app.remoteVerify(context.Background(), cfg, "notion", options{JSON: true}); err != nil {
+		t.Fatalf("staged fallback bearer was not used: %v\n%s", err, stdout.String())
+	}
+	var result remoteIngressVerification
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !result.Matches {
+		t.Fatalf("unexpected fallback verification result: %#v", result)
+	}
+}
+
 func TestRemoteVerifyDetectsPublicContractMismatch(t *testing.T) {
 	authValue := strings.Repeat("b", 24)
 	local := newRemoteVerifyMCPServer(t, authValue, "repo.read")
@@ -105,7 +133,7 @@ func TestRemoteVerifyReportsMissingPublicURLAndBearer(t *testing.T) {
 	if jsonErr := json.Unmarshal(stdout.Bytes(), &result); jsonErr != nil {
 		t.Fatal(jsonErr)
 	}
-	if result.Local.OK || result.Public.OK || result.Issue != "MCP bearer secret is missing" {
+	if result.Local.OK || result.Public.OK || result.Issue != "MCP bearer secrets are missing" {
 		t.Fatalf("unexpected missing bearer result: %#v", result)
 	}
 }
@@ -147,8 +175,10 @@ func TestRemoteListReportsPresenceWithoutSecretValue(t *testing.T) {
 		"notion": {
 			Provider: "external", LocalPort: 18133, ToolProfile: "remote-read",
 			PublicURL: "https://wormhole.example/mcp", AuthTokenEnv: "REMOTE_VERIFY_AUTH",
+			AuthTokenFallbackEnv: "REMOTE_VERIFY_FALLBACK",
 		},
 	}
+	t.Setenv("REMOTE_VERIFY_FALLBACK", strings.Repeat("r", 24))
 	var stdout bytes.Buffer
 	app := App{Stdout: &stdout, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("")}
 	if err := app.remoteList(cfg, options{JSON: true}); err != nil {
@@ -157,7 +187,7 @@ func TestRemoteListReportsPresenceWithoutSecretValue(t *testing.T) {
 	if strings.Contains(stdout.String(), authValue) {
 		t.Fatal("remote list exposed bearer value")
 	}
-	if !strings.Contains(stdout.String(), `"authConfigured": true`) || !strings.Contains(stdout.String(), "REMOTE_VERIFY_AUTH") {
+	if !strings.Contains(stdout.String(), `"authConfigured": true`) || !strings.Contains(stdout.String(), `"fallbackAuthConfigured": true`) || !strings.Contains(stdout.String(), "REMOTE_VERIFY_AUTH") || !strings.Contains(stdout.String(), "REMOTE_VERIFY_FALLBACK") {
 		t.Fatalf("remote list omitted secret presence/reference: %s", stdout.String())
 	}
 }

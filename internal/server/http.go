@@ -295,14 +295,28 @@ func (h *HTTP) guardMCP(runtime *agent.Runtime, next http.Handler) http.Handler 
 }
 
 func (h *HTTP) guardMCPValues(authToken string, maxBodyBytes int, next http.Handler) http.Handler {
-	return h.guardMCPMethods(authToken, maxBodyBytes, false, next)
+	authTokens := []string{}
+	if strings.TrimSpace(authToken) != "" {
+		authTokens = append(authTokens, authToken)
+	}
+	return h.guardMCPMethods(authTokens, maxBodyBytes, false, next)
+}
+
+func (h *HTTP) guardMCPAnyValues(authTokens []string, maxBodyBytes int, allowGet bool, next http.Handler) http.Handler {
+	filtered := make([]string, 0, len(authTokens))
+	for _, token := range authTokens {
+		if token = strings.TrimSpace(token); token != "" {
+			filtered = append(filtered, token)
+		}
+	}
+	return h.guardMCPMethods(filtered, maxBodyBytes, allowGet, next)
 }
 
 // guardMCPMethods keeps the existing local/OpenAI MCP surfaces POST-only while
 // allowing dedicated hosted-MCP ingresses to pass authenticated GET requests
 // through to the Streamable HTTP handler. Stateless handlers may answer GET
 // with 405, which is explicitly valid when standalone SSE is unsupported.
-func (h *HTTP) guardMCPMethods(authToken string, maxBodyBytes int, allowGet bool, next http.Handler) http.Handler {
+func (h *HTTP) guardMCPMethods(authTokens []string, maxBodyBytes int, allowGet bool, next http.Handler) http.Handler {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = h.Runtime.Config.MaxBodyBytes
 	}
@@ -314,7 +328,7 @@ func (h *HTTP) guardMCPMethods(authToken string, maxBodyBytes int, allowGet bool
 			})
 			return
 		}
-		if authToken != "" {
+		if len(authTokens) > 0 {
 			header := request.Header.Get("Authorization")
 			if !strings.HasPrefix(header, "Bearer ") {
 				h.sendJSON(writer, http.StatusUnauthorized, map[string]any{
@@ -323,7 +337,11 @@ func (h *HTTP) guardMCPMethods(authToken string, maxBodyBytes int, allowGet bool
 				return
 			}
 			token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-			if subtle.ConstantTimeCompare([]byte(token), []byte(authToken)) != 1 {
+			matched := 0
+			for _, accepted := range authTokens {
+				matched |= subtle.ConstantTimeCompare([]byte(token), []byte(accepted))
+			}
+			if matched != 1 {
 				h.sendJSON(writer, http.StatusUnauthorized, map[string]any{
 					"jsonrpc": "2.0", "error": map[string]any{"code": -32001, "message": "Unauthorized."}, "id": nil,
 				})
