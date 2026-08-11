@@ -5,6 +5,9 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -263,8 +266,9 @@ func remoteIngressPortReachable(port int) bool {
 }
 
 type remoteIngressProbeResult struct {
-	ProtocolVersion string
-	ToolCount       int
+	ProtocolVersion string `json:"protocolVersion"`
+	ToolCount       int    `json:"toolCount"`
+	ContractHash    string `json:"contractHash"`
 }
 
 type remoteIngressProbeTransport struct {
@@ -278,6 +282,15 @@ func (t remoteIngressProbeTransport) RoundTrip(request *http.Request) (*http.Res
 	return http.DefaultTransport.RoundTrip(clone)
 }
 
+func remoteProbeHTTPClient(token string) *http.Client {
+	return &http.Client{
+		Transport: remoteIngressProbeTransport{token: token},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // probeRemoteIngress proves that the dedicated listener is more than a live
 // TCP socket: it authenticates, negotiates MCP, and retrieves the fixed tool
 // catalog. It intentionally probes the loopback listener rather than the public
@@ -287,18 +300,22 @@ func probeRemoteIngress(ctx context.Context, ingress config.NamedRemoteIngress) 
 	if token == "" {
 		return remoteIngressProbeResult{}, fmt.Errorf("missing MCP bearer token in %s", ingress.Config.AuthTokenEnv)
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-doctor", Version: "1"}, nil)
+	return probeRemoteMCPURL(ctx, fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort), token)
+}
+
+func probeRemoteMCPURL(ctx context.Context, endpoint, token string) (remoteIngressProbeResult, error) {
+	client := mcp.NewClient(&mcp.Implementation{Name: "wormhole-remote-verify", Version: "1"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint:             fmt.Sprintf("http://127.0.0.1:%d/mcp", ingress.Config.LocalPort),
+		Endpoint:             endpoint,
 		DisableStandaloneSSE: true,
 		MaxRetries:           -1,
-		HTTPClient:           &http.Client{Transport: remoteIngressProbeTransport{token: token}},
+		HTTPClient:           remoteProbeHTTPClient(token),
 	}, nil)
 	if err != nil {
 		return remoteIngressProbeResult{}, err
 	}
 	defer session.Close()
-	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	tools, err := listRemoteProbeTools(ctx, session, 256)
 	if err != nil {
 		return remoteIngressProbeResult{}, err
 	}
@@ -306,5 +323,56 @@ func probeRemoteIngress(ctx context.Context, ingress config.NamedRemoteIngress) 
 	if initialized := session.InitializeResult(); initialized != nil && strings.TrimSpace(initialized.ProtocolVersion) != "" {
 		protocol = initialized.ProtocolVersion
 	}
-	return remoteIngressProbeResult{ProtocolVersion: protocol, ToolCount: len(tools.Tools)}, nil
+	hash, err := remoteToolContractHash(tools)
+	if err != nil {
+		return remoteIngressProbeResult{}, err
+	}
+	return remoteIngressProbeResult{ProtocolVersion: protocol, ToolCount: len(tools), ContractHash: hash}, nil
+}
+
+func listRemoteProbeTools(ctx context.Context, session *mcp.ClientSession, limit int) ([]*mcp.Tool, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	var tools []*mcp.Tool
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		result, err := session.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, result.Tools...)
+		if len(tools) > limit {
+			return nil, fmt.Errorf("remote MCP tool catalog exceeds verification limit %d", limit)
+		}
+		if result.NextCursor == "" {
+			break
+		}
+		if seen[result.NextCursor] {
+			return nil, errors.New("remote MCP tool catalog repeated a pagination cursor")
+		}
+		seen[result.NextCursor] = true
+		cursor = result.NextCursor
+	}
+	return tools, nil
+}
+
+func remoteToolContractHash(tools []*mcp.Tool) (string, error) {
+	ordered := append([]*mcp.Tool(nil), tools...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i] == nil {
+			return ordered[j] != nil
+		}
+		if ordered[j] == nil {
+			return false
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	raw, err := json.Marshal(ordered)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8]), nil
 }

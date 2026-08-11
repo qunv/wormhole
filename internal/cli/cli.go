@@ -168,6 +168,8 @@ func (a App) Run(ctx context.Context, argv []string) error {
 		return a.status(cfg, opts)
 	case "doctor":
 		return a.doctor(ctx, cfg, opts)
+	case "remote":
+		return a.remoteCommand(ctx, cfg, opts)
 	case "state":
 		return a.stateCommand(cfg, opts)
 	case "workspace":
@@ -348,6 +350,8 @@ Usage:
   wormhole stop|restart       Manage background processes
   wormhole status [--json]    Show health and PID state
   wormhole doctor [--json]    Check local readiness
+  wormhole remote list [--json]
+  wormhole remote verify <name> [--json]
   wormhole state gc [--dry-run] [--json]
   wormhole workspace [path]   Show or set the primary workspace
   wormhole workspace add <id> <path> [--extra-root <path>] [--force]

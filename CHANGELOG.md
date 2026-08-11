@@ -26,6 +26,7 @@ All notable changes to Wormhole are documented in this file.
 ### Changed
 
 - Added a hosted-client connection kit to the remote MCP Admin editor, including browser-generated 256-bit one-time bearer handoff through the existing write-only Secrets API, copyable Notion/header configuration, local readiness badges, and restart/profile-rescan guidance without adding any secret-read endpoint.
+- Added explicit `wormhole remote list` and `wormhole remote verify <name>` commands; verification authenticates to both local and configured public MCP endpoints, blocks redirects, bounds tool discovery, and requires protocol plus full discovered tool-contract hashes to match.
 - Upgraded the official MCP Go SDK to v1.7.0, enabling MCP `2026-07-28` negotiation on stateless remote ingresses while preserving older Streamable HTTP compatibility; upstream health now uses a protocol-compatible read probe after `ping` removal, and caller-cancelled 2026 sessions are transparently repaired before the next upstream call without consuming mutation retries.
 - Hardened remote MCP ingresses with exact public-Origin validation, authenticated GET transport handling, ownership-aware status reporting, and an active `doctor` probe that negotiates MCP and lists the fixed tool contract instead of treating an open TCP port as readiness.
 

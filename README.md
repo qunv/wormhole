@@ -400,6 +400,16 @@ The Admin **Hosted client connection kit** renders these values from the selecte
 
 Restart Wormhole after changing ingress definitions or referenced secrets. `wormhole status` reports listener/provider ownership and secret presence without exposing values. `wormhole doctor` goes further: after checking the loopback socket and bearer reference, it performs a real MCP connection and `tools/list`, reporting the negotiated protocol and tool count. This catches cases where a port is open but authentication or the MCP contract is broken. The Admin diagnostic bundle includes ingress metadata and bounded ingress logs while redacting the currently referenced secret values.
 
+When the local listener is healthy and the HTTPS publisher is configured, explicitly verify the route a hosted client will use:
+
+```bash
+wormhole remote list
+wormhole remote verify notion
+wormhole remote verify notion --json
+```
+
+`remote verify` is intentionally an operator-invoked network action rather than a background/Admin probe. It authenticates against both the dedicated loopback listener and the configured `publicUrl`, discovers the bounded tool catalog, and compares the negotiated protocol plus a deterministic hash of the complete discovered tool metadata. Redirects are not followed, so the MCP bearer cannot be forwarded to a different redirect target. A successful `MATCH` proves that the public endpoint currently presents the same MCP contract as the local ingress; it does not test the hosted client's workspace permissions or product-side policy.
+
 Wormhole pins the stable official Go SDK with MCP `2026-07-28` support. The dedicated ingress is stateless, which is required for that protocol generation, and remains compatible with older Streamable HTTP clients through the SDK's negotiation path. Authenticated `GET /mcp` is allowed to reach the transport; a stateless server may correctly answer `405 Method Not Allowed` when the client requests the optional standalone SSE stream.
 
 Official setup references:
@@ -470,7 +480,9 @@ npm run dev
 | `wormhole setup` | Configure workspace, policy, tunnel, and optional memory |
 | `wormhole restart` | Reconcile config and restart server/tunnel |
 | `wormhole status --json` | Show endpoints, process IDs, and health |
-| `wormhole doctor` | Check local server, tunnel, memory, and upstream MCP dependencies |
+| `wormhole doctor` | Check local server, tunnel, memory, upstream MCP, and local remote-ingress readiness |
+| `wormhole remote list` | Show configured hosted-MCP ingresses and secret-presence state without values |
+| `wormhole remote verify <name>` | Explicitly verify the local and public MCP routes expose the same authenticated contract |
 | `wormhole logs` | Print bounded server and tunnel log tails |
 | `wormhole profile` | Regenerate the tunnel-client profile |
 | `wormhole tunnel install` | Download and verify OpenAI tunnel-client |

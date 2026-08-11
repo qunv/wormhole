@@ -354,6 +354,8 @@ The publisher is independent from the MCP listener. `provider: external` is the 
 
 The Admin UI may generate a remote MCP bearer only as an explicit browser action after its environment reference is already persisted. The browser uses Web Crypto, writes the generated value through the same write-only secret mutation endpoint used by manual secret entry, and retains the cleartext only in ephemeral component state for one-time copy. The server still has no secret-read API, diagnostic/config responses remain value-free, and changing the stored bearer affects the active remote listener only after normal daemon reconciliation/restart. The connection kit reports only local listener/contract readiness; it does not make implicit outbound requests to the configured public URL, avoiding an Admin-driven SSRF surface.
 
+Public-route verification is a separate explicit CLI boundary. `wormhole remote verify <name>` loads only a configured ingress, authenticates first to its loopback listener and then to its validated `publicUrl`, disables HTTP redirects, bounds tool pagination, and compares the negotiated protocol plus a deterministic SHA-256-derived hash of the complete discovered tool metadata. The command fails when either endpoint is unavailable, authentication fails, the public URL is absent, or the public contract differs. It is never run by daemon startup, health checks, or Admin polling, so arbitrary outbound verification cannot be triggered remotely through the local control plane.
+
 Each module's `Specs()` output is the source of truth for its tools, and `runtime.Tools()` is the assembled server contract:
 
 - name;
