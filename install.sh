@@ -5,7 +5,7 @@
 set -eu
 
 REPOSITORY="qunv/wormhole"
-DEFAULT_VERSION="v1.0.1"
+DEFAULT_VERSION="v1.0.0"
 VERSION="${WORMHOLE_VERSION:-$DEFAULT_VERSION}"
 INSTALL_DIR="${WORMHOLE_INSTALL_DIR:-$HOME/.local/bin}"
 DOWNLOAD_BASE_URL="${WORMHOLE_DOWNLOAD_BASE_URL:-}"
@@ -18,7 +18,7 @@ Usage:
   install.sh [--version VERSION] [--install-dir DIRECTORY]
 
 Options:
-  --version VERSION       Release tag to install. Default: v1.0.1
+  --version VERSION       Release tag to install. Default: v1.0.0
   --install-dir DIRECTORY Installation directory. Default: ~/.local/bin
   -h, --help              Show this help message
 
